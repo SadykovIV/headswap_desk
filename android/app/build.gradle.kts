@@ -18,8 +18,8 @@ android {
         applicationId = "com.headswap.desk"
         minSdk = 33
         targetSdk = 37
-        versionCode = 19
-        versionName = "0.2.12-desktop-experimental"
+        versionCode = 20
+        versionName = "0.2.13-desktop-experimental"
         // «По воздуху» (беспровод): с 2.0.0 включён во всех сборках; выключить для проверки: gradlew assembleRelease -Pwlbeta=false
         buildConfigField("boolean", "WIRELESS_BETA", (project.findProperty("wlbeta") != "false").toString())
     }

@@ -20,13 +20,13 @@ class DexPrefs(context: Context) {
     internal var phoneIdleTimeout: PhoneIdleTimeout
         get() = PhoneIdleTimeout.restore(prefs.getString("phone_idle_timeout", null))
         set(value) { prefs.edit().putString("phone_idle_timeout", value.name).apply() }
-    /** Panel control is separately opted in; it never changes an active grant set. */
+    /** First activation offers panel control. An explicit choice is kept across updates. */
     var desktopPanelControl: Boolean
-        get() = prefs.getBoolean("desktop_panel_control", false)
+        get() = prefs.getBoolean("desktop_panel_control", true)
         set(value) { prefs.edit().putBoolean("desktop_panel_control", value).apply() }
-    /** Playback rerouting is opt-in; enabling this never expands a running activation's grants. */
+    /** First activation offers USB playback. Changing the selection takes effect on the next activation. */
     var usbPlaybackAudio: Boolean
-        get() = prefs.getBoolean("desktop_usb_playback_audio", false)
+        get() = prefs.getBoolean("desktop_usb_playback_audio", true)
         set(value) { prefs.edit().putBoolean("desktop_usb_playback_audio", value).apply() }
     /** Existing installations keep their choice; loss of access never switches a backend. */
     var accessMode: DesktopAccessMode

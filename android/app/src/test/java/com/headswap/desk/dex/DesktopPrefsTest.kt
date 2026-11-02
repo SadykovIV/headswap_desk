@@ -77,7 +77,6 @@ class DesktopPrefsTest {
         assertEquals(1920, snapshot.resolve().outW)
         assertEquals(96, snapshot.densityOverride)
         assertEquals(640, DexPrefs(context).desktopDensity)
-        assertFalse(restored.desktopPanelControl)
     }
     @Test fun rejectedDimensionsDoNotPartiallySaveAndCorruptStoredCustomFallsBackSafely() {
         val context = MemoryPrefs()
@@ -103,10 +102,26 @@ class DesktopPrefsTest {
         context.values["access_backend"] = "SHIZUKU"
         assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
     }
+    @Test fun firstActivationOffersAudioAndPanelAndPreservesIndependentOptOutsAfterUpdate() {
+        val context = MemoryPrefs()
+        val fresh = DexPrefs(context)
+        assertTrue(fresh.usbPlaybackAudio)
+        assertTrue(fresh.desktopPanelControl)
+        assertTrue(fresh.persistActivationSelection(audio = true, screen = true))
+
+        fresh.usbPlaybackAudio = false
+        val updated = DexPrefs(context)
+        assertFalse(updated.usbPlaybackAudio)
+        assertTrue(updated.desktopPanelControl)
+        updated.desktopPanelControl = false
+        assertFalse(DexPrefs(context).desktopPanelControl)
+        assertTrue(DexPrefs(context).persistActivationSelection(audio = false, screen = false))
+    }
     @Test fun phoneActivationCommitsOnlyTheAlreadySelectedOptionsAndReportsFailure() {
         val context = MemoryPrefs()
         val prefs = DexPrefs(context)
-        prefs.usbPlaybackAudio = true
+        prefs.desktopPanelControl = false
+        assertFalse(prefs.persistActivationSelection(audio = false, screen = false))
         assertFalse(prefs.persistActivationSelection(audio = true, screen = true))
         assertEquals(0, context.commits)
         assertFalse(prefs.desktopPanelControl)

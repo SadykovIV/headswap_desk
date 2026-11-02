@@ -1055,7 +1055,7 @@ class DexSetupActivity : Activity() {
         usbAudioHint.updateText(when {
             !prefs.useDelegated -> "USB-звук доступен в режиме «Доступ HeadSwap». Здесь можно оставить звук через Bluetooth автомобиля."
             !prefs.usbPlaybackAudio -> "Звук остаётся на обычном выходе телефона, например Bluetooth автомобиля."
-            !DesktopAudioAccess.hasPermission(this) -> "Для USB-звука включите эту опцию и активируйте доступ со звуком на телефоне или с компьютера. Передаётся воспроизводимый телефоном звук, включая музыку и подсказки; микрофон не используется."
+            !DesktopAudioAccess.hasPermission(this) -> "USB-звук выбран. Активируйте доступ, чтобы передавать музыку и подсказки телефона в CarLife."
             else -> DesktopAudioState.status
         })
         applyingAccessChoice = true
@@ -1083,8 +1083,12 @@ class DexSetupActivity : Activity() {
             permissionAction == null && !BridgeService.alive && !DexState.running
         phoneActivationHint.updateText(if (phoneLaunchCommitted)
             "Запуск уже передан Android; дождитесь подтверждения. Он завершится или покажет ошибку не позднее чем через 90 секунд."
-        else "Wi-Fi нужен только для активации. HeadSwap получит временный доступ к плееру для паузы при отключении USB и продолжения при подключении CarLife. USB-звук настраивается отдельно. Приложение перезапустится." +
-            if (prefs.desktopPanelControl) " Управление экраном включено. HeadSwap получит временный доступ к панели и системной диагностике для чтения времени активности телефона. Перед выключением панели HeadSwap откроет свой экран для двойного касания." else "")
+        else buildString {
+            append("Wi-Fi нужен на время активации. HeadSwap получит временный доступ к управлению плеером и перезапустится.")
+            if (prefs.usbPlaybackAudio) append(" Для звука по USB HeadSwap получит доступ к воспроизводимому звуку телефона, включая музыку и подсказки.")
+            if (prefs.desktopPanelControl) append(" Для таймера HeadSwap получит доступ к панели и времени активности экрана. Двойное касание вернёт изображение.")
+            append(" Выбор можно изменить перед активацией в «Дополнительно».")
+        })
     }
 
     private fun renderConnectionControl() {
