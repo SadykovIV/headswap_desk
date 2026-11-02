@@ -13,7 +13,9 @@ internal object EmbeddedDisplayPolicy {
     private val classPattern = Regex("\\.?[a-zA-Z_$][a-zA-Z0-9_$]*(\\.[a-zA-Z_$][a-zA-Z0-9_$]*)*")
 
     fun requireParent(mode: Int, displayId: Int) {
-        check(mode == DesktopModePolicy.DRIVEDECK && displayId > 0) { "Виджет доступен только на активном экране DriveDeck" }
+        check(displayId > 0 && (mode == DesktopModePolicy.DRIVEDECK || mode == DesktopModePolicy.ANDROID_DESKTOP)) {
+            "Окно доступно только на активном Android Desktop или DriveDeck"
+        }
     }
 
     fun requireSize(width: Int, height: Int, density: Int) {
@@ -47,13 +49,14 @@ internal object EmbeddedDisplayPolicy {
         require(packagePattern.matches(packageName)) { "Неверный пакет приложения виджета" }
     }
 
-    fun launchCommand(id: Int, parentId: Int, userId: Int, packageName: String, className: String): Array<String> {
+    fun launchCommand(id: Int, parentId: Int, userId: Int, packageName: String, className: String,
+        desktopPane: Boolean = false): Array<String> {
         requireChildId(id, parentId)
         require(userId >= 0)
         requirePackage(packageName)
         require(classPattern.matches(className)) { "Неверный компонент приложения виджета" }
         return arrayOf("/system/bin/am", "start", "--user", userId.toString(), "--display", id.toString(),
-            "--windowingMode", "1", "-f", "0x34000000", "-a", "android.intent.action.MAIN",
+            "--windowingMode", "1", "-f", if (desktopPane) "0x10200000" else "0x34000000", "-a", "android.intent.action.MAIN",
             "-c", "android.intent.category.LAUNCHER", "-n", "$packageName/$className")
     }
 }

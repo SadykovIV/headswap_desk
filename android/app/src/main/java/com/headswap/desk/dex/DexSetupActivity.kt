@@ -503,6 +503,7 @@ class DexSetupActivity : Activity() {
         shizukuHelp = text(shizukuSetup, "Запустите Shizuku и один раз разрешите доступ для HeadSwap Desktop. Пока Shizuku работает, достаточно подключить USB. После перезагрузки телефона службу нужно запустить снова.")
         shizukuManagerButton = button(shizukuSetup, "Открыть Shizuku") { openShizuku() }
 
+        button(body, "Компоненты") { startActivity(Intent(this, com.headswap.desk.update.ComponentUpdatesActivity::class.java)) }
         button(body, "Дополнительно ▾") {
             val open = advanced.visibility != View.VISIBLE
             advanced.visibility = if (open) View.VISIBLE else View.GONE

@@ -11,8 +11,9 @@ object EmbeddedGatewayPolicy {
     private val packagePattern = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
     private val classPattern = Regex("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
 
-    fun requireParent(mode: Int, requestedParentDisplayId: Int, ownedParentDisplayId: Int) {
-        require(mode == DesktopModePolicy.DRIVEDECK) { "Embedded apps require the DriveDeck profile" }
+    fun requireParent(mode: Int, requestedParentDisplayId: Int, ownedParentDisplayId: Int, ownDesktop: Boolean = false) {
+        val requiredMode = if (ownDesktop) DesktopModePolicy.ANDROID_DESKTOP else DesktopModePolicy.DRIVEDECK
+        require(mode == requiredMode) { "Parent does not belong to this desktop profile" }
         require(requestedParentDisplayId > 0 && ownedParentDisplayId > 0 &&
             requestedParentDisplayId == ownedParentDisplayId) { "Parent display is not the owned desktop" }
     }

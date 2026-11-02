@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- User-confirmed installation of a verified optional desktop component. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- A connectedDevice foreground service must also be able to finish or wait when the USB grant goes away. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <!-- Inspect local interfaces to connect to this phone's adbd. -->
@@ -22,6 +24,10 @@
 
     <!-- без queries на API 30+ пакет Android Auto не виден (проверка установки, запуск настроек) -->
     <queries>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="application/vnd.android.package-archive" />
+        </intent>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
@@ -86,6 +92,14 @@
         </activity>
 
         <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".update.ComponentUpdatesActivity" android:exported="false" />
+        <provider
+            android:name=".update.ComponentApkProvider"
+            android:authorities="${applicationId}.components"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/component_apk_paths" />
+        </provider>
 
         <!-- Explicitly launched by the shell service on its own display only; never a phone HOME. -->
         <activity

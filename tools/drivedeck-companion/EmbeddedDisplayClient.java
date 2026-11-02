@@ -191,8 +191,8 @@ public final class EmbeddedDisplayClient {
         if (!prefs.getBoolean("split_page_enabled", true)) return;
         try {
             int missing = prefs.getString("slot_0", "").isEmpty() ? 0 : prefs.getString("slot_1", "").isEmpty() ? 1 : -1;
-            if (missing >= 0) activity.getClass().getMethod("g", int.class).invoke(activity, missing);
-            else activity.getClass().getMethod("u").invoke(activity);
+            if (missing >= 0) activity.getClass().getMethod("i", int.class).invoke(activity, missing);
+            else activity.getClass().getMethod("z").invoke(activity);
         } catch (ReflectiveOperationException error) { Log.e(TAG, "Cannot open internal split page", error); }
     }
     private static int parentDensity(View renderer) {
@@ -209,7 +209,7 @@ public final class EmbeddedDisplayClient {
     }
     private static EmbeddedRenderProfile.Geometry geometry(View renderer, String selected, boolean extended, int width, int height) {
         int parent = parentDensity(renderer);
-        int percent = integer(renderer, "z", 100);
+        int percent = integer(renderer, "L", 100);
         int pane = Math.round(parent * Math.max(50, Math.min(120, percent)) / 100f);
         return EmbeddedRenderProfile.geometry(selected, highResolutionSupported, extended, width, height, parent, pane);
     }
@@ -222,7 +222,7 @@ public final class EmbeddedDisplayClient {
             return geometry(renderer, selectedPackage(renderer), gateway == null || (gatewayCapabilities & 8) != 0,
                     Math.max(128, renderer.getWidth()), Math.max(128, renderer.getHeight())).density;
         } catch (IllegalArgumentException detachedOrUnsupported) {
-            // Original v7 uses this as a diagnostic hint before attach. Never create from a fallback DPI.
+            // Original Y7 uses this as a diagnostic hint before attach. Never create from a fallback DPI.
             return 0;
         }
     }
@@ -240,7 +240,7 @@ public final class EmbeddedDisplayClient {
             views.add(host.getWindow().getDecorView());
             while (!views.isEmpty()) {
                 View view = views.removeFirst();
-                if ("c.v7".equals(view.getClass().getName())) restoreRenderer(view, ticket);
+                if ("c.Y7".equals(view.getClass().getName())) restoreRenderer(view, ticket);
                 else if (view instanceof ViewGroup) {
                     ViewGroup group = (ViewGroup) view;
                     for (int i = 0; i < group.getChildCount(); i++) views.addLast(group.getChildAt(i));
@@ -255,10 +255,10 @@ public final class EmbeddedDisplayClient {
     private static void restoreRenderer(View renderer, EmbeddedResumeGate.Ticket ticket) {
         int parent = DisplayOnlyLaunch.displayId(renderer.getContext());
         if (!ticket.isCurrent(parent) || !renderer.isAttachedToWindow() || !renderer.isShown()
-                || bool(renderer, "o") || bool(renderer, "p") || !bool(renderer, "N")) return;
+                || bool(renderer, "A") || bool(renderer, "B") || !bool(renderer, "c0")) return;
         String selected = selectedPackage(renderer);
         if (!EmbeddedRenderProfile.NAVIGATOR_PACKAGE.equals(selected)) return;
-        Object child = field(renderer, "h");
+        Object child = field(renderer, "t");
         if (!(child instanceof TextureView)) return;
         TextureView view = (TextureView) child;
         if (!view.isAvailable() || view.getWidth() <= 0 || view.getHeight() <= 0) return;
@@ -288,10 +288,10 @@ public final class EmbeddedDisplayClient {
                 + " scale=" + lease.geometry.effectiveScale);
     }
     private static String selectedPackage(View renderer) {
-        // Exact supplied 0.6.7 graph: v7.a is the renderer callback, v8.b its owning
-        // t2 pane, and t2.u the selected package. Never infer an app from a slot number.
+        // Exact supplied 0.6.8 graph: Y7.a is the renderer callback, d9.b its owning
+        // H2 pane, and H2.w the selected package. Never infer an app from a slot number.
         Object pane = field(field(renderer, "a"), "b");
-        Object selected = field(pane, "u");
+        Object selected = field(pane, "w");
         return selected instanceof String ? (String) selected : null;
     }
     private static boolean updateGeometry(Lease lease, int width, int height, String packageName) {
@@ -320,7 +320,7 @@ public final class EmbeddedDisplayClient {
         // A retained TextureView can have its default buffer reset on reattachment/size changes.
         // Reapply the consumer and coordinate mapping even when the producer already has this size.
         lease.texture.setDefaultBufferSize(wanted.width, wanted.height);
-        // Original v7 touch mapping reads v/w and already multiplies by render/view.
+        // Original Y7 touch mapping reads H/I and already multiplies by render/view.
         // Keep these in buffer pixels; input() must not apply the scale a second time.
         setSize(lease.renderer, wanted.width, wanted.height, wanted.density);
         if (changed && EmbeddedRenderProfile.NAVIGATOR_PACKAGE.equals(lease.selectedPackage)) {
@@ -422,7 +422,7 @@ public final class EmbeddedDisplayClient {
     private static void attach(View renderer, SurfaceTexture texture, int width, int height,
                                EmbeddedResumeGate.Ticket restore) {
         if (texture == null || texture.isReleased() || width <= 0 || height <= 0 || !renderer.isShown()
-                || bool(renderer, "o") || bool(renderer, "p") || !bool(renderer, "N")) return;
+                || bool(renderer, "A") || bool(renderer, "B") || !bool(renderer, "c0")) return;
         int parent = DisplayOnlyLaunch.displayId(renderer.getContext());
         if (parent <= 0) return;
         bind(renderer.getContext());
@@ -443,7 +443,7 @@ public final class EmbeddedDisplayClient {
             if (HANDOFF.deferIfRetired(texture, active == null ? null : () -> {
                 if (!active.isCurrent(DisplayOnlyLaunch.displayId(renderer.getContext())) || texture.isReleased()
                         || !renderer.isAttachedToWindow() || !renderer.isShown()) return;
-                Object child = field(renderer, "h");
+                Object child = field(renderer, "t");
                 if (!(child instanceof TextureView)) return;
                 TextureView view = (TextureView) child;
                 if (!view.isAvailable() || view.getSurfaceTexture() != texture) return;
@@ -512,7 +512,7 @@ public final class EmbeddedDisplayClient {
     private static void notifyReady(Lease lease) {
         MAIN.post(() -> {
             if (lease.closed) return;
-            Object ready = field(lease.renderer, "G");
+            Object ready = field(lease.renderer, "S");
             if (ready instanceof Runnable) lease.renderer.post((Runnable) ready);
         });
     }
@@ -527,7 +527,7 @@ public final class EmbeddedDisplayClient {
         if (lease.handle <= 0) scheduleCreate(lease, 0); else requestResize(lease);
     }
     public static void scale(View renderer, int percent) {
-        set(renderer, "z", Math.max(50, Math.min(120, percent)));
+        set(renderer, "L", Math.max(50, Math.min(120, percent)));
         resize(renderer, renderer.getWidth(), renderer.getHeight());
     }
     public static boolean launch(int handle, String packageName) {
@@ -687,7 +687,7 @@ public final class EmbeddedDisplayClient {
     }
     public static void hidePane(Object pane, boolean visible) {
         if (visible) return;
-        for (String key : new String[]{"d", "h", "i", "P"}) {
+        for (String key : new String[]{"f", "j", "k", "R"}) {
             Object renderer = field(pane, key);
             if (renderer instanceof View) close((View) renderer, false);
         }
@@ -788,7 +788,7 @@ public final class EmbeddedDisplayClient {
     }
     private static ArrayList<Lease> leases() { synchronized (LOCK) { return new ArrayList<>(LEASES.values()); } }
     private static void setHandle(View renderer, int handle) {
-        try { renderer.getClass().getMethod("n", int.class).invoke(renderer, handle); }
+        try { renderer.getClass().getMethod("o", int.class).invoke(renderer, handle); }
         catch (ReflectiveOperationException error) { Log.e(TAG, "Renderer handle update failed", error); }
     }
     private static void clearRetiredHandle(Lease lease) {
@@ -800,7 +800,7 @@ public final class EmbeddedDisplayClient {
             setHandle(lease.renderer, -1);
         });
     }
-    private static void setSize(View renderer, int width, int height, int dpi) { set(renderer, "v", width); set(renderer, "w", height); set(renderer, "A", dpi); }
+    private static void setSize(View renderer, int width, int height, int dpi) { set(renderer, "H", width); set(renderer, "I", height); set(renderer, "M", dpi); }
     private static Object field(Object object, String name) {
         try { return object.getClass().getField(name).get(object); }
         catch (ReflectiveOperationException | NullPointerException error) { return null; }

@@ -1,15 +1,15 @@
-"""Disable only the stock application updater in the authorized 0.6.7 APK."""
+"""Disable only the stock application updater in the authorized 0.6.8 APK."""
 import hashlib
 import re
 from pathlib import Path
 
-NOTICE = 'DriveDeck · HeadSwap обновляется только APK из комплекта HeadSwap. Обычная версия DriveDeck не подходит. Автоматическая проверка и загрузка обновлений приложения отключены.'
-CHECK = 'public static a(Landroid/content/Context;Lc/n1;ZLandroid/view/View;Lc/a9;)V'
-DOWNLOAD = 'public static c(Landroid/content/Context;Lc/U8;Landroid/view/View;Lc/b9;)V'
-APP_FETCH = 'public static d(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;Lc/U8;Lc/Z6;J)V'
+NOTICE = 'Для обновления откройте HeadSwap Desktop и выберите «Компоненты». Обновление также можно установить вручную из выпуска HeadSwap.'
+CHECK = 'public static a(Landroid/content/Context;Lc/T4;ZLandroid/view/View;Lc/M9;)V'
+DOWNLOAD = 'public static c(Landroid/content/Context;Lc/G9;Landroid/view/View;Lc/N9;)V'
+APP_FETCH = 'public static d(Landroid/content/Context;Ljava/lang/String;Ljava/io/File;Lc/G9;Lc/C7;J)V'
 TIMER = 'public final run()V'
-PAGE = 'public final f0()V'
-PAGE_CUT = ('    invoke-virtual {v0, v1, v2, v6, v8}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V\n\n'
+PAGE = 'public final d0()V'
+PAGE_CUT = ('    invoke-virtual {v0, v1, v2, v6, v8}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V\n\n'
             '    new-instance v2, Landroid/widget/LinearLayout;')
 
 
@@ -37,14 +37,14 @@ def patch_api(text):
     if-eqz p2, :headswap_no_check
     if-eqz p4, :headswap_no_check
     const-string v0, "{NOTICE}"
-    invoke-interface {{p4, v0}}, Lc/a9;->a(Ljava/lang/String;)V
+    invoke-interface {{p4, v0}}, Lc/M9;->a(Ljava/lang/String;)V
     :headswap_no_check
     return-void''')
     out = replace_method(out, DOWNLOAD, f'''
     .locals 1
     if-eqz p3, :headswap_no_download
     const-string v0, "{NOTICE}"
-    invoke-interface {{p3, v0}}, Lc/b9;->a(Ljava/lang/String;)V
+    invoke-interface {{p3, v0}}, Lc/N9;->a(Ljava/lang/String;)V
     :headswap_no_download
     return-void''')
     out = replace_method(out, APP_FETCH, f'''
@@ -63,9 +63,9 @@ def patch_timer(text):
     old = method_text(text, TIMER)
     start = old.index('    :pswitch_0\n')
     end = old.index('    :pswitch_data_0\n', start)
-    assert 'Lc/c9;->a(' in old[start:end]
+    assert 'Lc/O9;->a(' in old[start:end]
     # The default branch is the weather timer; retain it exactly, including rescheduling.
-    assert 'Lc/y9;->h(' in old[:start]
+    assert 'Lc/ka;->h(' in old[:start]
     assert 'postDelayed' in old[:start]
     replacement = old[:start] + '    :pswitch_0\n    return-void\n\n' + old[end:]
     return text.replace(old, replacement, 1)
@@ -78,36 +78,36 @@ def patch_page(text):
     prefix = old[:split]
     # Registers are fixed by the exact supported input APK: v0=this, v3=root,
     # v4=presets, v5=device information, v1=diagnostics. Keep those original sections.
-    assert '.locals 37' in prefix and 'Lc/S2;' in prefix and 'getRealMetrics' in prefix
+    assert '.locals 38' in prefix and 'Lc/J2;' in prefix and 'getRealMetrics' in prefix
     replacement = prefix + f'''
     const/16 v6, 0x8
     const/4 v7, 0x0
-    invoke-virtual {{v0, v3, v4, v6, v7}}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
-    invoke-virtual {{v0, v3, v5, v6, v7}}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
-    invoke-virtual {{v0, v3, v1, v6, v7}}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
-    const-string v1, "DriveDeck · HeadSwap 0.6.7 (263)"
-    invoke-virtual {{v0, v1}}, Lc/k3;->q0(Ljava/lang/String;)Landroid/widget/LinearLayout;
+    invoke-virtual {{v0, v3, v4, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
+    invoke-virtual {{v0, v3, v5, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
+    invoke-virtual {{v0, v3, v1, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
+    const-string v1, "DriveDeck · HeadSwap 0.6.8 (301)"
+    invoke-virtual {{v0, v1}}, Lc/x3;->o0(Ljava/lang/String;)Landroid/widget/LinearLayout;
     move-result-object v1
     const-string v2, "{NOTICE}"
-    invoke-virtual {{v0, v2}}, Lc/k3;->i(Ljava/lang/String;)Landroid/widget/TextView;
+    invoke-virtual {{v0, v2}}, Lc/x3;->i(Ljava/lang/String;)Landroid/widget/TextView;
     move-result-object v2
-    invoke-virtual {{v0, v1, v2, v6, v6}}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
-    invoke-virtual {{v0, v3, v1, v6, v7}}, Lc/k3;->x0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
+    invoke-virtual {{v0, v1, v2, v6, v6}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
+    invoke-virtual {{v0, v3, v1, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
     return-void
 .end method'''
-    assert '"update_auto"' not in replacement and 'Lc/M8;' not in replacement
+    assert '"update_auto"' not in replacement and 'Lc/y9;' not in replacement
     return text.replace(old, replacement, 1)
 
 
 def apply(root: Path):
-    transforms = {'smali/c/c9.smali': patch_api, 'smali/c/N4.smali': patch_timer, 'smali/c/k3.1.smali': patch_page}
+    transforms = {'smali/c/O9.smali': patch_api, 'smali/c/t5.1.smali': patch_timer, 'smali/c/x3.1.smali': patch_page}
     evidence = {}
     for relative, transform in transforms.items():
         path = root / relative
         original = path.read_text()
         changed = transform(original)
         assert changed != original
-        if relative.endswith('c9.smali'):
+        if relative.endswith('O9.smali'):
             preserved = {sig: body for sig, body in methods(original).items() if sig not in {CHECK, DOWNLOAD, APP_FETCH}}
             evidence['preserved_shared_methods_sha256'] = {sig: hashlib.sha256(body.encode()).hexdigest() for sig, body in preserved.items()}
         path.write_text(changed)

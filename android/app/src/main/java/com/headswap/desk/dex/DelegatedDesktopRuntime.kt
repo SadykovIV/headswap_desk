@@ -79,14 +79,14 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
         launch(id, ComponentName(component.packageName, component.className), component.ownActivity, requireLauncher = false)
     }
 
-    override fun launchChild(parentId: Int, id: Int, packageName: String, className: String) {
+    override fun launchChild(parentId: Int, id: Int, packageName: String, className: String, desktopPane: Boolean) {
         // Reuse explicit component validation without executing the resulting shell arguments.
         EmbeddedDisplayPolicy.launchCommand(id, parentId, context.applicationInfo.uid / 100000, packageName, className)
         val fullClassName = if (className.startsWith('.')) packageName + className else className
-        launch(id, ComponentName(packageName, fullClassName), ownActivity = false, requireLauncher = true)
+        launch(id, ComponentName(packageName, fullClassName), ownActivity = false, requireLauncher = true, desktopPane = desktopPane)
     }
 
-    private fun launch(id: Int, component: ComponentName, ownActivity: Boolean, requireLauncher: Boolean) {
+    private fun launch(id: Int, component: ComponentName, ownActivity: Boolean, requireLauncher: Boolean, desktopPane: Boolean = false) {
         require(id > 0) { "Запуск на основном экране запрещён" }
         val pm = context.packageManager
         val info = pm.getActivityInfo(component, 0)
@@ -102,8 +102,10 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
                     candidate.exported && candidate.enabled && candidate.applicationInfo.enabled
             } == true }) { "Виджет принимает только доступное приложение из списка запуска" }
         }
-        val intent = Intent(Intent.ACTION_MAIN).setComponent(component)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        // Android Desktop resumes the app's task like a launcher (including its current page).
+        val taskFlags = if (desktopPane) Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            else Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+        val intent = Intent(Intent.ACTION_MAIN).setComponent(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or taskFlags)
         if (requireLauncher || component.packageName == DesktopModePolicy.DRIVEDECK_PACKAGE) {
             intent.addCategory(Intent.CATEGORY_LAUNCHER)
         }
@@ -118,9 +120,10 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
         inputGateway.setPhonePanelOff(parentId, checkNotNull(inputLeases[parentId]) { "Рабочий стол уже закрыт" }, off)
     }
 
-    override fun childTaskState(id: Int, packageName: String): Int {
+    override fun childTaskState(id: Int, packageName: String) = childTaskQuery(id, packageName)()
+    override fun childTaskQuery(id: Int, packageName: String): () -> Int {
         check(id > 0) { "Проверка основного экрана запрещена" }
-        val token = inputLeases[id] ?: return -1
-        return inputGateway.childTaskState(id, token, packageName)
+        val token = inputLeases[id] ?: return { -1 }
+        return { inputGateway.childTaskState(id, token, packageName) }
     }
 }

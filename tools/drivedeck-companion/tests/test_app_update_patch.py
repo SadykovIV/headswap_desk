@@ -39,10 +39,10 @@ class StockAppUpdateIsolationTest(unittest.TestCase):
 
     def test_weather_timer_retains_its_work_and_reschedule(self):
         weather = ('    .locals 7\n    packed-switch v4, :pswitch_data_0\n'
-                   '    invoke-static {v3, v4, v2, v2}, Lc/y9;->h(Landroid/content/Context;Ljava/lang/Runnable;ZZ)Z\n'
+                   '    invoke-static {v3, v4, v2, v2}, Lc/ka;->h(Landroid/content/Context;Ljava/lang/Runnable;ZZ)Z\n'
                    '    invoke-virtual {v2, p0, v0, v1}, Landroid/os/Handler;->postDelayed(Ljava/lang/Runnable;J)Z\n'
                    '    return-void\n\n')
-        case = ('    :pswitch_0\n    invoke-static {}, Lc/c9;->a()V\n'
+        case = ('    :pswitch_0\n    invoke-static {}, Lc/O9;->a()V\n'
                 '    invoke-virtual {v2, p0, v0, v1}, Landroid/os/Handler;->postDelayed(Ljava/lang/Runnable;J)Z\n')
         table = '    :pswitch_data_0\n    .packed-switch 0x0\n        :pswitch_0\n    .end packed-switch'
         source = method(patch.TIMER, weather + case + table)
@@ -55,20 +55,20 @@ class StockAppUpdateIsolationTest(unittest.TestCase):
             patch.patch_timer(source)
 
     def test_settings_preserve_original_sections_before_update_panel(self):
-        prefix = '.method ' + patch.PAGE + '\n    .locals 37\n    new-instance v5, Lc/S2;\n    # getRealMetrics\n'
-        original = prefix + patch.PAGE_CUT + '\n    const-string v6, "update_auto"\n    new-instance v9, Lc/M8;\n.end method\n'
+        prefix = '.method ' + patch.PAGE + '\n    .locals 38\n    new-instance v5, Lc/J2;\n    # getRealMetrics\n'
+        original = prefix + patch.PAGE_CUT + '\n    const-string v6, "update_auto"\n    new-instance v9, Lc/y9;\n.end method\n'
         changed = patch.patch_page(original)
         kept_prefix = original[:original.index(patch.PAGE_CUT) + patch.PAGE_CUT.index('    new-instance')]
         self.assertTrue(changed.startswith(kept_prefix))
         self.assertNotIn('"update_auto"', changed)
-        self.assertNotIn('Lc/M8;', changed)
-        self.assertIn('HeadSwap 0.6.7 (263)', changed)
+        self.assertNotIn('Lc/y9;', changed)
+        self.assertIn('HeadSwap 0.6.8 (301)', changed)
         self.assertIn(patch.NOTICE, changed)
 
     def test_changed_settings_boundary_is_not_silently_patched(self):
         for boundary in ['', patch.PAGE_CUT + patch.PAGE_CUT]:
             with self.assertRaises(AssertionError):
-                patch.patch_page(method(patch.PAGE, '    .locals 37\n' + boundary))
+                patch.patch_page(method(patch.PAGE, '    .locals 38\n' + boundary))
 
 
 if __name__ == '__main__':

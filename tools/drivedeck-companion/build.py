@@ -15,7 +15,7 @@ if work == base:
     p.error('--work must be a separate build-output directory')
 work.mkdir(exist_ok=True, parents=True)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-assert sha(a.original)=='0e6b873e21a62856bd2b7bf3d685e5f92579da00befede24f19230f12070fa1d','Unexpected original APK'
+assert sha(a.original)=='bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','Unexpected original APK'
 tool=a.apktool
 assert sha(tool)=='dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423','Unexpected Apktool'
 java=a.jdk/'bin/java';javac=a.jdk/'bin/javac';bt=a.sdk/'build-tools/36.0.0';android=a.sdk/'platforms/android-37.0/android.jar'
@@ -40,21 +40,21 @@ for test in ('EmbeddedRenderProfileTest','EmbeddedRetryGateTest','EmbeddedSurfac
     run(java,'-cp',profile_tests,'ru.drivedeck.headswap.'+test)
 run(javac,'--release','8','-classpath',android,'-d',classes,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
 run(java,'-cp',bt/'lib/d8.jar','com.android.tools.r8.D8','--lib',android,'--min-api','26','--output',dex,*sorted(classes.rglob('*.class')))
-unsigned=work/'DriveDeck-HeadSwap-0.6.7-unsigned.apk'
+unsigned=work/'DriveDeck-HeadSwap-0.6.8-unsigned.apk'
 run(java,'-jar',tool,'b',decoded,'-p',framework,'-o',unsigned)
 with zipfile.ZipFile(unsigned,'a',compression=zipfile.ZIP_DEFLATED) as z:
     assert 'classes2.dex' not in z.namelist()
     z.write(dex/'classes.dex','classes2.dex')
-aligned=work/'DriveDeck-HeadSwap-0.6.7-aligned.apk'
+aligned=work/'DriveDeck-HeadSwap-0.6.8-aligned.apk'
 run(bt/'zipalign','-f','-p','4',unsigned,aligned)
-final=work/'DriveDeck-HeadSwap-0.6.7.apk'
+final=work/'DriveDeck-HeadSwap-0.6.8-code301.apk'
 run(java,'-jar',bt/'lib/apksigner.jar','sign','--ks',a.keystore,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',final,aligned)
 run(java,'-jar',bt/'lib/apksigner.jar','verify','--verbose','--print-certs',final)
 run(bt/'zipalign','-c','-p','4',final)
 badging=subprocess.check_output([str(bt/'aapt'),'dump','badging',str(final)],text=True)
 (work/'adapted-badging.txt').write_text(badging)
 assert "package: name='ru.drivedeck.headswap'" in badging
-assert "versionCode='263'" in badging
+assert "versionCode='301'" in badging
 manifest=subprocess.check_output([str(bt/'aapt'),'dump','xmltree',str(final),'AndroidManifest.xml'],text=True)
 (work/'adapted-manifest.txt').write_text(manifest)
 for forbidden in ['sharedUserId','android.intent.category.HOME','android.intent.action.BOOT_COMPLETED','VoiceBootReceiver','DiagnosticUploadJob','LauncherAccessibilityService']:
@@ -76,7 +76,7 @@ with zipfile.ZipFile(final) as checked_apk:
         assert literal in helper_dex, 'Missing compiled HeadSwap endpoint: ' + endpoint
 for activity in manifest_root.find('application').findall('activity'):
     assert not activity.findall('intent-filter')
-report=json.loads((work/'patch-report.json').read_text());report.update({'artifact':str(final),'adapted_sha256':sha(final),'apktool_sha256':sha(tool),'build':'PASS','apk_signature_verification':'PASS','zipalign':'PASS','manifest_assertions':'PASS','runtime':'NOT RUN by APK adaptation agent','app_update_policy_tests':'PASS: stock check/download isolation, weather/shared helper preservation, settings boundary validation','original_unchanged':sha(a.original)=='0e6b873e21a62856bd2b7bf3d685e5f92579da00befede24f19230f12070fa1d'})
+report=json.loads((work/'patch-report.json').read_text());report.update({'artifact':str(final),'adapted_sha256':sha(final),'apktool_sha256':sha(tool),'build':'PASS','apk_signature_verification':'PASS','zipalign':'PASS','manifest_assertions':'PASS','runtime':'NOT RUN by APK adaptation agent','app_update_policy_tests':'PASS: stock check/download isolation, weather/shared helper preservation, settings boundary validation','original_unchanged':sha(a.original)=='bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4'})
 report.update({'headswap_compatibility':'Extended FullHD and DPI require capability bit 3; older protocol-1 gateways retain supported geometry or report explicit limits; bit 0 enables Navigator rendering normalized to parent display DPI with bounded buffer dimensions',
                'navigator_render_profile':{'package':'ru.yandex.yandexnavi','reference_scale':2,'reference_parent_dpi':160,'scale_formula':'320 / actual parent display DPI, bounded by child dimensions','max_width':3840,'max_height':2160,'max_density':1280,
                                            'parent_video':'selected bounded native geometry, 640..1920 x 480..1080, DPI 96..640; independent of child supersampling','touch':'existing v7 float render/view transform, no second scale'},

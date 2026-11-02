@@ -1,11 +1,8 @@
 package com.headswap.desk.desktop
 
 import android.app.Activity
-import android.app.ActivityManager
-import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
@@ -16,23 +13,38 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.widget.FrameLayout
+import android.widget.ListView
+import android.widget.ImageButton
 import android.widget.BaseAdapter
 import android.widget.GridView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.TextView
 import com.headswap.desk.AppLog
+import com.headswap.desk.R
 import com.headswap.desk.dex.DexState
+import com.headswap.desk.embed.EmbeddedSessionRegistry
 import java.util.concurrent.Executors
 
 /** Own launcher for the session's second display. It never becomes the phone's HOME app. */
 class AndroidDesktopActivity : Activity() {
     private lateinit var grid: GridView
     private lateinit var status: TextView
+    private lateinit var layout: LinearLayout
+    private lateinit var menu: LinearLayout
+    private lateinit var pane: DesktopAppPane
+    private lateinit var rail: ListView
+    private lateinit var railDrag: DesktopRailDrag
+    private var pinMenu: PopupMenu? = null
+    private val pins by lazy { DesktopPins(this) }
+    private var pinnedEntries: List<DesktopAppCatalog.Entry> = emptyList()
     private val main = Handler(Looper.getMainLooper())
     private val loader = Executors.newSingleThreadExecutor { task ->
         Thread(task, "headswap-app-catalog").apply { isDaemon = true }
@@ -43,6 +55,7 @@ class AndroidDesktopActivity : Activity() {
     private var visible = false
     private var ownershipDeadline = 0L
     private val adapter = AppsAdapter()
+    private val railAdapter = RailAdapter()
 
     private data class LoadedApps(val entries: List<DesktopAppCatalog.Entry>, val icons: Map<String, Drawable>)
 
@@ -50,7 +63,7 @@ class AndroidDesktopActivity : Activity() {
         override fun run() {
             if (!visible || isDestroyed) return
             when {
-                ownsDisplay() -> loadApps()
+                ownsDisplay() -> { layout.visibility = View.VISIBLE; loadApps() }
                 currentDisplayId() <= 0 || SystemClock.elapsedRealtime() >= ownershipDeadline -> finish()
                 else -> main.postDelayed(this, 100)
             }
@@ -72,7 +85,7 @@ class AndroidDesktopActivity : Activity() {
         if (currentDisplayId() <= 0) { finish(); return }
         visible = true
         if (!ownsDisplay()) {
-            grid.visibility = View.INVISIBLE
+            layout.visibility = View.INVISIBLE
             status.text = "Подключение рабочего стола…"
         }
         window.insetsController?.apply {
@@ -86,6 +99,8 @@ class AndroidDesktopActivity : Activity() {
 
     override fun onPause() {
         visible = false
+        if (::railDrag.isInitialized) railDrag.cancel()
+        pinMenu?.dismiss()
         main.removeCallbacks(awaitOwnership)
         super.onPause()
     }
@@ -96,23 +111,80 @@ class AndroidDesktopActivity : Activity() {
         super.onDestroy()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (::pane.isInitialized && ownsDisplay()) pane.home()
+    }
+
     @Deprecated("The desktop remains open until its CarLife session ends")
     override fun onBackPressed() {
-        // Back inside the launcher must not close it and leave the video surface empty.
-        if (::grid.isInitialized) grid.smoothScrollToPosition(0)
+        if (::pane.isInitialized && ownsDisplay()) pane.back()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (::railDrag.isInitialized && railDrag.handle(event) { super.dispatchTouchEvent(it) }) return true
+        return super.dispatchTouchEvent(event)
     }
 
     private fun buildView() {
         window.setDecorFitsSystemWindows(false)
+        layout = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutDirection = View.LAYOUT_DIRECTION_LTR // The rail stays on the physical left in every locale.
+            visibility = View.INVISIBLE
+            setBackgroundColor(Color.BLACK)
+        }
+        layout.setOnApplyWindowInsetsListener { view, insets ->
+            val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+            insets
+        }
+        val displayWidth = resources.displayMetrics.widthPixels
+        val displayHeight = resources.displayMetrics.heightPixels
+        val railWidth = dp(72).coerceAtMost(displayWidth / 5)
+        val buttonHeight = dp(60).coerceAtMost(displayHeight / 4)
+        val sidebar = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.rgb(23, 30, 39))
+        }
+        rail = ListView(this).apply {
+            adapter = railAdapter
+            divider = null
+            setSelector(android.R.color.transparent)
+            contentDescription = "Панель приложений"
+            setOnItemClickListener { _, _, position, _ -> pinnedEntries.getOrNull(position)?.let(::launchApp) }
+            setOnItemLongClickListener { _, row, position, _ ->
+                pinnedEntries.getOrNull(position)?.let { showPinMenu(row, it) }
+                true
+            }
+        }
+        railDrag = DesktopRailDrag(layout, rail, ::dropOnRail, ::showPinMenu)
+        sidebar.addView(rail, LinearLayout.LayoutParams(-1, 0, 1f))
+        sidebar.addView(navButton("Назад", com.headswap.desk.R.drawable.desktop_back) {
+            if (ownsDisplay()) pane.back()
+        }, LinearLayout.LayoutParams(-1, buttonHeight))
+        sidebar.addView(navButton("Домой", com.headswap.desk.R.drawable.desktop_home) {
+            if (ownsDisplay()) pane.home()
+        }, LinearLayout.LayoutParams(-1, buttonHeight))
+        layout.addView(sidebar, LinearLayout.LayoutParams(railWidth, -1))
+        val workspace = FrameLayout(this)
+        layout.addView(workspace, LinearLayout.LayoutParams(0, -1, 1f))
+        pane = DesktopAppPane(this, onOpened = { menu.visibility = View.GONE }, onHome = {
+            menu.visibility = View.VISIBLE
+            status.setTextColor(Color.rgb(180, 190, 203))
+            status.text = when {
+                entries.isNotEmpty() -> CATALOG_HINT
+                loading -> "Загружаю приложения…"
+                else -> "Приложения не найдены"
+            }
+            grid.smoothScrollToPosition(0)
+        }, onError = ::showError)
+        // Keep the app display alive behind the opaque catalog, preserving tasks across Home.
+        workspace.addView(pane.view, FrameLayout.LayoutParams(-1, -1))
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
             setPadding(dp(24), dp(18), dp(24), dp(12))
-        }
-        body.setOnApplyWindowInsetsListener { view, insets ->
-            val safe = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
-            view.setPadding(dp(24) + safe.left, dp(18) + safe.top, dp(24) + safe.right, dp(12) + safe.bottom)
-            insets
         }
         body.addView(TextView(this).apply {
             text = "Android Desktop"
@@ -140,21 +212,37 @@ class AndroidDesktopActivity : Activity() {
             setSelector(android.R.color.transparent)
             adapter = this@AndroidDesktopActivity.adapter
             setOnItemClickListener { _, _, position, _ -> entries.getOrNull(position)?.let(::launchApp) }
+            setOnItemLongClickListener { _, card, position, _ ->
+                val entry = entries.getOrNull(position)
+                if (entry != null && ownsDisplay()) {
+                    val icon = icons[entry.key] ?: packageManager.defaultActivityIcon
+                    railDrag.begin(card, entry, icon)
+                }
+                true
+            }
         }
         body.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        body.addView(TextView(this).apply {
-            text = "«Домой» — список приложений"
-            textSize = 13f
-            setTextColor(Color.rgb(150, 161, 177))
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(160), dp(8), dp(8), 0)
-        }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56)))
-        setContentView(body)
+        menu = body
+        workspace.addView(menu, FrameLayout.LayoutParams(-1, -1))
+        setContentView(layout)
+    }
+
+    private fun navButton(label: String, icon: Int, action: () -> Unit) = ImageButton(this).apply {
+        setImageResource(icon)
+        contentDescription = label
+        val background = android.util.TypedValue()
+        theme.resolveAttribute(android.R.attr.selectableItemBackground, background, true)
+        setBackgroundResource(background.resourceId)
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        val inset = minOf(dp(16), resources.displayMetrics.heightPixels / 18, resources.displayMetrics.widthPixels / 24)
+        setPadding(inset, inset, inset, inset)
+        setOnClickListener { action() }
     }
 
     private fun loadApps() {
         if (loading || !ownsDisplay()) return
         loading = true
+        if (entries.isEmpty()) status.text = "Загружаю приложения…"
         loader.execute {
             val result = runCatching {
                 val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
@@ -165,7 +253,9 @@ class AndroidDesktopActivity : Activity() {
                         enabled = activity.enabled && activity.applicationInfo.enabled, exported = activity.exported)
                 }
                 val selected = DesktopAppCatalog.select(candidates, packageName)
-                // Package icon loading may involve another process. Keep it off the UI thread.
+                // OEM and Google app icons can be slow on a cold boot. The launcher is usable
+                // as soon as its entries are known, while the worker fetches the actual icons.
+                main.post { if (!isDestroyed && visible && ownsDisplay()) showEntries(selected) }
                 LoadedApps(selected, selected.associate { entry ->
                     entry.key to runCatching {
                         packageManager.getActivityIcon(ComponentName(entry.packageName, entry.className))
@@ -176,12 +266,9 @@ class AndroidDesktopActivity : Activity() {
                 loading = false
                 if (isDestroyed || !visible || !ownsDisplay()) return@post
                 result.fold(onSuccess = {
-                    entries = it.entries
                     icons = it.icons
-                    adapter.notifyDataSetChanged()
-                    grid.visibility = View.VISIBLE
-                    status.text = if (entries.isEmpty()) "Приложения не найдены" else "Выберите приложение"
-                    status.setTextColor(Color.rgb(180, 190, 203))
+                    if (entries != it.entries) showEntries(it.entries)
+                    updateVisibleIcons()
                 }, onFailure = {
                     showError("Не удалось получить список приложений. Вернитесь на рабочий стол ещё раз.")
                     AppLog.i("Android Desktop catalog: ${it.javaClass.simpleName}", false)
@@ -190,35 +277,85 @@ class AndroidDesktopActivity : Activity() {
         }
     }
 
+    private fun showEntries(selected: List<DesktopAppCatalog.Entry>) {
+        val changed = entries != selected
+        entries = selected
+        if (changed) adapter.notifyDataSetChanged()
+        refreshPins()
+        grid.visibility = View.VISIBLE
+        if (status.text == "Загружаю приложения…" || status.text == "Подключение рабочего стола…") {
+            status.text = if (entries.isEmpty()) "Приложения не найдены" else CATALOG_HINT
+            status.setTextColor(Color.rgb(180, 190, 203))
+        }
+    }
+
+    private fun refreshPins() {
+        val selected = pins.entries(entries)
+        if (pinnedEntries != selected) {
+            pinnedEntries = selected
+            railAdapter.notifyDataSetChanged()
+        }
+    }
+
+    // A ListView/GridView adapter refresh cancels a long press already in progress.
+    // When only icons arrive, leave rows and their touch targets in place.
+    private fun updateVisibleIcons() {
+        for (i in 0 until rail.childCount) {
+            val entry = pinnedEntries.getOrNull(rail.firstVisiblePosition + i) ?: continue
+            (rail.getChildAt(i) as? ImageView)?.let { setAppIcon(it, entry) }
+        }
+        for (i in 0 until grid.childCount) {
+            val entry = entries.getOrNull(grid.firstVisiblePosition + i) ?: continue
+            val card = grid.getChildAt(i) as? LinearLayout ?: continue
+            (card.getChildAt(0) as? ImageView)?.let { setAppIcon(it, entry) }
+        }
+    }
+
+    private fun setAppIcon(view: ImageView, entry: DesktopAppCatalog.Entry) {
+        val image = icons[entry.key] ?: packageManager.defaultActivityIcon
+        view.setImageDrawable(image.constantState?.newDrawable(resources) ?: image)
+    }
+
+    private fun dropOnRail(entry: DesktopAppCatalog.Entry, insertion: Int) {
+        if (!ownsDisplay()) return
+        val oldIndex = pinnedEntries.indexOfFirst { it.key == entry.key }
+        val index = if (oldIndex in 0 until insertion) insertion - 1 else insertion
+        if (pins.pin(entries, entry.key, index)) refreshPins()
+    }
+
+    private fun showPinMenu(anchor: View, entry: DesktopAppCatalog.Entry) {
+        if (!ownsDisplay() || !anchor.isAttachedToWindow) return
+        pinMenu?.dismiss()
+        val pinned = pinnedEntries.any { it.key == entry.key }
+        val popup = PopupMenu(this, anchor)
+        popup.setForceShowIcon(true)
+        popup.menu.add(if (pinned) "Убрать с панели" else "Закрепить на панели").setIcon(
+            if (pinned) R.drawable.desktop_unpin else R.drawable.desktop_pin)
+        popup.setOnMenuItemClickListener {
+            if (ownsDisplay()) {
+                if (pinned) pins.remove(entries, entry.key) else pins.pin(entries, entry.key)
+                refreshPins()
+            }
+            true
+        }
+        popup.setOnDismissListener { if (pinMenu === popup) pinMenu = null }
+        pinMenu = popup
+        popup.show()
+    }
+
     private fun launchApp(entry: DesktopAppCatalog.Entry) {
         if (!ownsDisplay()) {
             showError("Подключение рабочего стола ещё не готово или уже завершено")
             return
         }
-        val targetDisplay = currentDisplayId()
-        try {
-            check(packageManager.hasSystemFeature(PackageManager.FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS)) {
-                "Secondary-display activities are not supported"
-            }
-            val component = ComponentName(entry.packageName, entry.className)
-            val info = packageManager.getActivityInfo(component, 0)
-            check(info.enabled && info.applicationInfo.enabled && info.exported) { "Activity unavailable" }
-            val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-                .setComponent(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-            check(getSystemService(ActivityManager::class.java).isActivityStartAllowedOnDisplay(this, targetDisplay, intent)) {
-                "Display launch denied"
-            }
-            // No fallback without launchDisplayId: a refused second-display launch must not open on the phone.
-            check(ownsDisplay()) { "Display retired" }
-            startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(targetDisplay).toBundle())
-        } catch (error: Exception) {
-            showError("«${entry.label}» не удалось открыть на рабочем столе. Выберите другое приложение.")
-            AppLog.i("Android Desktop launch rejected: ${error.javaClass.simpleName}", false)
-        }
+        status.text = "Открывается ${entry.label}…"
+        status.setTextColor(Color.rgb(180, 190, 203))
+        pane.open(entry)
     }
 
     private fun currentDisplayId(): Int = display?.displayId ?: -1
-    private fun ownsDisplay(): Boolean = DesktopAppCatalog.ownsDisplay(currentDisplayId(), DexState.displayId)
+    private fun ownsDisplay(): Boolean = DesktopAppCatalog.ownsDisplay(currentDisplayId(), DexState.displayId) &&
+        EmbeddedSessionRegistry.isAndroidDesktop(currentDisplayId())
 
     private fun showError(message: String) {
         status.text = message
@@ -226,6 +363,26 @@ class AndroidDesktopActivity : Activity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density + 0.5f).toInt()
+
+    private inner class RailAdapter : BaseAdapter() {
+        override fun getCount(): Int = pinnedEntries.size
+        override fun getItem(position: Int): DesktopAppCatalog.Entry = pinnedEntries[position]
+        override fun getItemId(position: Int): Long = position.toLong()
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val icon = (convertView as? ImageView) ?: ImageView(this@AndroidDesktopActivity).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                val height = minOf(dp(62), resources.displayMetrics.heightPixels / 4)
+                val inset = minOf(dp(12), height / 5)
+                setPadding(inset, inset, inset, inset)
+                layoutParams = android.widget.AbsListView.LayoutParams(-1, height)
+            }
+            val entry = getItem(position)
+            setAppIcon(icon, entry)
+            icon.contentDescription = entry.label
+            // The ListView handles taps and scrolls; a tooltip would consume the row touch.
+            return icon
+        }
+    }
 
     private inner class AppsAdapter : BaseAdapter() {
         override fun getCount(): Int = entries.size
@@ -260,11 +417,14 @@ class AndroidDesktopActivity : Activity() {
                 descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
             }
             val entry = getItem(position)
-            val icon = icons[entry.key] ?: packageManager.defaultActivityIcon
-            (card.getChildAt(0) as ImageView).setImageDrawable(icon.constantState?.newDrawable(resources) ?: icon)
+            setAppIcon(card.getChildAt(0) as ImageView, entry)
             (card.getChildAt(1) as TextView).text = entry.label
             card.contentDescription = entry.label
             return card
         }
+    }
+
+    private companion object {
+        const val CATALOG_HINT = "Удерживайте приложение и перетащите его на панель слева"
     }
 }

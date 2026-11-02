@@ -13,9 +13,6 @@ import com.headswap.desk.AppLog
 import com.headswap.desk.BuildConfig
 import com.headswap.desk.R
 import com.headswap.desk.ui.UiText
-import org.json.JSONArray
-import java.net.HttpURLConnection
-import java.net.URL
 
 class UpdatePrefs(ctx: Context) {
     // Never migrate the old "update" store: its versions, URLs and dismissals belong to upstream AA.
@@ -94,25 +91,8 @@ object Updater {
     private fun latest(): UpdateLogic.Release? {
         // /releases/latest omits prereleases. Follow pagination using only the fixed repository host.
         var best: UpdateLogic.Release? = null
-        var page = 1
-        while (true) {
-            val conn = URL("${UpdateLogic.API_RELEASES}?per_page=100&page=$page").openConnection() as HttpURLConnection
-            try {
-                conn.instanceFollowRedirects = false
-                conn.connectTimeout = 15_000
-                conn.readTimeout = 30_000
-                conn.setRequestProperty("User-Agent", "HeadSwap-Desktop/${BuildConfig.VERSION_NAME}")
-                conn.setRequestProperty("Accept", "application/vnd.github+json")
-                val status = conn.responseCode
-                check(status == 200) { "GitHub HTTP $status" }
-                val releases = JSONArray(conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() })
-                best = UpdateLogic.newestInPage(releases, best)
-                if (conn.getHeaderField("Link")?.contains("rel=\"next\"") != true) return best
-                page++
-            } finally {
-                conn.disconnect()
-            }
-        }
+        ReleaseFeed.pages { best = UpdateLogic.newestInPage(it, best) }
+        return best
     }
 
     /** The browser downloads only this exact release asset; Android handles installation and signature checks. */

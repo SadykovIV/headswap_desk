@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
-    private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService)
+    private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService, val mode: Int)
     private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder) {
         lateinit var death: IBinder.DeathRecipient
         @Volatile var linked = false
@@ -31,10 +31,14 @@ internal object EmbeddedSessionRegistry {
         Thread(r, "headswap-embedded-cleanup").apply { isDaemon = true }
     }
 
-    fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService) = synchronized(lock) {
+    fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int) = synchronized(lock) {
         require(displayId > 0)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls)
+        parent = Parent(owner, remote, displayId, calls, mode)
+    }
+
+    fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
+        id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
     }
 
     /** Reject new operations immediately; retained leases can still acknowledge producer release. */
@@ -52,12 +56,12 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun create(uid: Int, surface: Surface, token: IBinder, requestedParent: Int,
-        width: Int, height: Int, density: Int): Int {
+        width: Int, height: Int, density: Int, ownDesktop: Boolean = false): Int {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         require(surface.isValid && token.isBinderAlive) { "Поверхность встроенного приложения недоступна" }
         val lease = synchronized(lock) {
             val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
-            EmbeddedGatewayPolicy.requireParent(DesktopModePolicy.DRIVEDECK, requestedParent, active.displayId)
+            EmbeddedGatewayPolicy.requireParent(active.mode, requestedParent, active.displayId, ownDesktop)
             check(active.remote.asBinder().isBinderAlive) { "Служба рабочего стола завершилась" }
             EmbeddedGatewayPolicy.requireCanAllocate(leases.size)
             require(leases.values.none { it.token == token }) { "Токен поверхности уже используется" }
@@ -130,6 +134,12 @@ internal object EmbeddedSessionRegistry {
         if (lease.uid != uid) throw SecurityException("Чужое встроенное окно")
         close(lease)
     }
+    /** Also acknowledges a partially created producer whose original create() reply was lost. */
+    fun releaseOwnSurface(uid: Int, token: IBinder) {
+        val lease = synchronized(lock) { leases.values.firstOrNull { it.uid == uid && it.token == token } } ?: return
+        close(lease)
+    }
+
     private fun close(lease: Lease) {
         var leader = false
         val done = synchronized(lock) {

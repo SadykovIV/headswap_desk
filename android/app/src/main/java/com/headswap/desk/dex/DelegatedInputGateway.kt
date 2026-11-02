@@ -124,10 +124,12 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     }
 
     @Suppress("DEPRECATION")
-    @Synchronized override fun childTaskState(displayId: Int, token: IBinder, packageName: String): Int {
-        requireActive()
-        check(registry.requireDisplay(displayId, token).parent != null) { "Ожидался экран виджета" }
-        requireTrustedDisplay(displayId)
+    override fun childTaskState(displayId: Int, token: IBinder, packageName: String): Int {
+        val owned = synchronized(this) {
+            requireActive()
+            requireTrustedDisplay(displayId)
+            registry.requireDisplay(displayId, token).also { check(it.parent != null) { "Ожидался экран виджета" } }
+        }
         EmbeddedDisplayPolicy.requirePackage(packageName)
         val tasks = runCatching {
             context.getSystemService(ActivityManager::class.java).getRunningTasks(100).map {
@@ -136,8 +138,12 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
                     it.baseActivity?.packageName, it.topActivity?.packageName)
             }
         }.getOrNull()
-        return DelegatedDesktopPolicy.taskState(displayId, context.applicationInfo.uid / 100000, packageName,
-            DelegatedDesktopAccess.hasPermissions(context), tasks)
+        return synchronized(this) {
+            requireActive()
+            check(registry.requireDisplay(displayId, token) === owned) { "Экран виджета изменился" }
+            DelegatedDesktopPolicy.taskState(displayId, context.applicationInfo.uid / 100000, packageName,
+                DelegatedDesktopAccess.hasPermissions(context), tasks)
+        }
     }
 
     internal fun setLocalPanelOff(generation: Long, off: Boolean) {

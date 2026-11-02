@@ -10,14 +10,15 @@ class EmbeddedDisplayPolicyTest {
         catch (_: IllegalStateException) { }
     }
 
-    @Test fun onlyLiveDriveDeckParentCanHostBoundedChildren() {
+    @Test fun onlyOwnedDesktopParentsCanHostBoundedChildren() {
         EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.DRIVEDECK, 24)
         EmbeddedDisplayPolicy.requireCapacity(0)
         EmbeddedDisplayPolicy.requireCapacity(1)
         rejects { EmbeddedDisplayPolicy.requireCapacity(2) }
         rejects { EmbeddedDisplayPolicy.requireCapacity(-1) }
         rejects { EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.DRIVEDECK, 0) }
-        rejects { EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.ANDROID_DESKTOP, 24) }
+        EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.ANDROID_DESKTOP, 24)
+        rejects { EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.ANDROID_DESKTOP, 0) }
         rejects { EmbeddedDisplayPolicy.requireParent(DesktopModePolicy.SAMSUNG_DEX, 24) }
     }
 
@@ -88,6 +89,8 @@ class EmbeddedDisplayPolicyTest {
         assertEquals(listOf("/system/bin/am", "start", "--user", "10", "--display", "25", "--windowingMode", "1",
             "-f", "0x34000000", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER",
             "-n", "com.example.navigator/.MainActivity"), command)
+        val desktop = EmbeddedDisplayPolicy.launchCommand(25, 24, 10, "com.example.navigator", ".MainActivity", desktopPane = true)
+        assertEquals("0x10200000", desktop[desktop.indexOf("-f") + 1])
         for (id in listOf(-1, 0, 24)) rejects {
             EmbeddedDisplayPolicy.launchCommand(id, 24, 10, "com.example.navigator", ".MainActivity")
         }

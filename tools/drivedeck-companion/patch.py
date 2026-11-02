@@ -20,10 +20,10 @@ void='    .locals 0\n    return-void'
 false='    .locals 1\n    const/4 v0, 0x0\n    return v0'
 main='smali/ru/drivedeck/launcher/MainActivity.smali'
 # Completely remove home-role requests, global theme sync, and global-permission setup.
-for sig in ['public final X()V','public final n0()V','public final k0()V','public final Q(I)V']:
+for sig in ['public final f0()V','public final z0()V','public final u0()V','public final X(I)V']:
     method(main,sig,void)
 # Display routing must not pretend the APK has system UID.
-method('smali/c/j8.1.smali','public static w(Landroid/content/Context;Ljava/lang/String;ILc/v7;ZZ)Z', '\n'.join([
+method('smali/c/R8.smali','public static w(Landroid/content/Context;Ljava/lang/String;ILc/Y7;ZZ)Z', '\n'.join([
     '    .locals 1',
     '    if-eqz p3, :headswap_parent_launch',
     '    invoke-static {p2, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->launch(ILjava/lang/String;)Z',
@@ -34,70 +34,70 @@ method('smali/c/j8.1.smali','public static w(Landroid/content/Context;Ljava/lang
     '    move-result v0', '    return v0',
     '    :headswap_rejected_launch', '    const/4 v0, 0x0', '    return v0']))
 for name,top in [('R',0),('p',1)]:
-    method('smali/c/j8.1.smali',f'public static {name}(Landroid/content/Context;Ljava/lang/String;I)I',f"    .locals 1\n    const/4 v0, 0x{top}\n    invoke-static {{p2, p1, v0}}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->taskState(ILjava/lang/String;Z)I\n    move-result v0\n    return v0")
-method('smali/c/j8.1.smali','public static s(ILandroid/view/InputEvent;)Z', '    .locals 1\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->input(ILandroid/view/InputEvent;)Z\n    move-result v0\n    return v0')
-method('smali/c/j8.1.smali','public static l(I)V',void)
-method('smali/c/j8.1.smali','public static K(ILandroid/view/MotionEvent;)V', '    .locals 0\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->input(ILandroid/view/InputEvent;)Z\n    return-void')
+    method('smali/c/R8.smali',f'public static {name}(Landroid/content/Context;Ljava/lang/String;I)I',f"    .locals 1\n    const/4 v0, 0x{top}\n    invoke-static {{p2, p1, v0}}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->taskState(ILjava/lang/String;Z)I\n    move-result v0\n    return v0")
+method('smali/c/R8.smali','public static s(ILandroid/view/InputEvent;)Z', '    .locals 1\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->input(ILandroid/view/InputEvent;)Z\n    move-result v0\n    return v0')
+method('smali/c/R8.smali','public static l(I)V',void)
+method('smali/c/R8.smali','public static K(ILandroid/view/MotionEvent;)V', '    .locals 0\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->input(ILandroid/view/InputEvent;)Z\n    return-void')
 
 # No root probes or root command execution in this ordinary-UID companion.
-method('smali/c/j8.1.smali','public static C([Ljava/lang/String;)Z', false)
-method('smali/c/j8.1.smali','public static e(Ljava/lang/String;)V', void)
-method('smali/c/j8.1.smali','public static j()V', void)
+method('smali/c/R8.smali','public static C([Ljava/lang/String;)Z', false)
+method('smali/c/R8.smali','public static e(Ljava/lang/String;)V', void)
+method('smali/c/R8.smali','public static j()V', void)
 # Fullscreen dashboard mode only; embedded split windows need original system privileges.
 # No fallback navigator or renderer-created virtual display in dashboard mode.
-method('smali/c/Q3.smali','public final z()Ljava/lang/String;', '    .locals 1\n    iget-object v0, p0, Lc/Q3;->F:Lc/n1;\n    invoke-virtual {v0}, Lc/n1;->p()Ljava/lang/String;\n    move-result-object v0\n    return-object v0')
-renderer='smali/c/v7.1.smali'
+method('smali/c/f4.1.smali','public final A()Ljava/lang/String;', '    .locals 1\n    iget-object v0, p0, Lc/f4;->F:Lc/T4;\n    invoke-virtual {v0}, Lc/T4;->r()Ljava/lang/String;\n    move-result-object v0\n    return-object v0')
+renderer='smali/c/Y7.smali'
 method(renderer,'public final c(Landroid/graphics/SurfaceTexture;II)V', '    .locals 0\n    invoke-static {p0, p1, p2, p3}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->attach(Landroid/view/View;Landroid/graphics/SurfaceTexture;II)V\n    return-void')
-method(renderer,'public final f()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->handle(Landroid/view/View;)I\n    move-result v0\n    return v0')
-method(renderer,'public final e()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->density(Landroid/view/View;)I\n    move-result v0\n    return v0')
-for name in ['u','o']:
+method(renderer,'public final g()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->handle(Landroid/view/View;)I\n    move-result v0\n    return v0')
+method(renderer,'public final f()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->density(Landroid/view/View;)I\n    move-result v0\n    return v0')
+for name in ['v','p']:
     method(renderer,f'public final {name}(II)V', '    .locals 0\n    invoke-static {p0, p1, p2}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->resize(Landroid/view/View;II)V\n    return-void')
-method(renderer,'public final v(I)V', '    .locals 0\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->scale(Landroid/view/View;I)V\n    return-void')
-method(renderer,'public final s()V', '    .locals 1\n    const/4 v0, 0x0\n    invoke-static {p0, v0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->close(Landroid/view/View;Z)V\n    return-void')
+method(renderer,'public final w(I)V', '    .locals 0\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->scale(Landroid/view/View;I)V\n    return-void')
+method(renderer,'public final t()V', '    .locals 1\n    const/4 v0, 0x0\n    invoke-static {p0, v0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->close(Landroid/view/View;Z)V\n    return-void')
 method(renderer,'public final onSurfaceTextureDestroyed(Landroid/graphics/SurfaceTexture;)Z', '    .locals 1\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->destroyed(Landroid/view/View;Landroid/graphics/SurfaceTexture;)Z\n    move-result v0\n    return v0')
 # Close child producers before an invisible page is replaced by another pair.
 def hide_panes(s):
-    pat=r'(\.method public final c0\(Z\)V\n    \.locals \d+\n)'
+    pat=r'(\.method public final e0\(Z\)V\n    \.locals \d+\n)'
     s,n=re.subn(pat,lambda m:m.group(1)+'    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->hidePane(Ljava/lang/Object;Z)V\n',s);assert n==1
-    pat=r'(\.method public final h0\(Lc/v7;ZJLc/q2;\)V\n    \.locals \d+\n)'
+    pat=r'(\.method public final j0\(Lc/Y7;ZJLc/E2;\)V\n    \.locals \d+\n)'
     add='    if-nez p2, :headswap_presentation_visible\n    if-eqz p1, :headswap_presentation_visible\n    invoke-static/range {p1 .. p2}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->close(Landroid/view/View;Z)V\n    :headswap_presentation_visible\n'
     s,n=re.subn(pat,lambda m:m.group(1)+add,s);assert n==1
     return s
-edit('smali/c/t2.1.smali',hide_panes)
-method('smali/c/t2.1.smali','public final X(Landroid/view/KeyEvent;)Z', '\n'.join([
+edit('smali/c/H2.smali',hide_panes)
+method('smali/c/H2.smali','public final Z(Landroid/view/KeyEvent;)Z', '\n'.join([
     '    .locals 1',
-    '    invoke-virtual {p0}, Lc/t2;->Y()Z',
+    '    invoke-virtual {p0}, Lc/H2;->a0()Z',
     '    move-result v0',
     '    if-eqz v0, :headswap_key_rejected',
-    '    invoke-virtual {p0}, Lc/t2;->y()I',
+    '    invoke-virtual {p0}, Lc/H2;->y()I',
     '    move-result v0',
     '    invoke-static {v0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->input(ILandroid/view/InputEvent;)Z',
     '    move-result v0', '    return v0',
     '    :headswap_key_rejected', '    const/4 v0, 0x0', '    return v0']))
 
 # Native in-Activity split page replaces the original phone accessibility/overlay route.
-method(main,'public final D()V', '    .locals 0\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->openSplit(Landroid/app/Activity;)V\n    return-void')
+method(main,'public final K()V', '    .locals 0\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->openSplit(Landroid/app/Activity;)V\n    return-void')
 def internal_split_check(s):
-    pat=r'(?ms)(^\.method public final C\(Z\)V\n.*?^\.end method)'
+    pat=r'(?ms)(^\.method public final J\(Z\)V\n.*?^\.end method)'
     def replace(m):
         body=m.group(0);begin=body.index('    invoke-static {p0}, Landroid/provider/Settings;->canDrawOverlays')
         # Keep the existing disabled/missing/busy guards; replace only the permission route.
-        return body[:begin]+'    invoke-virtual {p0}, Lru/drivedeck/launcher/MainActivity;->D()V\n    :goto_1\n    :cond_5\n    return-void\n.end method'
+        return body[:begin]+'    invoke-virtual {p0}, Lru/drivedeck/launcher/MainActivity;->K()V\n    :goto_1\n    :cond_5\n    return-void\n.end method'
     out,n=re.subn(pat,replace,s);assert n==1;return out
 edit(main,internal_split_check)
 # Startup capability is this secondary-display backend, never a fake system UID/root grant.
 def startup_capability(s):
-    token='    new-instance v1, Lc/G4;'
+    token='    new-instance v1, Lc/m5;'
     assert s.count(token)==1
     return s.replace(token,'    invoke-static {v0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->capability(Landroid/content/Context;)Z\n    move-result p1\n'+token,1)
-edit('smali/c/v4.1.smali',startup_capability)
+edit('smali/c/b5.1.smali',startup_capability)
 
 # Preserve the exact old default only for strict private-preference migration.
 def save_original_default(s):
-    old=re.search(r'(?ms)^\.method public static c\(\)Lc/u0;\n.*?^\.end method',s)
+    old=re.search(r'(?ms)^\.method public static c\(\)Lc/I0;\n.*?^\.end method',s)
     assert old
     return s+'\n'+old.group(0).replace('public static c()', 'public static headSwapOriginalDefault()',1)+'\n'
-edit('smali/c/u0.1.smali',save_original_default)
+edit('smali/c/I0.smali',save_original_default)
 # 30x36 grid: ordinary dashboard widgets occupy the entire usable width.
 # Hidden WINDOW entries must remain present: u0.r() otherwise re-adds a default slot.
 widgets=[
@@ -117,16 +117,16 @@ widgets=[
 layout=['    .locals 10','    new-instance v0, Ljava/util/ArrayList;',
         '    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V']
 for kind,x,y,hidden,columns,rows in widgets:
-    layout += ['    new-instance v1, Lc/r0;',f'    sget-object v2, Lc/s0;->{kind}:Lc/s0;']
+    layout += ['    new-instance v1, Lc/F0;',f'    sget-object v2, Lc/G0;->{kind}:Lc/G0;']
     for register,value in [(3,x),(4,y),(5,int(hidden)),(6,columns),(7,rows),(8,0)]:
         layout.append(f'    const/16 v{register}, 0x{value:x}')
-    layout += ['    invoke-direct/range {v1 .. v8}, Lc/r0;-><init>(Lc/s0;IIZIIZ)V',
+    layout += ['    invoke-direct/range {v1 .. v8}, Lc/F0;-><init>(Lc/G0;IIZIIZ)V',
                '    invoke-virtual {v0, v1}, Ljava/util/ArrayList;->add(Ljava/lang/Object;)Z']
-layout += ['    new-instance v1, Lc/u0;',
-           '    invoke-direct {v1, v0}, Lc/u0;-><init>(Ljava/util/List;)V',
-           '    invoke-static {v1}, Lc/u0;->r(Lc/u0;)Lc/u0;',
+layout += ['    new-instance v1, Lc/I0;',
+           '    invoke-direct {v1, v0}, Lc/I0;-><init>(Ljava/util/List;)V',
+           '    invoke-static {v1}, Lc/I0;->r(Lc/I0;)Lc/I0;',
            '    move-result-object v0','    return-object v0']
-edit('smali/c/u0.1.smali',lambda s:s+'\n.method public static headSwapPreviousDefault()Lc/u0;\n'+'\n'.join(layout)+'\n.end method\n')
+edit('smali/c/I0.smali',lambda s:s+'\n.method public static headSwapPreviousDefault()Lc/I0;\n'+'\n'.join(layout)+'\n.end method\n')
 # Map beside local music widget; only the user's selected app enters the map slot.
 widgets=[('b',0,0,False,7,10),('c',7,0,False,8,10),('g',0,10,False,15,6),
          ('d',0,16,False,15,20),('e',0,0,True,7,18),('f',0,0,True,7,6),
@@ -134,22 +134,22 @@ widgets=[('b',0,0,False,7,10),('c',7,0,False,8,10),('g',0,10,False,15,6),
          ('m',0,0,True,15,36),('k',0,0,True,22,6),('l',0,0,True,7,6)]
 layout=['    .locals 10','    new-instance v0, Ljava/util/ArrayList;', '    invoke-direct {v0}, Ljava/util/ArrayList;-><init>()V']
 for kind,x,y,hidden,columns,rows in widgets:
-    layout += ['    new-instance v1, Lc/r0;',f'    sget-object v2, Lc/s0;->{kind}:Lc/s0;']
+    layout += ['    new-instance v1, Lc/F0;',f'    sget-object v2, Lc/G0;->{kind}:Lc/G0;']
     for register,value in [(3,x),(4,y),(5,int(hidden)),(6,columns),(7,rows),(8,0)]: layout.append(f'    const/16 v{register}, 0x{value:x}')
-    layout += ['    invoke-direct/range {v1 .. v8}, Lc/r0;-><init>(Lc/s0;IIZIIZ)V','    invoke-virtual {v0, v1}, Ljava/util/ArrayList;->add(Ljava/lang/Object;)Z']
-layout += ['    new-instance v1, Lc/u0;','    invoke-direct {v1, v0}, Lc/u0;-><init>(Ljava/util/List;)V','    invoke-static {v1}, Lc/u0;->r(Lc/u0;)Lc/u0;','    move-result-object v0','    return-object v0']
-method('smali/c/u0.1.smali','public static c()Lc/u0;', '\n'.join(layout))
+    layout += ['    invoke-direct/range {v1 .. v8}, Lc/F0;-><init>(Lc/G0;IIZIIZ)V','    invoke-virtual {v0, v1}, Ljava/util/ArrayList;->add(Ljava/lang/Object;)Z']
+layout += ['    new-instance v1, Lc/I0;','    invoke-direct {v1, v0}, Lc/I0;-><init>(Ljava/util/List;)V','    invoke-static {v1}, Lc/I0;->r(Lc/I0;)Lc/I0;','    move-result-object v0','    return-object v0']
+method('smali/c/I0.smali','public static c()Lc/I0;', '\n'.join(layout))
 
 
 # Never install a dimmer on Application's default-display WindowManager.
-method('smali/c/R1.smali','public static b(Landroid/content/Context;)V',void)
-method('smali/c/R1.smali','public a()V',void)
+method('smali/c/f2.1.smali','public static b(Landroid/content/Context;)V',void)
+method('smali/c/f2.1.smali','public a()V',void)
 # Background player virtual displays are not part of this companion.
-method('smali/c/G8.smali','public static Z(Landroid/content/Context;Ljava/lang/String;)V',void)
+method('smali/c/s9.1.smali','public static a0(Landroid/content/Context;Ljava/lang/String;)V',void)
 # Quick settings for radios, airplane mode and physical display cannot affect phone.
 # U values 0..4,6 are device controls; value 5 is explicit user media mute.
 def guard_device_controls(s):
-    pat=r'(\.method public final U\(II\)V\n    \.locals \d+\n)'
+    pat=r'(\.method public final Y\(II\)V\n    \.locals \d+\n)'
     addition='''
     const/4 v0, 0x5
     if-eq p1, v0, :headswap_user_media
@@ -157,34 +157,37 @@ def guard_device_controls(s):
     :headswap_user_media
 '''
     out,n=re.subn(pat,lambda m:m.group(1)+addition,s);assert n==1;return out
-edit('smali/c/P3.smali',guard_device_controls)
+edit('smali/c/e4.1.smali',guard_device_controls)
 # Keep settings locally useful but replace the old "choose default launcher" permission page.
-method('smali/c/k3.1.smali','public final d0()V','''
+method('smali/c/x3.1.smali','public final b0()V','''
     .locals 3
-    invoke-virtual {p0}, Lc/k3;->k()Landroid/widget/LinearLayout;
+    invoke-virtual {p0}, Lc/x3;->k()Landroid/widget/LinearLayout;
     move-result-object v0
     const-string v1, "Режим HeadSwap: этот рабочий стол работает только на дополнительном дисплее. Домашний экран, тема и яркость телефона не меняются. Приложения открываются в выбранной области дополнительного дисплея. Встроенные окна приложений работают через активный доступ HeadSwap. Выбор домашнего экрана отключён."
-    invoke-virtual {p0, v1}, Lc/k3;->i(Ljava/lang/String;)Landroid/widget/TextView;
+    invoke-virtual {p0, v1}, Lc/x3;->i(Ljava/lang/String;)Landroid/widget/TextView;
     move-result-object v1
     invoke-virtual {v0, v1}, Landroid/view/ViewGroup;->addView(Landroid/view/View;)V
-    iget-object v1, p0, Lc/k3;->j:Landroid/widget/LinearLayout;
+    iget-object v1, p0, Lc/x3;->j:Landroid/widget/LinearLayout;
     invoke-virtual {v1, v0}, Landroid/view/ViewGroup;->addView(Landroid/view/View;)V
     return-void
 ''')
 # Disable install registration scheduler; retain local diagnostics initialization.
 def app_scheduler(s):
-    start=s.index('    invoke-static {}, Lc/j8;->u()Z',s.index('.method public final onCreate()V'))
-    end=s.index('    invoke-static {p0}, Lc/T5;->V',start)
+    start=s.index('    invoke-static {}, Lc/R8;->u()Z',s.index('.method public final onCreate()V'))
+    end=s.index('    invoke-static {p0}, Lc/y6;->W',start)
     return s[:start]+s[end:]
 edit('smali/ru/drivedeck/launcher/DriveDeckApplication.smali', app_scheduler)
-method('smali/c/N1.smali','public final E(Z)V',void)
-method('smali/c/N1.smali','public final y()V',void)
+# The 0.6.8 head-unit hotspot feature must not start, stop or schedule tethering on the phone.
+for signature in ('public final d()V', 'public final c(ZLjava/lang/Runnable;ZII)V'):
+    method('smali/c/A4.smali', signature, void)
+method('smali/c/b2.1.smali','public final E(Z)V',void)
+method('smali/c/b2.1.smali','public final y()V',void)
 # Notification PendingIntent is opaque and may choose display 0; use the package fallback.
 def notification_fallback(s):
-    old="    invoke-virtual {v3}, Landroid/app/PendingIntent;->send()V"
+    old="    invoke-virtual {v0}, Landroid/app/PendingIntent;->send()V"
     assert s.count(old)==1
-    return s.replace(old,"    goto :cond_6e")
-edit('smali/c/P3.smali', notification_fallback)
+    return s.replace(old,"    goto :cond_0")
+edit('smali/c/W5.smali', notification_fallback)
 # New app must never initialize its dashboard on display 0.
 def lifecycle(s):
     s=s.replace('# instance fields\n','# instance fields\n.field private headSwapInitialized:Z\n',1)
@@ -194,24 +197,24 @@ def lifecycle(s):
     s=s.replace(token,token+'''
 
     invoke-static {p0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->allowed(Landroid/content/Context;)Z
-    move-result v0
-    if-nez v0, :headswap_display_ready
+    move-result v1
+    if-nez v1, :headswap_display_ready
     invoke-virtual {p0}, Landroid/app/Activity;->finish()V
     return-void
     :headswap_display_ready
     invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->prepare(Landroid/content/Context;)V
-    invoke-static {}, Lc/u0;->headSwapPreviousDefault()Lc/u0;
-    move-result-object v0
-    invoke-static {v0}, Lc/G8;->B(Lc/u0;)Ljava/lang/String;
-    move-result-object v0
-    invoke-static {p0, v0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->migrateDefaultLayout(Landroid/content/Context;Ljava/lang/String;)V
-    invoke-static {}, Lc/u0;->headSwapOriginalDefault()Lc/u0;
-    move-result-object v0
-    invoke-static {v0}, Lc/G8;->B(Lc/u0;)Ljava/lang/String;
-    move-result-object v0
-    invoke-static {p0, v0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->migrateDefaultLayout(Landroid/content/Context;Ljava/lang/String;)V
-    const/4 v0, 0x1
-    iput-boolean v0, p0, Lru/drivedeck/launcher/MainActivity;->headSwapInitialized:Z
+    invoke-static {}, Lc/I0;->headSwapPreviousDefault()Lc/I0;
+    move-result-object v1
+    invoke-static {v1}, Lc/s9;->B(Lc/I0;)Ljava/lang/String;
+    move-result-object v1
+    invoke-static {p0, v1}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->migrateDefaultLayout(Landroid/content/Context;Ljava/lang/String;)V
+    invoke-static {}, Lc/I0;->headSwapOriginalDefault()Lc/I0;
+    move-result-object v1
+    invoke-static {v1}, Lc/s9;->B(Lc/I0;)Ljava/lang/String;
+    move-result-object v1
+    invoke-static {p0, v1}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->migrateDefaultLayout(Landroid/content/Context;Ljava/lang/String;)V
+    const/4 v1, 0x1
+    iput-boolean v1, p0, Lru/drivedeck/launcher/MainActivity;->headSwapInitialized:Z
 ''',1)
     for name in ['onDestroy','onPause','onResume','onStop']:
         pat=r'(\.method public final '+name+r'\(\)V\n    \.locals \d+\n)'
@@ -282,20 +285,20 @@ for p in (root/'smali').rglob('*.smali'):
     new=re.sub(r'"(ru\.drivedeck\.launcher[^"\n]*)"',own_string,new)
     if new!=old:p.write_text(new);changes.append(str(p.relative_to(root)))
 # Eliminate misleading unconsumed display-0 ActivityOptions block in B4.
-edit('smali/c/B4.smali',lambda s:s.replace('    invoke-virtual {v2, v1}, Landroid/app/ActivityOptions;->setLaunchDisplayId(I)Landroid/app/ActivityOptions;', '    invoke-static {v0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->displayId(Landroid/content/Context;)I\n    move-result v3\n    invoke-virtual {v2, v3}, Landroid/app/ActivityOptions;->setLaunchDisplayId(I)Landroid/app/ActivityOptions;'))
+edit('smali/c/Y4.smali',lambda s:s.replace('    invoke-virtual {v2, v1}, Landroid/app/ActivityOptions;->setLaunchDisplayId(I)Landroid/app/ActivityOptions;', '    invoke-static {v0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->displayId(Landroid/content/Context;)I\n    move-result v3\n    invoke-virtual {v2, v3}, Landroid/app/ActivityOptions;->setLaunchDisplayId(I)Landroid/app/ActivityOptions;'))
 # A separate applicationId/signature prevents replacement by stock APKs. Also
 # remove its checks/download prompts, without touching weather or module data.
 update_files, update_policy = disable_stock_app_updates(root)
 changes.extend(update_files)
 # Manifest: no system UID, HOME, launcher icon/aliases, boot entry or global overlays.
 ET.register_namespace('android','http://schemas.android.com/apk/res/android');a='{http://schemas.android.com/apk/res/android}'
-p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','263')
+p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','301')
 # Apktool's versionInfo overrides manifest attributes during rebuild.
 yml=root/'apktool.yml'
-yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 263', yml.read_text());assert n==1
+yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 301', yml.read_text());assert n==1
 yml.write_text(yml_text);changes.append('apktool.yml')
 for key in ['sharedUserId','sharedUserLabel','sharedUserMaxSdkVersion']:m.attrib.pop(a+key,None)
-remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED'}
+remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED','TETHER_PRIVILEGED','WRITE_SETTINGS','MANAGE_APP_OPS_MODES'}
 for el in list(m):
     if el.tag=='uses-permission' and el.get(a+'name','').removeprefix('android.permission.') in remove_permissions:m.remove(el)
     elif el.tag in ('permission','uses-permission'):
@@ -308,7 +311,7 @@ app=m.find('application');app.set(a+'label','DriveDeck · HeadSwap');app.set(a+'
 for key in ['fullBackupContent','dataExtractionRules']:app.attrib.pop(a+key,None)
 for el in list(app):
     name=el.get(a+'name','')
-    if el.tag in ('activity-alias','receiver') or name.endswith(('.DiagnosticUploadJob','.LauncherAccessibilityService')):
+    if el.tag in ('activity-alias','receiver') or name.endswith(('.DiagnosticUploadJob','.LauncherAccessibilityService','.TechBtBridgeService')):
         app.remove(el);continue
     if el.tag=='activity':
         for filt in el.findall('intent-filter'):el.remove(filt)
@@ -321,5 +324,5 @@ left=[]
 for p in (root/'smali').rglob('*.smali'):
     if re.search(r'->startActivity(?:ForResult)?\(',p.read_text()):left.append(str(p))
 assert not left,left
-(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'0e6b873e21a62856bd2b7bf3d685e5f92579da00befede24f19230f12070fa1d','application_id':'ru.drivedeck.headswap','version_code':263,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
+(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','application_id':'ru.drivedeck.headswap','version_code':301,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
 print('Patched',len(set(changes)),'files;',launches,'activity launches guarded')

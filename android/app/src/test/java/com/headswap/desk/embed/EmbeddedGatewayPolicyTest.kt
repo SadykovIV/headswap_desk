@@ -15,6 +15,15 @@ class EmbeddedGatewayPolicyTest {
         }
     }
 
+    @Test fun headswapPaneCannotBorrowDriveDeckOrPhoneDisplay() {
+        val mode = DesktopModePolicy.ANDROID_DESKTOP
+        EmbeddedGatewayPolicy.requireParent(mode, 12, 12, ownDesktop = true)
+        rejected { EmbeddedGatewayPolicy.requireParent(mode, 0, 0, ownDesktop = true) }
+        rejected { EmbeddedGatewayPolicy.requireParent(mode, 11, 12, ownDesktop = true) }
+        rejected { EmbeddedGatewayPolicy.requireParent(DesktopModePolicy.DRIVEDECK, 12, 12, ownDesktop = true) }
+        rejected { EmbeddedGatewayPolicy.requireParent(DesktopModePolicy.SAMSUNG_DEX, 12, 12, ownDesktop = true) }
+    }
+
     @Test fun usableTileAndBoundarySizesRemainAccepted() {
         EmbeddedGatewayPolicy.requireGeometry(128, 128, 120)
         EmbeddedGatewayPolicy.requireGeometry(1600, 900, 320)

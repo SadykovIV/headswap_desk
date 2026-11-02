@@ -25,6 +25,8 @@ import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
@@ -41,6 +43,8 @@ class DexUserService private constructor(private val context: Context, private v
     private val clientUid = context.applicationInfo.uid
     private val worker = HandlerThread(if (delegated) "headswap-app-display" else "headswap-shell-display").apply { start() }
     private val handler = Handler(worker.looper)
+    private val observations = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2),
+        java.util.concurrent.ThreadFactory { r -> Thread(r, "headswap-task-placement").apply { isDaemon = true } })
     private val generation = AtomicLong()
     private val currentCommand = AtomicReference<java.lang.Process?>()
     // Never return the service Binder to a companion; this token has no callable operations.
@@ -73,7 +77,10 @@ class DexUserService private constructor(private val context: Context, private v
         var launchedPackage: String? = null
         var taskStateAt = 0L
         var taskState = -1
+        var revision = 0L
     }
+
+    private class Placement(val child: ChildSession, val revision: Long, val cached: Int?, val read: (() -> Int)?)
 
     override fun protocolVersion(): Int {
         enforceClient()
@@ -308,15 +315,17 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(START_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
+            val desktopPane = parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP
             val arguments = EmbeddedDisplayPolicy.launchCommand(checkNotNull(child.display).display.displayId,
-                checkNotNull(parent.display).display.displayId, clientUid / 100000, packageName, className)
+                checkNotNull(parent.display).display.displayId, clientUid / 100000, packageName, className, desktopPane)
             // The signature-protected app gateway resolves an enabled/exported MAIN+LAUNCHER
             // activity. This private shell API additionally accepts only an explicit component.
             if (delegated) checkNotNull(runtime).launchChild(checkNotNull(parent.display).display.displayId,
-                checkNotNull(child.display).display.displayId, packageName, className)
+                checkNotNull(child.display).display.displayId, packageName, className, desktopPane)
             else command(parent.epoch, *arguments)
             ensureChildActive(parent, child)
             child.launchedPackage = packageName
+            child.revision++
             child.taskStateAt = 0L
         }
     }
@@ -366,6 +375,7 @@ class DexUserService private constructor(private val context: Context, private v
                 checkNotNull(runtime).inject(KeyEvent(down, SystemClock.uptimeMillis(), action, KeyEvent.KEYCODE_BACK,
                     0, 0, KeyCharacterMap.VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD), id)
             }
+            child.revision++
             child.taskStateAt = 0L
         }
     }
@@ -381,23 +391,31 @@ class DexUserService private constructor(private val context: Context, private v
     override fun childTaskState(childToken: IBinder, packageName: String): Int {
         enforceClient()
         EmbeddedDisplayPolicy.requirePackage(packageName)
-        return serialized(INPUT_TIMEOUT_MS) {
+        val observation = DesktopReadDeadline.call(handler::post, INPUT_TIMEOUT_MS, { null }) {
             val (_, child) = requireChild(childToken)
-            // A fresh slot is empty. Packages not launched into this slot are absent;
-            // do not query unrelated apps or any other display to answer this check.
-            if (child.launchedPackage != packageName) return@serialized 0
-            val now = SystemClock.uptimeMillis()
-            if (child.taskStateAt == 0L || now - child.taskStateAt >= 150) {
-                child.taskState = checkNotNull(runtime).childTaskState(checkNotNull(child.display).display.displayId, packageName)
-                child.taskStateAt = now
+            when {
+                child.launchedPackage != packageName -> Placement(child, child.revision, 0, null)
+                child.taskStateAt != 0L && SystemClock.uptimeMillis() - child.taskStateAt < 150 ->
+                    Placement(child, child.revision, child.taskState, null)
+                else -> Placement(child, child.revision, null, checkNotNull(runtime).childTaskQuery(
+                    checkNotNull(child.display).display.displayId, packageName))
             }
-            child.taskState
+        } ?: return -1
+        observation.cached?.let { return it }
+        // A slow ActivityManager must neither block input nor tear down an otherwise healthy stream.
+        val result = DesktopReadDeadline.call({ observations.execute(it); true }, INPUT_TIMEOUT_MS, { -1 },
+            checkNotNull(observation.read))
+        if (result < 0) return -1
+        return DesktopReadDeadline.call(handler::post, INPUT_TIMEOUT_MS, { -1 }) {
+            val child = session?.children?.get(childToken)
+            if (child !== observation.child || child.revision != observation.revision || child.launchedPackage != packageName) -1
+            else { child.taskState = result; child.taskStateAt = SystemClock.uptimeMillis(); result }
         }
     }
 
     override fun childProducerLifetime(childToken: IBinder): IBinder {
         enforceClient()
-        return serialized(INPUT_TIMEOUT_MS) {
+        return DesktopReadDeadline.call(handler::post, INPUT_TIMEOUT_MS, { error("Служба дисплея занята") }) {
             requireChild(childToken)
             producerLifetime
         }
@@ -474,6 +492,7 @@ class DexUserService private constructor(private val context: Context, private v
         val caller = Binder.getCallingUid()
         check(caller == clientUid || caller == 2000 || caller == 0) { "Неавторизованный вызов UserService" }
         try { stopOwned() } finally {
+            observations.shutdownNow()
             worker.quitSafely()
             // Official Shizuku destroy contract terminates this dedicated UserService process.
             restorePanelBeforeExit()
@@ -486,7 +505,7 @@ class DexUserService private constructor(private val context: Context, private v
         check(delegated) { "Завершение этого режима выполняет Shizuku" }
         DelegatedDesktopPolicy.requireOwner(Process.myUid(), clientUid, Binder.getCallingUid())
         delegatedShutdown.close {
-            try { stopOwned() } finally { worker.quitSafely() }
+            try { stopOwned() } finally { observations.shutdownNow(); worker.quitSafely() }
         }
     }
 
