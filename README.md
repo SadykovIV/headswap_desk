@@ -15,6 +15,16 @@ HeadSwap Desktop выводит приложения Android-телефона н
 
 В настройках можно задать разрешение, масштаб интерфейса и целевую частоту до 60 кадров/с, включить передачу звука по USB или гашение панели телефона во время сеанса. Доступные режимы и частота зависят от кодера телефона, приложений и магнитолы.
 
+## На экране головного устройства
+
+Кадры с тестового приёмника CarLife. На первом снимке виден список приложений Android Desktop 0.2.12. Второй показывает два приложения в DriveDeck во время более раннего USB-сеанса 1 ноября 2026 года.
+
+| Домашний экран Android Desktop | Два приложения в DriveDeck |
+| --- | --- |
+| [![Список приложений на ГУ](docs/screenshots/03-hu-home.png)](docs/screenshots/03-hu-home.png) | [![Тест звука HeadSwap и Яндекс Музыка на ГУ](docs/screenshots/06-hu-drivedeck-two-apps.png)](docs/screenshots/06-hu-drivedeck-two-apps.png) |
+
+[Все скриншоты телефона и ГУ](docs/screenshots)
+
 ## Авторы и происхождение
 
 - **YegorkaPomidorka** — автор HeadSwap. Из этого проекта взяты USB-транспорт и поддержка протокола Baidu CarLife. Основа адаптации — ревизия `77dc69c`. [HeadSwap](https://github.com/YegorkaPomidorka/headswap) · [Профиль автора](https://github.com/YegorkaPomidorka)
