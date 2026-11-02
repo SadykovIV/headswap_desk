@@ -39,8 +39,8 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         }
     }
 
-    @Synchronized fun beginGeneration(generation: Long, token: IBinder) {
-        registry.begin(generation, token)
+    @Synchronized fun beginGeneration(generation: Long, token: IBinder, allowFullscreen: Boolean) {
+        registry.begin(generation, token, allowFullscreen)
         panelParent = null
         liveDisplayIds = emptySet()
         activeGateway.set(this)
@@ -60,9 +60,15 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
-    @Synchronized override fun registerChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int) {
+    override fun registerChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int) =
+        registerChild(parentId, displayId, token, width, height, fullscreen = false)
+
+    override fun registerFullscreenChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int) =
+        registerChild(parentId, displayId, token, width, height, fullscreen = true)
+
+    @Synchronized private fun registerChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {
         requireActive(); requireTrustedDisplay(parentId); requireTrustedDisplay(displayId)
-        registry.registerChild(parentId, displayId, token, width, height)
+        registry.registerChild(parentId, displayId, token, width, height, fullscreen)
         liveDisplayIds = registry.registeredDisplayIds()
     }
 

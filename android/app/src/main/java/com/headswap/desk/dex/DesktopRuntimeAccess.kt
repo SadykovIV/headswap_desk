@@ -14,7 +14,7 @@ internal interface DesktopRuntimeAccess {
     /** Capture backend ownership on the display thread; query Android on a separate worker. */
     fun childTaskQuery(id: Int, packageName: String): () -> Int = { childTaskState(id, packageName) }
     fun registerParentDisplay(id: Int, token: IBinder, width: Int, height: Int) {}
-    fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int) {}
+    fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {}
     fun resizeRegisteredDisplay(id: Int, token: IBinder, width: Int, height: Int) {}
     fun unregisterDisplay(id: Int, token: IBinder) {}
     fun eligible(id: Int): Boolean = false

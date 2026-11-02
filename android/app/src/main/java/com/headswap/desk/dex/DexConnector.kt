@@ -97,11 +97,13 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             ensureActive()
             val scid = SecureRandom().nextInt(Int.MAX_VALUE).toString(16).padStart(8, '0')
             val mode = core.videoMode
+            val density = core.densityOverride
+            DexUserServicePolicy.requireDensity(density)
             require(mode.aaW in 320..4096 && mode.aaH in 240..2160)
             val command = "CLASSPATH=$REMOTE app_process / com.genymobile.scrcpy.Server ${ScrcpyProtocol.VERSION} " +
                 "scid=$scid log_level=info audio=false control=true video=true video_codec=h264 " +
                 "tunnel_forward=true send_device_meta=false send_dummy_byte=false " +
-                "new_display=${mode.aaW}x${mode.aaH}/${prefs.density} " +
+                "new_display=${mode.aaW}x${mode.aaH}/$density " +
                 "video_bit_rate=${DexVideoGeometry.SOURCE_BITRATE} max_fps=30 " +
                 "video_codec_options=i-frame-interval=1,profile=1,max-bframes=0 " +
                 "clipboard_autosync=false power_on=false cleanup=true vd_destroy_content=true"
@@ -134,7 +136,7 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             val reader = ScrcpyProtocol.VideoReader(video.source.inputStream())
             reader.readCodec()
             val geometry = DexVideoGeometry()
-            AppLog.i("DEX geometry sourceBitrate=${DexVideoGeometry.SOURCE_BITRATE} carlifeBitrateCeiling=${mode.bitrate} density=${prefs.density}", ui = false)
+            AppLog.i("DEX geometry sourceBitrate=${DexVideoGeometry.SOURCE_BITRATE} carlifeBitrateCeiling=${mode.bitrate} density=$density", ui = false)
             fun logSourceGeometry(infos: List<SpsCrop.Info>) {
                 for (info in infos) AppLog.i("DEX geometry stage=source-sps display=$displayId coded=${info.codedW}x${info.codedH} visible=${info.visibleW}x${info.visibleH} crop=${info.left},${info.right},${info.top},${info.bottom} native720=true", ui = false)
             }

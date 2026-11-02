@@ -35,10 +35,11 @@ generated.mkdir()
 run(bt/'aidl','-I'+str(base/'aidl'),'-p'+str(android.parent/'framework.aidl'),'-o'+str(generated),base/'aidl/com/headswap/desk/embed/IEmbeddedDisplayGateway.aidl')
 profile_tests=work/'profile-tests'
 profile_tests.mkdir(exist_ok=True)
-run(javac,'--release','8','-d',profile_tests,base/'EmbeddedRenderProfile.java',base/'EmbeddedRetryGate.java',base/'EmbeddedSurfaceRelease.java',base/'EmbeddedTouchPacket.java',base/'EmbeddedResumeGate.java',base/'EmbeddedTextureHandoff.java',*sorted((base/'tests').glob('*.java')))
+shared_policy=base/'shared/com/headswap/desk/shared/DesktopRenderPolicy.java'
+run(javac,'--release','8','-d',profile_tests,shared_policy,base/'EmbeddedRenderProfile.java',base/'EmbeddedRetryGate.java',base/'EmbeddedSurfaceRelease.java',base/'EmbeddedTouchPacket.java',base/'EmbeddedResumeGate.java',base/'EmbeddedTextureHandoff.java',*sorted((base/'tests').glob('*.java')))
 for test in ('EmbeddedRenderProfileTest','EmbeddedRetryGateTest','EmbeddedSurfaceReleaseTest','EmbeddedTouchPacketTest','EmbeddedResumeGateTest','EmbeddedTextureHandoffTest'):
     run(java,'-cp',profile_tests,'ru.drivedeck.headswap.'+test)
-run(javac,'--release','8','-classpath',android,'-d',classes,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
+run(javac,'--release','8','-classpath',android,'-d',classes,shared_policy,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
 run(java,'-cp',bt/'lib/d8.jar','com.android.tools.r8.D8','--lib',android,'--min-api','26','--output',dex,*sorted(classes.rglob('*.class')))
 unsigned=work/'DriveDeck-HeadSwap-0.6.8-unsigned.apk'
 run(java,'-jar',tool,'b',decoded,'-p',framework,'-o',unsigned)
@@ -47,14 +48,14 @@ with zipfile.ZipFile(unsigned,'a',compression=zipfile.ZIP_DEFLATED) as z:
     z.write(dex/'classes.dex','classes2.dex')
 aligned=work/'DriveDeck-HeadSwap-0.6.8-aligned.apk'
 run(bt/'zipalign','-f','-p','4',unsigned,aligned)
-final=work/'DriveDeck-HeadSwap-0.6.8-code301.apk'
+final=work/'DriveDeck-HeadSwap-0.6.8-code302.apk'
 run(java,'-jar',bt/'lib/apksigner.jar','sign','--ks',a.keystore,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',final,aligned)
 run(java,'-jar',bt/'lib/apksigner.jar','verify','--verbose','--print-certs',final)
 run(bt/'zipalign','-c','-p','4',final)
 badging=subprocess.check_output([str(bt/'aapt'),'dump','badging',str(final)],text=True)
 (work/'adapted-badging.txt').write_text(badging)
 assert "package: name='ru.drivedeck.headswap'" in badging
-assert "versionCode='301'" in badging
+assert "versionCode='302'" in badging
 manifest=subprocess.check_output([str(bt/'aapt'),'dump','xmltree',str(final),'AndroidManifest.xml'],text=True)
 (work/'adapted-manifest.txt').write_text(manifest)
 for forbidden in ['sharedUserId','android.intent.category.HOME','android.intent.action.BOOT_COMPLETED','VoiceBootReceiver','DiagnosticUploadJob','LauncherAccessibilityService']:
@@ -77,14 +78,15 @@ with zipfile.ZipFile(final) as checked_apk:
 for activity in manifest_root.find('application').findall('activity'):
     assert not activity.findall('intent-filter')
 report=json.loads((work/'patch-report.json').read_text());report.update({'artifact':str(final),'adapted_sha256':sha(final),'apktool_sha256':sha(tool),'build':'PASS','apk_signature_verification':'PASS','zipalign':'PASS','manifest_assertions':'PASS','runtime':'NOT RUN by APK adaptation agent','app_update_policy_tests':'PASS: stock check/download isolation, weather/shared helper preservation, settings boundary validation','original_unchanged':sha(a.original)=='bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4'})
-report.update({'headswap_compatibility':'Extended FullHD and DPI require capability bit 3; older protocol-1 gateways retain supported geometry or report explicit limits; bit 0 enables Navigator rendering normalized to parent display DPI with bounded buffer dimensions',
-               'navigator_render_profile':{'package':'ru.yandex.yandexnavi','reference_scale':2,'reference_parent_dpi':160,'scale_formula':'320 / actual parent display DPI, bounded by child dimensions','max_width':3840,'max_height':2160,'max_density':1280,
+report.update({'headswap_compatibility':'Host capability bit 4 supplies the current session density and optional compact map mode. Earlier hosts retain code301 geometry including their pane percentage.',
+               'map_render_profile':{'packages':['ru.yandex.yandexnavi','ru.yandex.yandexmaps'],'reference_scale':2,'reference_parent_dpi':160,'scale_formula':'Exact session DPI by default. Optional compact mode uses shared DesktopRenderPolicy.','max_width':3840,'max_height':2160,'max_density':1280,
                                            'parent_video':'selected bounded native geometry, 640..1920 x 480..1080, DPI 96..640; independent of child supersampling','touch':'existing v7 float render/view transform, no second scale'},
                'geometry_policy_tests':'PASS: 160DPI reference, proportional map sizing at 128/200DPI, unchanged Android dp scale, buffer limits, legacy capabilities and explicit rejection','external_gateway_version':1,'capabilities_bit_0':'bounded high-resolution child displays'})
 report.update({'lifecycle_and_touch_tests':'PASS: stale resume/resize generations, retired Texture handoff after exact producer ACK, retry coalescing/backoff, explicit Surface ACK, copied two-pointer packets',
                'capabilities_bit_1':'two-pointer child touch; older gateways retain primary-touch routing',
                'capabilities_bit_2':'empty producer lifetime Binder; its death is producer-release proof',
                'capabilities_bit_3':'FullHD parent layout, DPI 96..640; child buffers at most 3840x2160, DPI up to 1280',
+               'capabilities_bit_4':'desktopRenderConfig(parentDisplayId) provides authoritative logical DPI and compact map selection',
                'resize_retry_delays_ms':[250,1000,3000], 'release_retry_delays_ms':[500,1500,5000],
                'surface_cleanup':'Exact original gateway release ACK or empty producer-lifetime Binder death; gateway death/timeout alone never releases a possibly active consumer'})
 report['source_sha256']={str(source.relative_to(base)):sha(source) for source in sorted(base.rglob('*'))

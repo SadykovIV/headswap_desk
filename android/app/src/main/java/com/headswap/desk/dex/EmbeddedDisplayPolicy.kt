@@ -30,15 +30,17 @@ internal object EmbeddedDisplayPolicy {
     }
 
     /** Excludes the tile being resized; admission must precede producer or input changes. */
-    fun requirePixelBudget(otherPixels: Long, width: Int, height: Int) {
+    fun requirePixelBudget(otherPixels: Long, width: Int, height: Int, fullscreen: Boolean = false) {
         requireDimensions(width, height)
-        require(otherPixels in 0..MAX_TOTAL_PIXELS && width.toLong() * height <= MAX_TOTAL_PIXELS - otherPixels) {
+        val budget = if (fullscreen) MAX_WIDTH.toLong() * MAX_HEIGHT else MAX_TOTAL_PIXELS
+        require(otherPixels in 0..budget && width.toLong() * height <= budget - otherPixels) {
             "Превышен общий размер встроенных экранов"
         }
     }
 
-    fun requireCapacity(existing: Int) {
-        check(existing in 0 until MAX_CHILDREN) { "Одновременно доступны не более двух виджетов" }
+    fun requireCapacity(existing: Int, fullscreen: Boolean = false) {
+        if (fullscreen) check(existing == 0) { "Полноэкранное окно уже открыто" }
+        else check(existing in 0 until MAX_CHILDREN) { "Одновременно доступны не более двух виджетов" }
     }
 
     fun requireChildId(id: Int, parentId: Int) {

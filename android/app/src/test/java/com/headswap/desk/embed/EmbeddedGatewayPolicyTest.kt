@@ -5,6 +5,17 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class EmbeddedGatewayPolicyTest {
+    @Test fun onlyTheHostUidMayOpenFullscreenUnderDriveDeck() {
+        EmbeddedGatewayPolicy.requireFullscreenCaller(DesktopModePolicy.DRIVEDECK, 10111, 10111)
+        for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.SAMSUNG_DEX)) {
+            org.junit.Assert.assertThrows(SecurityException::class.java) {
+                EmbeddedGatewayPolicy.requireFullscreenCaller(mode, 10111, 10111)
+            }
+        }
+        org.junit.Assert.assertThrows(SecurityException::class.java) {
+            EmbeddedGatewayPolicy.requireFullscreenCaller(DesktopModePolicy.DRIVEDECK, 10112, 10111)
+        }
+    }
     @Test fun onlyCurrentPositiveDriveDeckParentCanHostEmbeddedApps() {
         EmbeddedGatewayPolicy.requireParent(DesktopModePolicy.DRIVEDECK, 12, 12)
         for ((requested, owned) in listOf(0 to 0, 0 to 12, -1 to 12, 12 to -1, 12 to 0, 12 to 13)) {

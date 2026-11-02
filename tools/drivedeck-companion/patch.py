@@ -53,6 +53,53 @@ method(renderer,'public final f()I', '    .locals 1\n    invoke-static {p0}, Lru
 for name in ['v','p']:
     method(renderer,f'public final {name}(II)V', '    .locals 0\n    invoke-static {p0, p1, p2}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->resize(Landroid/view/View;II)V\n    return-void')
 method(renderer,'public final w(I)V', '    .locals 0\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->scale(Landroid/view/View;I)V\n    return-void')
+
+# Hardware controls, layout and unrelated widget settings stay intact. Only replace the three
+# app-scale panels when the connected HeadSwap version supplies the authoritative display DPI.
+def scale_settings(s):
+    def patch_page(source, signature, label, controls, hint, pair=False):
+        pattern = r'(?ms)^\.method public final '+re.escape(signature)+r'\n.*?^\.end method'
+        m = re.search(pattern, source)
+        assert m, signature
+        body = m.group()
+        encoded = label.encode('unicode_escape').decode()
+        i = body.index('"'+encoded+'"')
+        if pair:
+            # Hold the group with the two percent sliders in v2 until its hint is built. The
+            # register is dead at this point and assigned anew before its next original use.
+            at = body[:i].rindex('    invoke-virtual {v4, v1}, Landroid/view/ViewGroup;->addView(Landroid/view/View;)V')
+            end = body.index('\n', at)
+            body = body[:end]+'\n    move-object v2, v1'+body[end:]
+            i = body.index('"'+encoded+'"')
+        add = re.search(r'    invoke-virtual \{\w+, '+hint+r'\}, Landroid/view/ViewGroup;->addView\(Landroid/view/View;\)V', body[i:])
+        assert add, (signature, label)
+        at = i+add.end()
+        call = '\n    invoke-static {'+controls+', '+hint+'}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->scaleSettings(Landroid/view/ViewGroup;Landroid/widget/TextView;)V'
+        return source[:m.start()]+body[:at]+call+body[at:]+source[m.end():]
+    if re.search(r'(?m)^\.class [^\n]+ Lc/x3;', s):
+        s = patch_page(s,'X()V','50–120%. Масштаб сохраняется отдельно для каждого приложения.','v2','v3')
+        return patch_page(s,'a0()V','Масштаб меняет размер содержимого выбранной пары. 100% — обычный размер.','v2','v1', True)
+    return patch_page(s,'V(I)V','Масштаб недоступен для системного окна.','v14','v0')
+edit('smali/c/x3.1.smali', scale_settings)
+edit('smali/c/f4.1.smali', scale_settings)
+
+# The regular dock/app-drawer path is MainActivity.U -> R8.w with a null embedded renderer.
+# The media widget has another standalone path. Keep its Activity context to bind the target
+# to its own display rather than discarding display ownership via getApplicationContext().
+method('smali/c/s9.1.smali','public static Z(Landroid/content/Context;Ljava/lang/String;)V', '''
+    .locals 0
+    invoke-static {p0, p1}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->launch(Landroid/content/Context;Ljava/lang/String;)Z
+    return-void''')
+
+def dock_fullscreen_controls(s):
+    anchor = '    invoke-virtual {v6, v13, v0, v12, v10}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V'
+    pattern = r'(?ms)^\.method public final X\(\)V\n.*?^\.end method'
+    m = re.search(pattern, s)
+    assert m and m.group().count(anchor) == 2 and 'Landroid/widget/Switch;->setChecked(Z)V' in m.group().split(anchor)[0]
+    call = '    invoke-static {v13, v0}, Lru/drivedeck/headswap/DisplayOnlyLaunch;->addFullscreenControls(Landroid/widget/LinearLayout;Landroid/widget/TextView;)V'
+    body = m.group().replace(anchor, anchor+'\n'+call, 1)
+    return s[:m.start()]+body+s[m.end():]
+edit('smali/c/x3.1.smali', dock_fullscreen_controls)
 method(renderer,'public final t()V', '    .locals 1\n    const/4 v0, 0x0\n    invoke-static {p0, v0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->close(Landroid/view/View;Z)V\n    return-void')
 method(renderer,'public final onSurfaceTextureDestroyed(Landroid/graphics/SurfaceTexture;)Z', '    .locals 1\n    invoke-static {p0, p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->destroyed(Landroid/view/View;Landroid/graphics/SurfaceTexture;)Z\n    move-result v0\n    return v0')
 # Close child producers before an invisible page is replaced by another pair.
@@ -292,10 +339,10 @@ update_files, update_policy = disable_stock_app_updates(root)
 changes.extend(update_files)
 # Manifest: no system UID, HOME, launcher icon/aliases, boot entry or global overlays.
 ET.register_namespace('android','http://schemas.android.com/apk/res/android');a='{http://schemas.android.com/apk/res/android}'
-p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','301')
+p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','302')
 # Apktool's versionInfo overrides manifest attributes during rebuild.
 yml=root/'apktool.yml'
-yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 301', yml.read_text());assert n==1
+yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 302', yml.read_text());assert n==1
 yml.write_text(yml_text);changes.append('apktool.yml')
 for key in ['sharedUserId','sharedUserLabel','sharedUserMaxSdkVersion']:m.attrib.pop(a+key,None)
 remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED','TETHER_PRIVILEGED','WRITE_SETTINGS','MANAGE_APP_OPS_MODES'}
@@ -324,5 +371,5 @@ left=[]
 for p in (root/'smali').rglob('*.smali'):
     if re.search(r'->startActivity(?:ForResult)?\(',p.read_text()):left.append(str(p))
 assert not left,left
-(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','application_id':'ru.drivedeck.headswap','version_code':301,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
+(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','application_id':'ru.drivedeck.headswap','version_code':302,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
 print('Patched',len(set(changes)),'files;',launches,'activity launches guarded')

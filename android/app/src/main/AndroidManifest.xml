@@ -92,6 +92,16 @@
         </activity>
 
         <activity android:name=".MainActivity" android:exported="false" />
+        <activity
+            android:name=".desktop.DriveDeckFullscreenActivity"
+            android:exported="true"
+            android:permission="${applicationId}.permission.EMBED_DISPLAY"
+            android:excludeFromRecents="true"
+            android:resizeableActivity="true"
+            android:launchMode="singleTop"
+            android:taskAffinity="${applicationId}.drivedeck.fullscreen"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".update.ComponentUpdatesActivity" android:exported="false" />
         <provider
             android:name=".update.ComponentApkProvider"

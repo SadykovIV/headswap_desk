@@ -3,6 +3,7 @@ package com.headswap.desk.embed
 import android.os.IBinder
 import android.util.Log
 import android.view.Surface
+import com.headswap.desk.aa.DesktopGeometryPolicy
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
 import com.headswap.desk.dex.DesktopTouchState
@@ -16,8 +17,9 @@ import java.util.concurrent.atomic.AtomicInteger
 
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
-    private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService, val mode: Int)
-    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder) {
+    private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
+        val mode: Int, val density: Int, val compactMapSymbols: Boolean)
+    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean) {
         lateinit var death: IBinder.DeathRecipient
         @Volatile var linked = false
         @Volatile var packageName: String? = null
@@ -31,10 +33,18 @@ internal object EmbeddedSessionRegistry {
         Thread(r, "headswap-embedded-cleanup").apply { isDaemon = true }
     }
 
-    fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int) = synchronized(lock) {
+    fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
+        density: Int, compactMapSymbols: Boolean) = synchronized(lock) {
         require(displayId > 0)
+        DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls, mode)
+        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols)
+    }
+
+    fun renderConfig(parentId: Int, ownDesktop: Boolean): IntArray = synchronized(lock) {
+        val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
+        EmbeddedGatewayPolicy.requireParent(active.mode, parentId, active.displayId, ownDesktop)
+        intArrayOf(active.density, if (active.compactMapSymbols) 1 else 0)
     }
 
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
@@ -56,16 +66,19 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun create(uid: Int, surface: Surface, token: IBinder, requestedParent: Int,
-        width: Int, height: Int, density: Int, ownDesktop: Boolean = false): Int {
+        width: Int, height: Int, density: Int, ownDesktop: Boolean = false, fullscreen: Boolean = false): Int {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         require(surface.isValid && token.isBinderAlive) { "Поверхность встроенного приложения недоступна" }
         val lease = synchronized(lock) {
             val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
             EmbeddedGatewayPolicy.requireParent(active.mode, requestedParent, active.displayId, ownDesktop)
             check(active.remote.asBinder().isBinderAlive) { "Служба рабочего стола завершилась" }
-            EmbeddedGatewayPolicy.requireCanAllocate(leases.size)
             require(leases.values.none { it.token == token }) { "Токен поверхности уже используется" }
-            Lease(nextHandle.incrementAndGet(), uid, active, token).also { leases[it.handle] = it }
+            if (fullscreen) {
+                EmbeddedGatewayPolicy.requireFullscreenCaller(active.mode, uid, android.os.Process.myUid())
+                if (leases.values.any { it.fullscreen }) throw FullscreenSlotBusyException()
+            } else EmbeddedGatewayPolicy.requireCanAllocate(leases.values.count { !it.fullscreen })
+            Lease(nextHandle.incrementAndGet(), uid, active, token, fullscreen).also { leases[it.handle] = it }
         }
         lease.death = IBinder.DeathRecipient {
             cleanup.execute { runCatching { close(lease) }.onFailure { Log.w("HeadSwapEmbed", "Companion cleanup pending", it) } }
@@ -73,7 +86,10 @@ internal object EmbeddedSessionRegistry {
         try {
             token.linkToDeath(lease.death, 0)
             lease.linked = true
-            activeCall(lease) { it.createChildDisplay(surface, token, width, height, density) }
+            activeCall(lease) {
+                if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, density)
+                else it.createChildDisplay(surface, token, width, height, density)
+            }
             synchronized(lock) {
                 check(parent === lease.parent && leases[lease.handle] === lease && token.isBinderAlive) {
                     "Сеанс рабочего стола завершился"

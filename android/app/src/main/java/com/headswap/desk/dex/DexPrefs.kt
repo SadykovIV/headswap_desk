@@ -62,9 +62,9 @@ class DexPrefs(context: Context) {
             DesktopModePolicy.requireMode(value)
             prefs.edit().putInt("desktop_mode", value).apply()
         }
-    /** Size of the desktop UI only; the physical Shizuku video size remains 1600 × 900. */
+    /** Pre-unification values, in order of precedence when the new setting is absent. */
     var shizukuDensity: Int
-        get() = prefs.getInt("shizuku_density", 160).coerceIn(120, 320)
+        get() = prefs.getInt("shizuku_density", prefs.getInt("density", 160)).coerceIn(120, 320)
         set(value) { require(value in 120..320); prefs.edit().putInt("shizuku_density", value).apply() }
     var desktopResolution: DesktopResolution
         get() = DesktopResolution.restore(prefs.getString("desktop_resolution", null))
@@ -95,6 +95,9 @@ class DexPrefs(context: Context) {
             if (it == 0) 0 else it.coerceIn(DesktopGeometryPolicy.MIN_DENSITY, DesktopGeometryPolicy.MAX_DENSITY)
         }
         set(value) { if (value != 0) DesktopGeometryPolicy.requireDensity(value); prefs.edit().putInt("desktop_density", value).apply() }
+    var compactMapSymbols: Boolean
+        get() = prefs.getBoolean("compact_map_symbols", true)
+        set(value) { prefs.edit().putBoolean("compact_map_symbols", value).apply() }
     /** Direct desktop has an independent 30 fps default; upstream AA preferences are unchanged. */
     var desktopFps: FpsSetting
         get() = prefs.getString("desktop_fps", null).let { name -> FpsSetting.entries.firstOrNull { it.name == name } ?: FpsSetting.FPS30 }
@@ -115,9 +118,6 @@ class DexPrefs(context: Context) {
     var connectPort: Int
         get() = prefs.getInt("connect_port", 0)
         set(value) { require(value == 0 || value in 1..65535); prefs.edit().putInt("connect_port", value).apply() }
-    var density: Int
-        get() = prefs.getInt("density", 160).coerceIn(120, 320)
-        set(value) { require(value in 120..320); prefs.edit().putInt("density", value).apply() }
 }
 
 object DexState {

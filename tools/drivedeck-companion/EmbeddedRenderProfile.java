@@ -1,6 +1,8 @@
 package ru.drivedeck.headswap;
 
-/** MapKit's pixel-sized map follows the parent DPI; Android widgets keep their selected dp size. */
+import com.headswap.desk.shared.DesktopRenderPolicy;
+
+/** Geometry for the surface consumer; older hosts use their protocol-1 compatibility rules. */
 public final class EmbeddedRenderProfile {
     public static final String NAVIGATOR_PACKAGE = "ru.yandex.yandexnavi";
     public static final int REFERENCE_PARENT_DENSITY = 160;
@@ -18,6 +20,12 @@ public final class EmbeddedRenderProfile {
         public boolean sameAs(Geometry other) {
             return other != null && width == other.width && height == other.height && density == other.density;
         }
+    }
+
+    public static Geometry configured(String packageName, int width, int height, int parentDpi, boolean compactMaps) {
+        int[] pixels = DesktopRenderPolicy.geometry(packageName, width, height, parentDpi, compactMaps);
+        double scale = pixels[0] / (double) Math.max(128, width);
+        return new Geometry(pixels[0], pixels[1], pixels[2], parentDpi, scale, scale);
     }
 
     public static Geometry geometry(String packageName, boolean highResolutionSupported,

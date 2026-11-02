@@ -23,7 +23,11 @@ class EmbeddedDisplayService : Service() {
 
     private val gateway = object : IEmbeddedDisplayGateway.Stub() {
         override fun version(): Int = authorized { 1 }
-        override fun capabilities(): Int = authorized { 15 } // Child 2x, two-contact touch, producer lifetime, extended FullHD/DPI.
+        override fun capabilities(): Int = authorized { 31 } // Child 2x, multitouch, producer lifetime, FullHD, parent render config.
+
+        override fun desktopRenderConfig(parentDisplayId: Int): IntArray = authorized {
+            EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false)
+        }
 
         override fun create(surface: Surface, ownerToken: IBinder, parentDisplayId: Int,
             width: Int, height: Int, density: Int): Int {

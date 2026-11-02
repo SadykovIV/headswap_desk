@@ -67,5 +67,6 @@ class DesktopVideoSelection(val resolution: DesktopResolution, val densityOverri
         selected = result
         result
     }
-    fun densityFor(mode: VideoGeometry): Int = if (densityOverride == 0) mode.density else densityOverride
+    // The legacy ADB path uses the AA R720 geometry, whose AA preset density is not our desktop AUTO scale.
+    fun densityFor(mode: VideoGeometry): Int = if (densityOverride == 0) DesktopGeometryPolicy.density(mode.outH) else densityOverride
 }

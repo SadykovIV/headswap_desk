@@ -879,7 +879,8 @@ class BridgeService : Service() {
 
         val aaPrefs = AaPrefs(this)
         val dexPrefs = DexPrefs(this)
-        val desktopVideo = if (dexPrefs.useDesktopService) dexPrefs.desktopVideoSelection() else null
+        val desktopSelection = dexPrefs.desktopVideoSelection()
+        val desktopVideo = desktopSelection.takeIf { dexPrefs.useDesktopService }
         val screenOn = getSystemService(PowerManager::class.java).isInteractive
         val cfg = SessionConfig(
             screenOn, false, if (desktopVideo != null) dexPrefs.desktopFps else aaPrefs.fpsSetting,
@@ -893,7 +894,7 @@ class BridgeService : Service() {
         // Keep the DeX source through a short USB reconnect, using BridgeHost's existing grace lifecycle.
         var h = host
         val wantMode: VideoGeometry = desktopVideo?.initialGeometry() ?: VideoMode.R720
-        val wantDensity = desktopVideo?.densityFor(wantMode) ?: dexPrefs.density
+        val wantDensity = desktopSelection.densityFor(wantMode)
         if (h == null || h.isDead) {
             h = createHost(aaPrefs, wantMode, wantDensity, previous = h)
             host = h

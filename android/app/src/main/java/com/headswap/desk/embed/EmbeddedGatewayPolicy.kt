@@ -3,6 +3,8 @@ package com.headswap.desk.embed
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.EmbeddedDisplayPolicy
 
+internal class FullscreenSlotBusyException : IllegalStateException("Предыдущее полноэкранное окно ещё открыто")
+
 /** Pure argument bounds; caller identity and live session generation are checked by the service. */
 object EmbeddedGatewayPolicy {
     const val EXPECTED_CALLER_PACKAGE = DesktopModePolicy.DRIVEDECK_PACKAGE
@@ -25,6 +27,12 @@ object EmbeddedGatewayPolicy {
     /** Count includes leases being created or retired until their producer is confirmed closed. */
     fun requireCanAllocate(activeLeaseCount: Int) {
         require(activeLeaseCount in 0 until MAX_LEASES) { "No embedded display lease is available" }
+    }
+
+    internal fun requireFullscreenCaller(mode: Int, uid: Int, appUid: Int) {
+        if (uid != appUid || mode != DesktopModePolicy.DRIVEDECK) {
+            throw SecurityException("Полноэкранное окно доступно только HeadSwap в профиле DriveDeck")
+        }
     }
 
     /** Accepts full class names, including classes whose namespace differs from the APK package. */

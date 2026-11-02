@@ -14,6 +14,8 @@ import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import com.headswap.desk.embed.EmbeddedSessionRegistry
+import com.headswap.desk.embed.FullscreenSlotBusyException
+import com.headswap.desk.shared.DesktopRenderPolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
@@ -23,6 +25,7 @@ internal class DesktopAppPane(
     private val onOpened: () -> Unit,
     private val onHome: () -> Unit,
     private val onError: (String) -> Unit,
+    private val fullscreenDriveDeck: Boolean = false,
 ) : TextureView.SurfaceTextureListener {
     val view = TextureView(activity).apply {
         surfaceTextureListener = this@DesktopAppPane
@@ -39,7 +42,11 @@ internal class DesktopAppPane(
         val surface = Surface(texture)
         @Volatile var retired = false
         var handle = 0 // Only accessed on the serial worker.
+        var buffer: Buffer? = null
+        var appPackage: String? = null
     }
+
+    private data class Buffer(val width: Int, val height: Int, val density: Int)
 
     fun open(entry: DesktopAppCatalog.Entry) {
         wanted = entry
@@ -61,13 +68,41 @@ internal class DesktopAppPane(
     }
 
     override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {
+        if (current?.texture === texture) refreshBuffer(width, height)
+    }
+
+    fun refreshBuffer(width: Int = view.width, height: Int = view.height) {
         val output = current ?: return
-        texture.setDefaultBufferSize(width, height)
-        val density = activity.resources.displayMetrics.densityDpi
+        val parent = activity.display?.displayId ?: return
+        if (width <= 0 || height <= 0) return
         work.execute {
-            if (!output.retired && output.handle > 0) runCatching {
-                EmbeddedSessionRegistry.resize(uid, output.handle, width, height, density)
+            val pkg = output.appPackage
+            if (!output.retired && pkg != null) runCatching {
+                configure(output, parent, pkg, width, height)
             }.onFailure { Log.w(TAG, "Viewport resize failed", it) }
+        }
+    }
+
+    // Runs on the serial worker. Both the texture size and Android's child display have
+    // to switch before input is mapped to the new coordinate space.
+    private fun configure(output: Output, parent: Int, pkg: String, width: Int, height: Int) {
+        val policy = EmbeddedSessionRegistry.renderConfig(parent, ownDesktop = !fullscreenDriveDeck)
+        val g = DesktopRenderPolicy.geometry(pkg, width, height, policy[0], policy[1] == 1)
+        val next = Buffer(g[0], g[1], g[2])
+        val previous = output.buffer
+        output.texture.setDefaultBufferSize(next.width, next.height)
+        try {
+            if (output.handle == 0) {
+                EmbeddedSessionRegistry.releaseOwnSurface(uid, output.token)
+                output.handle = EmbeddedSessionRegistry.create(uid, output.surface, output.token,
+                    parent, next.width, next.height, next.density, ownDesktop = !fullscreenDriveDeck, fullscreen = fullscreenDriveDeck)
+            } else if (previous != next) {
+                EmbeddedSessionRegistry.resize(uid, output.handle, next.width, next.height, next.density)
+            }
+            output.buffer = next
+        } catch (error: Exception) {
+            if (previous != null) output.texture.setDefaultBufferSize(previous.width, previous.height)
+            throw error
         }
     }
 
@@ -92,10 +127,9 @@ internal class DesktopAppPane(
         }
     }
 
-    private fun launch(output: Output, entry: DesktopAppCatalog.Entry) {
+    private fun launch(output: Output, entry: DesktopAppCatalog.Entry, retry: Int = 0) {
         val serial = request
         val parent = activity.display?.displayId ?: -1
-        val density = activity.resources.displayMetrics.densityDpi
         val width = view.width
         val height = view.height
         work.execute {
@@ -110,18 +144,21 @@ internal class DesktopAppPane(
                     (permission == null || pm.checkPermission(permission, activity.packageName) == PackageManager.PERMISSION_GRANTED))
                 val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(entry.packageName)
                 check(pm.queryIntentActivities(intent, 0).any { it.activityInfo?.name == entry.className })
-                if (output.handle == 0) {
-                    EmbeddedSessionRegistry.releaseOwnSurface(uid, output.token)
-                    output.handle = EmbeddedSessionRegistry.create(uid, output.surface, output.token,
-                        parent, width, height, density, ownDesktop = true)
-                }
+                configure(output, parent, entry.packageName, width, height)
                 EmbeddedSessionRegistry.launch(uid, output.handle, entry.packageName, entry.className)
+                output.appPackage = entry.packageName
                 main.post { if (!output.retired && request == serial) onOpened() }
             } catch (error: Exception) {
+                if (fullscreenDriveDeck && error is FullscreenSlotBusyException && retry < 10) {
+                    main.postDelayed({
+                        if (!output.retired && request == serial && current === output) launch(output, entry, retry + 1)
+                    }, 150)
+                    return@execute
+                }
                 Log.w(TAG, "Cannot open ${entry.key} on the owned desktop", error)
                 main.post {
                     if (!output.retired && request == serial) {
-                        home()
+                        if (fullscreenDriveDeck) { wanted = null; request++ } else home()
                         onError("«${entry.label}» не удалось открыть на рабочем столе.")
                     }
                 }
@@ -139,9 +176,12 @@ internal class DesktopAppPane(
                 EmbeddedSessionRegistry.back(uid, output.handle)
                 // Back at an app's root can remove its last task, leaving the child display empty.
                 work.schedule({
-                    if (!output.retired && runCatching {
-                        EmbeddedSessionRegistry.taskState(uid, output.handle, entry.packageName)
-                    }.getOrNull() == 0) main.post { if (!output.retired && request == serial) home() }
+                    if (!output.retired) {
+                        val state = runCatching { EmbeddedSessionRegistry.taskState(uid, output.handle, entry.packageName) }.getOrNull()
+                        if (state == 0 || (fullscreenDriveDeck && state == 1)) {
+                            main.post { if (!output.retired && request == serial) home() }
+                        }
+                    }
                 }, 500, TimeUnit.MILLISECONDS)
             }.onFailure { Log.w(TAG, "Desktop Back failed", it) }
         }
@@ -155,8 +195,16 @@ internal class DesktopAppPane(
         val ids = IntArray(event.pointerCount) { event.getPointerId(it) }
         val xs = FloatArray(ids.size) { event.getX(it) }
         val ys = FloatArray(ids.size) { event.getY(it) }
+        val width = view.width
+        val height = view.height
+        if (width <= 0 || height <= 0) return false
         work.execute {
             if (!output.retired && output.handle > 0) runCatching {
+                val buffer = output.buffer ?: return@runCatching
+                for (i in xs.indices) {
+                    xs[i] = (xs[i] * buffer.width / width).coerceIn(0f, (buffer.width - 1).toFloat())
+                    ys[i] = (ys[i] * buffer.height / height).coerceIn(0f, (buffer.height - 1).toFloat())
+                }
                 EmbeddedSessionRegistry.touchPoints(uid, output.handle, action, index, ids, xs, ys)
             }.onFailure { Log.w(TAG, "Desktop touch rejected", it) }
         }

@@ -31,12 +31,13 @@ class ShizukuConnectorInputTest {
         private val received = LinkedBlockingQueue<Pointer>()
         private val contacts = LinkedBlockingQueue<Contacts>()
         private val service = object : IDexUserService.Stub() {
-            override fun protocolVersion() = 5
+            override fun protocolVersion() = DexUserServicePolicy.PROTOCOL_VERSION
             override fun start(surface: Surface?, lifetimeToken: IBinder?, density: Int) = error("Unexpected display creation")
             override fun startDesktopSized(surface: Surface?, lifetimeToken: IBinder?, width: Int, height: Int, density: Int, mode: Int) = error("Unexpected display creation")
             override fun startDesktop(surface: Surface?, lifetimeToken: IBinder?, density: Int, mode: Int) = error("Unexpected display creation")
             override fun showDesktop() = error("Unexpected desktop navigation")
             override fun createChildDisplay(surface: Surface?, childToken: IBinder?, width: Int, height: Int, density: Int): Int = error("Unexpected child display creation")
+            override fun createFullscreenChildDisplay(surface: Surface?, childToken: IBinder?, width: Int, height: Int, density: Int): Int = error("Unexpected fullscreen display creation")
             override fun launchChildApp(childToken: IBinder?, packageName: String?, className: String?) = error("Unexpected child launch")
             override fun resizeChildDisplay(childToken: IBinder?, width: Int, height: Int, density: Int) = error("Unexpected child resize")
             override fun injectChildTouch(childToken: IBinder?, action: Int, x: Float, y: Float) = error("Unexpected child touch")

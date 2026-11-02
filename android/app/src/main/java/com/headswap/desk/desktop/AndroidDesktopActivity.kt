@@ -63,7 +63,7 @@ class AndroidDesktopActivity : Activity() {
         override fun run() {
             if (!visible || isDestroyed) return
             when {
-                ownsDisplay() -> { layout.visibility = View.VISIBLE; loadApps() }
+                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); loadApps() }
                 currentDisplayId() <= 0 || SystemClock.elapsedRealtime() >= ownershipDeadline -> finish()
                 else -> main.postDelayed(this, 100)
             }

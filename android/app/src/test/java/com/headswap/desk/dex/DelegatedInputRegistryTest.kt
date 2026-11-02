@@ -124,4 +124,31 @@ class DelegatedInputRegistryTest {
         registry.resize(14, map, 3840, 2160)
         assertEquals(3840, registry.requireDisplay(14, map).width)
     }
+
+    @Test fun fullscreenSlotNeverConsumesOrExpandsTheCompanionBudget() {
+        val registry = DelegatedInputRegistry()
+        val parent = Any()
+        val map = Any()
+        val player = Any()
+        val fullscreen = Any()
+        registry.begin(1, parent, allowFullscreen = true)
+        registry.registerParent(11, parent, 1920, 1080)
+        registry.registerChild(11, 12, map, 3840, 2160)
+        registry.registerChild(11, 13, player, 1920, 1080)
+        registry.registerChild(11, 14, fullscreen, 3840, 2160, fullscreen = true)
+        rejects { registry.registerChild(11, 15, Any(), 640, 480) }
+        rejects { registry.registerChild(11, 15, Any(), 640, 480, fullscreen = true) }
+        rejects { registry.resize(13, player, 1920, 1081) }
+        rejects { registry.resize(14, fullscreen, 3840, 2161) }
+        registry.resize(14, fullscreen, 1920, 1080)
+        registry.resize(14, fullscreen, 3840, 2160)
+        registry.unregister(14, fullscreen)
+        registry.registerChild(11, 15, Any(), 3840, 2160, fullscreen = true)
+        assertEquals(3840, registry.requireDisplay(12, map).width)
+        assertEquals(1080, registry.requireDisplay(13, player).height)
+        registry.deactivate()
+        registry.begin(2, parent)
+        registry.registerParent(11, parent, 1920, 1080)
+        rejects { registry.registerChild(11, 15, Any(), 640, 480, fullscreen = true) }
+    }
 }

@@ -9,6 +9,7 @@ import java.util.zip.ZipInputStream
 
 /** Values verified against the target One UI 9 framework, with distinct VD/Display flag namespaces. */
 internal object DexUserServicePolicy {
+    const val PROTOCOL_VERSION = 6
     const val WIDTH = DesktopVideoGeometry.WIDTH
     const val HEIGHT = DesktopVideoGeometry.HEIGHT
     const val DENSITY = 160

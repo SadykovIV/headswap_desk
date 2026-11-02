@@ -23,8 +23,10 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.TextView;
 import android.widget.Toast;
 import com.headswap.desk.embed.IEmbeddedDisplayGateway;
+import com.headswap.desk.shared.DesktopRenderPolicy;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -33,6 +35,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.ArrayDeque;
 import java.util.WeakHashMap;
+import java.util.function.Consumer;
 
 /** Surface consumer only: privileged display ownership stays inside HeadSwap. */
 public final class EmbeddedDisplayClient {
@@ -49,6 +52,7 @@ public final class EmbeddedDisplayClient {
     private static volatile boolean binding;
     private static volatile boolean highResolutionSupported;
     private static volatile int gatewayCapabilities;
+    private static final int HOST_RENDER_CONFIG = 0x10;
     private static Context appContext;
     static { THREAD.start(); WORK = new Handler(THREAD.getLooper()); }
     private EmbeddedDisplayClient() {}
@@ -62,6 +66,7 @@ public final class EmbeddedDisplayClient {
         volatile int handle = -1, layoutWidth, layoutHeight;
         volatile String selectedPackage;
         volatile EmbeddedRenderProfile.Geometry geometry, remoteGeometry, createGeometry;
+        volatile ParentConfig config;
         volatile boolean closed, ownsTexture, released, geometryBlocked;
         String notifiedGeometryError; // MAIN only.
         final EmbeddedSurfaceRelease releaseState = new EmbeddedSurfaceRelease();
@@ -87,9 +92,26 @@ public final class EmbeddedDisplayClient {
             this.renderer = renderer; this.texture = texture; this.parentId = parentId;
             this.layoutWidth = width; this.layoutHeight = height;
             this.selectedPackage = packageName == null ? "" : packageName;
-            this.geometry = geometry(renderer, this.selectedPackage, true, width, height);
+            // Initial local Surface only. No DriveDeck percentage or unverified capability is used
+            // until scheduleCreate reads the actual host configuration from the owned parent.
+            int provisionalDpi = parentDensity(renderer);
+            this.geometry = new EmbeddedRenderProfile.Geometry(Math.max(128, width), Math.max(128, height),
+                    provisionalDpi, provisionalDpi, 1, 1);
             texture.setDefaultBufferSize(geometry.width, geometry.height);
             this.surface = new Surface(texture);
+        }
+    }
+    private static final class ParentConfig {
+        final IEmbeddedDisplayGateway service;
+        final int parentId, density;
+        final boolean compactMaps;
+        ParentConfig(IEmbeddedDisplayGateway service, int parentId, int[] values) {
+            if (values == null || values.length != 2 || values[0] < 96 || values[0] > 640
+                    || (values[1] != 0 && values[1] != 1)) throw new IllegalStateException("Invalid desktop render configuration");
+            this.service = service;
+            this.parentId = parentId;
+            this.density = values[0];
+            this.compactMaps = values[1] == 1;
         }
     }
     private static final class TaskState {
@@ -207,7 +229,7 @@ public final class EmbeddedDisplayClient {
         display.getRealMetrics(metrics);
         return metrics.densityDpi;
     }
-    private static EmbeddedRenderProfile.Geometry geometry(View renderer, String selected, boolean extended, int width, int height) {
+    private static EmbeddedRenderProfile.Geometry legacyGeometry(View renderer, String selected, boolean extended, int width, int height) {
         int parent = parentDensity(renderer);
         int percent = integer(renderer, "L", 100);
         int pane = Math.round(parent * Math.max(50, Math.min(120, percent)) / 100f);
@@ -219,12 +241,52 @@ public final class EmbeddedDisplayClient {
             if (lease != null && !lease.closed) return lease.geometry.density;
         }
         try {
-            return geometry(renderer, selectedPackage(renderer), gateway == null || (gatewayCapabilities & 8) != 0,
+            if ((gatewayCapabilities & HOST_RENDER_CONFIG) != 0) return parentDensity(renderer);
+            return legacyGeometry(renderer, selectedPackage(renderer), gateway == null || (gatewayCapabilities & 8) != 0,
                     Math.max(128, renderer.getWidth()), Math.max(128, renderer.getHeight())).density;
         } catch (IllegalArgumentException detachedOrUnsupported) {
             // Original Y7 uses this as a diagnostic hint before attach. Never create from a fallback DPI.
             return 0;
         }
+    }
+
+    // Only called on WORK. A configuration belongs to this specific lease, gateway and parent.
+    private static boolean readParentConfig(Lease lease, IEmbeddedDisplayGateway service) {
+        if (lease.closed || service == null || service != gateway) return false;
+        if ((gatewayCapabilities & HOST_RENDER_CONFIG) == 0) return true;
+        try {
+            ParentConfig config = new ParentConfig(service, lease.parentId, service.desktopRenderConfig(lease.parentId));
+            if (lease.closed || service != gateway) return false;
+            lease.config = config;
+            return true;
+        } catch (RemoteException | RuntimeException unavailable) {
+            Log.w(TAG, "Desktop render configuration not ready on display " + lease.parentId, unavailable);
+            return false;
+        }
+    }
+
+    /** Only route a live DriveDeck Activity on the parent registered by the current HeadSwap.
+     * A hub tap must not block the main thread on the display service. */
+    static boolean checkFullscreenParent(Activity host, int parent, Consumer<Boolean> finish) {
+        IEmbeddedDisplayGateway service = gateway;
+        if (parent <= 0 || service == null || (gatewayCapabilities & HOST_RENDER_CONFIG) == 0) return false;
+        EmbeddedResumeGate gate = RESUMES.get(host);
+        EmbeddedResumeGate.Ticket ticket = gate == null ? null : gate.current(parent);
+        WORK.post(() -> {
+            boolean admitted;
+            try {
+                new ParentConfig(service, parent, service.desktopRenderConfig(parent));
+                admitted = true;
+            } catch (RemoteException | RuntimeException unavailable) {
+                admitted = false;
+            }
+            final boolean active = admitted;
+            MAIN.post(() -> {
+                if (DisplayOnlyLaunch.displayId(host) != parent || (ticket != null && !ticket.isCurrent(parent))) return;
+                finish.accept(active && service == gateway);
+            });
+        });
+        return true;
     }
 
     /** Called after the original Activity's resume guards. No producer is stopped/recreated here. */
@@ -257,7 +319,9 @@ public final class EmbeddedDisplayClient {
         if (!ticket.isCurrent(parent) || !renderer.isAttachedToWindow() || !renderer.isShown()
                 || bool(renderer, "A") || bool(renderer, "B") || !bool(renderer, "c0")) return;
         String selected = selectedPackage(renderer);
-        if (!EmbeddedRenderProfile.NAVIGATOR_PACKAGE.equals(selected)) return;
+        if (selected == null || selected.isEmpty()) return;
+        boolean hasHostConfig = (gatewayCapabilities & HOST_RENDER_CONFIG) != 0;
+        if (!hasHostConfig && !EmbeddedRenderProfile.NAVIGATOR_PACKAGE.equals(selected)) return;
         Object child = field(renderer, "t");
         if (!(child instanceof TextureView)) return;
         TextureView view = (TextureView) child;
@@ -270,22 +334,32 @@ public final class EmbeddedDisplayClient {
         Lease lease;
         synchronized (LOCK) { lease = LEASES.get(renderer); }
         if (lease == null || lease.closed || lease.parentId != parent || lease.texture != texture) return;
-        WORK.post(() -> {
-            if (lease.closed || lease.geometryBlocked || !selected.equals(lease.selectedPackage)
-                    || !ticket.isCurrent(lease.parentId)) return;
-            // Even the same geometry needs a fresh producer ACK on return from another Activity.
-            // Only the explicit resume refreshes the retry budget; ordinary size callbacks coalesce.
-            lease.remoteGeometry = null;
-            synchronized (LOCK) {
-                lease.states.remove(selected);
-                lease.pendingLaunch = selected;
-                lease.pendingRestore = ticket;
-            }
-            requestResize(lease, true);
+        WORK.post(() -> resumeGeometry(lease, selected, ticket, 0));
+    }
+    private static void resumeGeometry(Lease lease, String selected, EmbeddedResumeGate.Ticket ticket, int attempt) {
+        if (lease.closed || !ticket.isCurrent(lease.parentId) || !selected.equals(lease.selectedPackage)) return;
+        if (!readParentConfig(lease, gateway)) {
+            if (attempt < 4) WORK.postDelayed(() -> resumeGeometry(lease, selected, ticket, attempt+1), 500);
+            return;
+        }
+        MAIN.post(() -> {
+            if (lease.closed || !ticket.isCurrent(lease.parentId) || !selected.equals(selectedPackage(lease.renderer))) return;
+            if (!updateGeometry(lease, lease.layoutWidth, lease.layoutHeight, selected)) return;
+            WORK.post(() -> {
+                if (lease.closed || !ticket.isCurrent(lease.parentId) || !selected.equals(lease.selectedPackage)) return;
+                lease.remoteGeometry = null;
+                // The map restore may need to bring its existing task back. Other apps just resize;
+                // navigating within them (including to external activities) must retain their stack.
+                if (DesktopRenderPolicy.isMap(selected)) {
+                    synchronized (LOCK) {
+                        lease.states.remove(selected);
+                        lease.pendingLaunch = selected;
+                        lease.pendingRestore = ticket;
+                    }
+                }
+                requestResize(lease, true);
+            });
         });
-        Log.i(TAG, "Navigator restore parentDpi=" + lease.geometry.parentDensity + " render="
-                + lease.geometry.width + "x" + lease.geometry.height + " dpi=" + lease.geometry.density
-                + " scale=" + lease.geometry.effectiveScale);
     }
     private static String selectedPackage(View renderer) {
         // Exact supplied 0.6.8 graph: Y7.a is the renderer callback, d9.b its owning
@@ -302,8 +376,14 @@ public final class EmbeddedDisplayClient {
         try {
             // Before binding only a local buffer is prepared. Strict advertised limits are checked
             // again on main after binding, before create/resize can reach a producer.
-            wanted = geometry(lease.renderer, lease.selectedPackage, gateway == null || (gatewayCapabilities & 8) != 0,
-                    width, height);
+            if ((gatewayCapabilities & HOST_RENDER_CONFIG) != 0) {
+                ParentConfig config = lease.config;
+                if (config == null || config.service != gateway || config.parentId != lease.parentId) return false;
+                wanted = EmbeddedRenderProfile.configured(lease.selectedPackage, width, height, config.density, config.compactMaps);
+            } else {
+                wanted = legacyGeometry(lease.renderer, lease.selectedPackage, gateway == null || (gatewayCapabilities & 8) != 0,
+                        width, height);
+            }
         } catch (IllegalArgumentException error) {
             lease.geometryBlocked = true;
             WORK.post(() -> { try { cancelActiveTouch(lease); } catch (RemoteException errorOnCancel) { Log.w(TAG, "Cannot cancel touch after rejected geometry", errorOnCancel); } });
@@ -323,8 +403,8 @@ public final class EmbeddedDisplayClient {
         // Original Y7 touch mapping reads H/I and already multiplies by render/view.
         // Keep these in buffer pixels; input() must not apply the scale a second time.
         setSize(lease.renderer, wanted.width, wanted.height, wanted.density);
-        if (changed && EmbeddedRenderProfile.NAVIGATOR_PACKAGE.equals(lease.selectedPackage)) {
-            Log.i(TAG, "Navigator geometry parentDpi=" + wanted.parentDensity
+        if (changed) {
+            Log.i(TAG, "App geometry " + lease.selectedPackage + " parentDpi=" + wanted.parentDensity
                     + " requestedScale=" + wanted.requestedScale + " effectiveScale=" + wanted.effectiveScale
                     + " render=" + wanted.width + "x" + wanted.height + " dpi=" + wanted.density);
         }
@@ -464,11 +544,15 @@ public final class EmbeddedDisplayClient {
         WORK.postDelayed(() -> {
             if (lease.closed || lease.handle > 0) return;
             IEmbeddedDisplayGateway service = gateway;
-            if (service == null) { if (retryCreate(lease)) scheduleCreate(lease, 500); return; }
+            if (!readParentConfig(lease, service)) {
+                if (retryCreate(lease)) scheduleCreate(lease, 500);
+                else message(lease.renderer, "Не удалось получить параметры рабочего стола. Проверьте подключение к HeadSwap.");
+                return;
+            }
             // Capability and package can become known after attach. Configure buffer and
             // touch transform on main before the producer acquires this Surface.
             MAIN.post(() -> {
-                if (lease.closed || lease.handle > 0) return;
+                if (lease.closed || lease.handle > 0 || service != gateway) return;
                 if (!updateGeometry(lease, lease.layoutWidth, lease.layoutHeight, selectedPackage(lease.renderer))) return;
                 WORK.post(() -> create(lease, service));
             });
@@ -528,7 +612,17 @@ public final class EmbeddedDisplayClient {
     }
     public static void scale(View renderer, int percent) {
         set(renderer, "L", Math.max(50, Math.min(120, percent)));
+        if ((gatewayCapabilities & HOST_RENDER_CONFIG) != 0) return;
         resize(renderer, renderer.getWidth(), renderer.getHeight());
+    }
+    public static void scaleSettings(ViewGroup controls, TextView hint) {
+        if (gateway != null && (gatewayCapabilities & HOST_RENDER_CONFIG) == 0) return;
+        for (int i = 0; i < controls.getChildCount(); i++) {
+            View child = controls.getChildAt(i);
+            if (child != hint) child.setVisibility(View.GONE);
+        }
+        hint.setText(gateway != null ? "Размер интерфейса выбирается в HeadSwap → Дополнительно → Размер интерфейса."
+                : "Параметры окна будут доступны после подключения HeadSwap.");
     }
     public static boolean launch(int handle, String packageName) {
         Lease lease = find(handle);

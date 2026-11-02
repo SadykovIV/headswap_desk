@@ -21,4 +21,6 @@ interface IEmbeddedDisplayGateway {
     void touchPoints(int handle, int action, int actionIndex, in int[] pointerIds, in float[] xs, in float[] ys) = 9;
     /** Capability bit 2: empty Binder whose death proves this child producer process exited. */
     IBinder producerLifetime(int handle) = 10;
+    /** Capability bit 4: [session logical DPI, compact map symbols 0 or 1] for the active parent. */
+    int[] desktopRenderConfig(int parentDisplayId) = 11;
 }

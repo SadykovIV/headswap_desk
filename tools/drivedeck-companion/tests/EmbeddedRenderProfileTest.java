@@ -15,6 +15,20 @@ public final class EmbeddedRenderProfileTest {
         return EmbeddedRenderProfile.geometry(pkg, true, true, w, h, parent, base);
     }
     public static void main(String[] args) {
+        String[] hostedApps = {"ru.yandex.yandexnavi", "ru.yandex.yandexmaps", "ru.yandex.music", "example.any"};
+        for (int dpi : new int[]{96, 128, 160, 200, 320, 640}) {
+            for (String app : hostedApps) {
+                EmbeddedRenderProfile.Geometry exact = EmbeddedRenderProfile.configured(app, 600, 400, dpi, false);
+                check(exact.width == 600 && exact.height == 400 && exact.density == dpi);
+                EmbeddedRenderProfile.Geometry g = EmbeddedRenderProfile.configured(app, 600, 400, dpi, true);
+                near(g.width / (double) g.density, 600. / dpi, .01);
+                if (app.equals("ru.yandex.music") || app.equals("example.any")) check(g.sameAs(exact));
+            }
+        }
+        check(EmbeddedRenderProfile.configured(NAV, 600, 400, 200, true).sameAs(
+                EmbeddedRenderProfile.configured("ru.yandex.yandexmaps", 600, 400, 200, true)));
+        check(EmbeddedRenderProfile.configured(NAV, 600, 400, 160, true).width == 1200);
+        // Keep code301 behavior only for hosts without the new render configuration endpoint.
         // Current 160DPI desktop + independently selected 85% pane scale must remain identical.
         EmbeddedRenderProfile.Geometry reference = geometry(NAV, 1022, 876, 160, 136);
         check(reference.width == 2044 && reference.height == 1752 && reference.density == 272);

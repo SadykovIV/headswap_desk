@@ -144,6 +144,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
             val remote = checkNotNull(service) { "Служба Shizuku недоступна" }
             val prefs = DexPrefs(context)
             val density = input.density
+            val compactMapSymbols = prefs.compactMapSymbols
             desktopMode = prefs.desktopMode
             if (desktopMode == DesktopModePolicy.DRIVEDECK) {
                 val activity = try {
@@ -158,7 +159,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                 }
             }
             val id = bounded(25) {
-                check(remote.protocolVersion() == 5) { "Версия службы Shizuku не совпадает с приложением" }
+                check(remote.protocolVersion() == DexUserServicePolicy.PROTOCOL_VERSION) { "Версия службы Shizuku не совпадает с приложением" }
                 remote.startDesktopSized(input.surface, lifetime, input.width, input.height, density, desktopMode)
             }
             check(id > 0) { "Не удалось создать отдельный экран" }
@@ -171,7 +172,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                 check(!stopping.get() && retiringGeneration != generation) { "Сеанс завершён" }
                 DexState.displayId = id
                 if (desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
-                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode)
+                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols)
                 }
             }
             status("Рабочий стол ${input.width}×${input.height} готов, ожидаю видео…")

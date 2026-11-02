@@ -119,6 +119,8 @@ class DexSetupActivity : Activity() {
     private lateinit var panelControlChoice: CheckBox
     private lateinit var panelControlHint: TextView
     private lateinit var densityHint: TextView
+    private lateinit var mapSymbols: CheckBox
+    private lateinit var mapSymbolsHint: TextView
     private val densityPresets = listOf(0, 128, 160, 200)
     private lateinit var code: EditText
     private lateinit var host: EditText
@@ -532,9 +534,9 @@ class DexSetupActivity : Activity() {
             }
         }
         accessChangeHint = text(advanced, "", 13f)
-        densitySection = section(advanced)
-        text(densitySection, "Изображение и звук", 19f, true)
-        resolutionChoice = button(densitySection, "") {
+        val imageSettings = section(advanced)
+        text(imageSettings, "Изображение и звук", 19f, true)
+        resolutionChoice = button(imageSettings, "") {
             if (!accessChoiceLocked()) {
                 val values = DesktopResolution.entries
                 android.app.AlertDialog.Builder(this).setTitle("Разрешение экрана магнитолы")
@@ -548,7 +550,7 @@ class DexSetupActivity : Activity() {
                     }.setNegativeButton("Отмена", null).show()
             }
         }
-        densityChoice = button(densitySection, "") {
+        densityChoice = button(imageSettings, "") {
             if (!accessChoiceLocked()) {
                 val densityValues = (densityPresets + prefs.desktopDensity).distinct()
                 android.app.AlertDialog.Builder(this).setTitle("Размер интерфейса на магнитоле")
@@ -563,7 +565,7 @@ class DexSetupActivity : Activity() {
                     }.setNegativeButton("Отмена", null).show()
             }
         }
-        fpsChoice = button(densitySection, "") {
+        fpsChoice = button(imageSettings, "") {
             if (!accessChoiceLocked()) {
                 val values = listOf(FpsSetting.FPS60, FpsSetting.FPS30, FpsSetting.FPS15, FpsSetting.AUTO)
                 android.app.AlertDialog.Builder(this).setTitle("Частота кадров")
@@ -575,7 +577,18 @@ class DexSetupActivity : Activity() {
                     }.setNegativeButton("Отмена", null).show()
             }
         }
-        densityHint = text(densitySection, "", 13f)
+        densityHint = text(imageSettings, "", 13f)
+        mapSymbols = CheckBox(this).apply {
+            text = "Уменьшать знаки и указатель в Яндекс Картах и Навигаторе"
+            tintChoice(this)
+            isChecked = prefs.compactMapSymbols
+            imageSettings.addView(this, LinearLayout.LayoutParams(-1, -2))
+            setOnCheckedChangeListener { _, checked ->
+                if (!accessChoiceLocked()) prefs.compactMapSymbols = checked
+            }
+        }
+        mapSymbolsHint = text(imageSettings, "Кнопки сохраняют выбранный размер. Снимите галочку, чтобы карты тоже получали точный DPI рабочего стола.", 13f)
+        densitySection = section(advanced)
         usbAudioChoice = CheckBox(this).apply {
             text = "Передавать звук по USB"
             tintChoice(this)
@@ -1046,6 +1059,12 @@ class DexSetupActivity : Activity() {
         finishComputerAccess.isEnabled = enabled && computerReady
         val densityVisibility = if (usingShizuku) View.VISIBLE else View.GONE
         if (densitySection.visibility != densityVisibility) densitySection.visibility = densityVisibility
+        resolutionChoice.visibility = densityVisibility
+        fpsChoice.visibility = densityVisibility
+        val embeddedMaps = usingShizuku && prefs.desktopMode != DesktopModePolicy.SAMSUNG_DEX
+        mapSymbols.visibility = if (embeddedMaps) View.VISIBLE else View.GONE
+        mapSymbolsHint.visibility = mapSymbols.visibility
+        mapSymbols.isEnabled = enabled && embeddedMaps
         densityChoice.isEnabled = enabled
         resolutionChoice.isEnabled = enabled
         fpsChoice.isEnabled = enabled

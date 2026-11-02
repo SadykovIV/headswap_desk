@@ -2,10 +2,20 @@ package ru.drivedeck.headswap;
 
 import android.app.Activity;
 import android.app.ActivityOptions;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.os.Build;
+import android.content.res.ColorStateList;
+import android.widget.CheckBox;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+import com.headswap.desk.shared.DesktopRenderPolicy;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -17,6 +27,9 @@ import android.widget.Toast;
 
 /** Routes every activity start to the currently hosting secondary display. */
 public final class DisplayOnlyLaunch {
+    private static final String BACK = "headswap_fullscreen_back";
+    private static final String HOME = "headswap_fullscreen_home";
+    private static final ComponentName FULLSCREEN_HOST = new ComponentName("com.headswap.desk", "com.headswap.desk.desktop.DriveDeckFullscreenActivity");
     private DisplayOnlyLaunch() {}
     public static Activity activity(Context context) {
         for (int i = 0; i < 12 && context != null; i++) {
@@ -53,13 +66,82 @@ public final class DisplayOnlyLaunch {
         try {
             Intent intent = context.getPackageManager().getLaunchIntentForPackage(packageName);
             if (intent == null) return false;
-            context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), options(context, intent));
+            open(context, intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
             return true;
         } catch (RuntimeException e) { failure(context, e); return false; }
     }
     public static void start(Context context, Intent intent) {
-        try { context.startActivity(intent, options(context, intent)); }
+        try { open(context, intent); }
         catch (RuntimeException e) { failure(context, e); }
+    }
+    private static void open(Context context, Intent intent) {
+        Bundle currentDisplay = options(context, intent);
+        Activity host = activity(context);
+        int parent = displayId(context);
+        ComponentName target = intent.getComponent();
+        SharedPreferences prefs = context.getSharedPreferences("drive_deck", Context.MODE_PRIVATE);
+        boolean back = prefs.getBoolean(BACK, false);
+        boolean home = prefs.getBoolean(HOME, false);
+        if (host != null && target != null && (back || home || DesktopRenderPolicy.isMap(target.getPackageName()))
+                && isLauncherRequest(context, intent, target) && hasFullscreenHost(context)) {
+            Intent original = new Intent(intent);
+            boolean scheduled = EmbeddedDisplayClient.checkFullscreenParent(host, parent, admitted -> {
+                if (admitted) {
+                    Intent routed = new Intent().setComponent(FULLSCREEN_HOST)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                            .putExtra("component", target.flattenToString()).putExtra("back", back).putExtra("home", home);
+                    try { host.startActivity(routed, options(host, routed)); return; }
+                    catch (RuntimeException unavailable) { Log.w("DriveDeckHeadSwap", "Fullscreen controls unavailable", unavailable); }
+                }
+                // The original launch still uses the same live secondary display.
+                try { host.startActivity(original, options(host, original)); }
+                catch (RuntimeException e) { failure(context, e); }
+            });
+            if (scheduled) return;
+        }
+        context.startActivity(intent, currentDisplay);
+    }
+    private static boolean isLauncherRequest(Context context, Intent intent, ComponentName target) {
+        if (!Intent.ACTION_MAIN.equals(intent.getAction()) || !intent.hasCategory(Intent.CATEGORY_LAUNCHER)
+                || intent.getCategories().size() != 1 || intent.getSelector() != null || intent.getData() != null
+                || intent.getType() != null || intent.getClipData() != null || intent.getExtras() != null
+                || (Build.VERSION.SDK_INT >= 29 && intent.getIdentifier() != null)
+                || (intent.getFlags() & ~(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)) != 0
+                || (intent.getPackage() != null && !target.getPackageName().equals(intent.getPackage()))
+                || target.getPackageName().equals(context.getPackageName()) || target.getPackageName().equals(FULLSCREEN_HOST.getPackageName())) return false;
+        Intent launchers = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(target.getPackageName());
+        for (ResolveInfo item : context.getPackageManager().queryIntentActivities(launchers, 0)) {
+            ActivityInfo info = item.activityInfo;
+            if (info != null && info.exported && info.enabled && info.applicationInfo.enabled && target.getClassName().equals(info.name)
+                    && target.getPackageName().equals(info.packageName) && (info.permission == null
+                    || context.checkSelfPermission(info.permission) == PackageManager.PERMISSION_GRANTED)) return true;
+        }
+        return false;
+    }
+    private static boolean hasFullscreenHost(Context context) {
+        PackageManager pm = context.getPackageManager();
+        try {
+            ActivityInfo info = pm.getActivityInfo(FULLSCREEN_HOST, 0);
+            return info.exported && info.enabled && "com.headswap.desk.permission.EMBED_DISPLAY".equals(info.permission)
+                    && pm.checkSignatures(context.getPackageName(), FULLSCREEN_HOST.getPackageName()) == PackageManager.SIGNATURE_MATCH;
+        } catch (PackageManager.NameNotFoundException missing) { return false; }
+    }
+    public static void addFullscreenControls(LinearLayout panel, TextView example) {
+        addOption(panel, example, BACK, "Назад в полноэкранных приложениях");
+        addOption(panel, example, HOME, "Домой в полноэкранных приложениях");
+    }
+    private static void addOption(LinearLayout panel, TextView example, String key, String label) {
+        Context context = panel.getContext();
+        SharedPreferences prefs = context.getSharedPreferences("drive_deck", Context.MODE_PRIVATE);
+        CheckBox option = new CheckBox(context);
+        option.setText(label);
+        option.setTextColor(example.getTextColors());
+        option.setButtonTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked}, new int[]{}},
+                new int[]{0xff36c275, example.getCurrentTextColor()}));
+        option.setMinHeight(Math.round(48 * context.getResources().getDisplayMetrics().density));
+        option.setChecked(prefs.getBoolean(key, false));
+        option.setOnCheckedChangeListener((button, enabled) -> prefs.edit().putBoolean(key, enabled).apply());
+        panel.addView(option, new LinearLayout.LayoutParams(-1, -2));
     }
     public static void start(Context context, Intent intent, Bundle ignoredOptions) { start(context, intent); }
     public static void startForResult(Activity activity, Intent intent, int requestCode) {

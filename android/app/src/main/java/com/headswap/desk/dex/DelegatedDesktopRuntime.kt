@@ -56,11 +56,12 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
         inputGateway.registerParent(id, token, width, height)
     }
 
-    override fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int) {
+    override fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {
         EmbeddedDisplayPolicy.requireChildId(id, parentId)
         check(inputLeases.containsKey(parentId) && !inputLeases.containsKey(id)) { "Родительский экран ввода уже закрыт" }
         inputLeases[id] = token
-        inputGateway.registerChild(parentId, id, token, width, height)
+        if (fullscreen) inputGateway.registerFullscreenChild(parentId, id, token, width, height)
+        else inputGateway.registerChild(parentId, id, token, width, height)
     }
 
     override fun resizeRegisteredDisplay(id: Int, token: IBinder, width: Int, height: Int) {

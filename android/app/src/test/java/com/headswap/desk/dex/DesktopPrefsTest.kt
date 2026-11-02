@@ -42,6 +42,19 @@ class DesktopPrefsTest {
         assertEquals(FpsSetting.FPS30, prefs.desktopFps)
         assertEquals(FpsSetting.FPS15, FpsSetting.DEFAULT)
     }
+    @Test fun legacyAdbAndDesktopUseTheSameDpiEvenWhenOldPreferencesDisagree() {
+        val context = MemoryPrefs()
+        context.values["density"] = 144
+        val prefs = DexPrefs(context)
+        val legacy720 = com.headswap.desk.aa.VideoMode.R720
+        assertEquals(144, prefs.desktopVideoSelection().densityFor(legacy720))
+        context.values["shizuku_density"] = 128
+        assertEquals(128, prefs.desktopVideoSelection().densityFor(legacy720))
+        prefs.desktopDensity = 200
+        assertEquals(200, prefs.desktopVideoSelection().densityFor(legacy720))
+        prefs.desktopDensity = 0
+        assertEquals(128, prefs.desktopVideoSelection().densityFor(legacy720))
+    }
     @Test fun desktopChoicesSurviveNewPreferenceInstancesAndDoNotOverwriteLegacySettings() {
         val context = MemoryPrefs()
         context.values["shizuku_density"] = 160

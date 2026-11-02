@@ -11,4 +11,5 @@ interface IDelegatedInputGateway {
     void injectInput(int displayId, IBinder token, in InputEvent event, int actionButton);
     int childTaskState(int displayId, IBinder token, String packageName);
     void setPhonePanelOff(int parentId, IBinder token, boolean off);
+    void registerFullscreenChild(int parentId, int displayId, IBinder token, int width, int height);
 }

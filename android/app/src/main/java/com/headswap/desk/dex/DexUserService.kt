@@ -68,7 +68,7 @@ class DexUserService private constructor(private val context: Context, private v
     }
 
     private class ChildSession(val parentEpoch: Long, val surface: Surface, val token: IBinder,
-        val death: IBinder.DeathRecipient, var width: Int, var height: Int, var density: Int) {
+        val death: IBinder.DeathRecipient, var width: Int, var height: Int, var density: Int, val fullscreen: Boolean) {
         var display: VirtualDisplay? = null
         var linked = false
         var touch = EmbeddedTouchState(width, height)
@@ -84,7 +84,7 @@ class DexUserService private constructor(private val context: Context, private v
 
     override fun protocolVersion(): Int {
         enforceClient()
-        return 5
+        return DexUserServicePolicy.PROTOCOL_VERSION
     }
 
     override fun start(surface: Surface, lifetimeToken: IBinder, density: Int): Int =
@@ -266,17 +266,24 @@ class DexUserService private constructor(private val context: Context, private v
         checkNotNull(runtime).inject(key, checkNotNull(active.display).display.displayId)
     }
 
-    override fun createChildDisplay(surface: Surface, childToken: IBinder, width: Int, height: Int, density: Int): Int {
+    override fun createChildDisplay(surface: Surface, childToken: IBinder, width: Int, height: Int, density: Int): Int =
+        createChild(surface, childToken, width, height, density, fullscreen = false)
+
+    override fun createFullscreenChildDisplay(surface: Surface, childToken: IBinder, width: Int, height: Int, density: Int): Int =
+        createChild(surface, childToken, width, height, density, fullscreen = true)
+
+    private fun createChild(surface: Surface, childToken: IBinder, width: Int, height: Int, density: Int, fullscreen: Boolean): Int {
         enforceClient()
         try {
             EmbeddedDisplayPolicy.requireSize(width, height, density)
             require(surface.isValid && childToken.isBinderAlive) { "Поверхность виджета уже закрыта" }
             return serialized(START_TIMEOUT_MS) {
                 val parent = requireDriveDeckSession()
+                if (fullscreen) check(parent.desktopMode == DesktopModePolicy.DRIVEDECK) { "Полноэкранное окно требует DriveDeck" }
                 check(!parent.children.containsKey(childToken)) { "Поверхность виджета уже зарегистрирована" }
-                EmbeddedDisplayPolicy.requireCapacity(parent.children.size)
-                EmbeddedDisplayPolicy.requirePixelBudget(
-                    parent.children.values.sumOf { it.width.toLong() * it.height }, width, height)
+                val siblings = parent.children.values.filter { it.fullscreen == fullscreen }
+                EmbeddedDisplayPolicy.requireCapacity(siblings.size, fullscreen)
+                EmbeddedDisplayPolicy.requirePixelBudget(siblings.sumOf { it.width.toLong() * it.height }, width, height, fullscreen)
                 lateinit var child: ChildSession
                 val death = IBinder.DeathRecipient {
                     // Never increment the parent's epoch when just one companion Surface dies.
@@ -284,7 +291,7 @@ class DexUserService private constructor(private val context: Context, private v
                         if (session === parent && parent.children[childToken] === child) releaseChild(parent, child)
                     }
                 }
-                child = ChildSession(parent.epoch, surface, childToken, death, width, height, density)
+                child = ChildSession(parent.epoch, surface, childToken, death, width, height, density, fullscreen)
                 parent.children[childToken] = child
                 try {
                     childToken.linkToDeath(death, 0)
@@ -295,7 +302,7 @@ class DexUserService private constructor(private val context: Context, private v
                     val id = checkNotNull(child.display).display.displayId
                     validateChildDisplay(parent, child)
                     checkNotNull(runtime).registerChildDisplay(checkNotNull(parent.display).display.displayId,
-                        id, child.token, width, height)
+                        id, child.token, width, height, fullscreen)
                     ensureChildActive(parent, child)
                     Log.i(TAG, "child display=$id parent=${parent.display?.display?.displayId} size=${width}x$height density=$density")
                     id
@@ -315,7 +322,7 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(START_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
-            val desktopPane = parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP
+            val desktopPane = parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP || child.fullscreen
             val arguments = EmbeddedDisplayPolicy.launchCommand(checkNotNull(child.display).display.displayId,
                 checkNotNull(parent.display).display.displayId, clientUid / 100000, packageName, className, desktopPane)
             // The signature-protected app gateway resolves an enabled/exported MAIN+LAUNCHER
@@ -336,7 +343,8 @@ class DexUserService private constructor(private val context: Context, private v
         serialized(START_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
             EmbeddedDisplayPolicy.requirePixelBudget(
-                parent.children.values.filter { it !== child }.sumOf { it.width.toLong() * it.height }, width, height)
+                parent.children.values.filter { it !== child && it.fullscreen == child.fullscreen }
+                    .sumOf { it.width.toLong() * it.height }, width, height, child.fullscreen)
             cancelChildTouch(child)
             checkNotNull(child.display).resize(width, height, density)
             ensureChildActive(parent, child)

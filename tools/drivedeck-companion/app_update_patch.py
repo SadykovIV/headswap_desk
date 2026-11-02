@@ -85,7 +85,7 @@ def patch_page(text):
     invoke-virtual {{v0, v3, v4, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
     invoke-virtual {{v0, v3, v5, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
     invoke-virtual {{v0, v3, v1, v6, v7}}, Lc/x3;->u0(Landroid/widget/LinearLayout;Landroid/view/View;II)V
-    const-string v1, "DriveDeck · HeadSwap 0.6.8 (301)"
+    const-string v1, "DriveDeck · HeadSwap 0.6.8 (302)"
     invoke-virtual {{v0, v1}}, Lc/x3;->o0(Ljava/lang/String;)Landroid/widget/LinearLayout;
     move-result-object v1
     const-string v2, "{NOTICE}"

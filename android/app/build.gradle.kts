@@ -19,8 +19,8 @@ android {
         minSdk = 33
         targetSdk = 37
         testInstrumentationRunner = "com.headswap.desk.qa.CompatibilityProbe"
-        versionCode = 26
-        versionName = "0.3.0-desktop-experimental"
+        versionCode = 27
+        versionName = "0.3.1-desktop-experimental"
         // Wireless ADB only activates the desktop; projection uses USB CarLife.
         buildConfigField("boolean", "WIRELESS_BETA", "false")
     }
@@ -29,6 +29,9 @@ android {
         buildConfig = true
         aidl = true
     }
+
+    // Both APKs use the same pixels-to-dp calculation for their application windows.
+    sourceSets.getByName("main").java.srcDir(rootProject.file("../tools/drivedeck-companion/shared"))
 
     packaging {
         // Preserve the notices shipped by each Bouncy Castle module used by Kadb.
