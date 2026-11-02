@@ -262,7 +262,7 @@ class OnboardingScreen(host: MainActivity, private val showAll: Boolean, startAt
             StepId.AA_DEV, StepId.AA_UNKNOWN -> Actions.openAaSettings(c)
             StepId.AUTOSTART -> Actions.startServerFromUi(c)
             StepId.NOTIF -> requestNotifications()
-            StepId.BACKGROUND -> if (!Readiness.batteryOk(c)) Readiness.requestIgnoreBattery(c) else Readiness.openXiaomiAutostart(c)
+            StepId.BACKGROUND -> if (!Readiness.batteryOk(c)) Readiness.appDetails(c) else Readiness.openXiaomiAutostart(c)
             StepId.MIC -> requestMic()
             StepId.BLUETOOTH -> Readiness.openBluetoothSettings(c)
             StepId.LOCATION -> Readiness.openLocationSettings(c)

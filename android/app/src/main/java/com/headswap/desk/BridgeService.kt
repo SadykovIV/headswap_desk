@@ -334,7 +334,7 @@ class BridgeService : Service() {
         }
         // беспровод, ветка B (хотспот телефона + маяк): кнопка в настройках бета-сборки или debug-вход
         if (intent?.action == ACTION_WIFI_B || DebugTransport.wifiB(intent)) {
-            if (!BuildConfig.WIRELESS_BETA && !DebugTransport.wifiB(intent)) {
+            if (!BuildConfig.WIRELESS_BETA) {
                 AppLog.i("сервис: беспровод в этой сборке выключен")
                 failStart()
                 return

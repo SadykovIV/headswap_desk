@@ -6,10 +6,6 @@
     <uses-feature
         android:name="android.hardware.usb.accessory"
         android:required="true" />
-    <!-- выбор машины (автостарт беспровода по Bluetooth); без CDM приложение работает, только без привязки -->
-    <uses-feature
-        android:name="android.software.companion_device_setup"
-        android:required="false" />
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
@@ -17,31 +13,12 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- одно из условий для foreground-сервиса connectedDevice; обычное разрешение, выдаётся при установке -->
+    <!-- A connectedDevice foreground service must also be able to finish or wait when the USB grant goes away. -->
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
-    <!-- Wi-Fi машины (WifiNetworkSpecifier) и признак STA+STA; обычные разрешения, выдаются при установке -->
-    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
-    <!-- какие интерфейсы Wi-Fi заняты телефоном-клиентом, а какие хотспотом (h420); обычное разрешение -->
+    <!-- Inspect local interfaces to connect to this phone's adbd. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <!-- Android 17 (targetSdk 37): локальная сеть (входящий TCP беспроводного CarLife, UDP-маяк 7999/8999). Loopback (AA 5277, debug) не требует. -->
+    <!-- Android 17+: DNS-SD discovery and local TLS pairing/activation of wireless ADB. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
-    <!-- беспровод, ветка A (диагностика): RFCOMM-сервер carlife, ГУ подключается сама; старые разрешения до Android 11 -->
-    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <!-- беспровод, ветка A: вход в Wi-Fi Direct-группу ГУ (WifiP2pManager.connect); до Android 13 вместо него геолокация -->
-    <uses-permission
-        android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
-    <!-- Android 12: запрос одной FINE без COARSE система молча отклоняет -->
-    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="32" />
-    <!-- привязка машины через CompanionDeviceManager: исключения на запуск foreground-сервиса и работу в фоне; обычные разрешения -->
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
-    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
-    <!-- онбординг: запрос исключения из оптимизации батареи (HyperOS убивает фон) -->
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- без queries на API 30+ пакет Android Auto не виден (проверка установки, запуск настроек) -->
     <queries>
@@ -138,22 +115,6 @@
         <!-- кнопка «Стоп» в уведомлении -->
         <receiver
             android:name=".ui.StopReceiver"
-            android:exported="false" />
-
-        <!-- автостарт беспровода: ACL выбранной машины; выключен, пока машина не выбрана (CarProfile.enableTrigger) -->
-        <receiver
-            android:name=".link.car.CarAclReceiver"
-            android:enabled="false"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
-                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
-            </intent-filter>
-        </receiver>
-
-        <!-- статус установки обновления (PackageInstaller) -->
-        <receiver
-            android:name=".update.InstallReceiver"
             android:exported="false" />
 
         <!-- CarLife USB connection; this fork does not capture microphone audio. -->

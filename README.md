@@ -4,9 +4,9 @@
 
 HeadSwap Desktop выводит приложения Android-телефона на штатную магнитолу с **Baidu CarLife по USB**. На ГУ появляется отдельный рабочий стол. Касания с магнитолы передаются телефону, а установленный на телефоне домашний экран сохраняется.
 
-**Версия 0.2.13 experimental · Android 13+ · пакет `com.headswap.desk`**
+**Версия 0.2.14 experimental · Android 13+ · пакет `com.headswap.desk`**
 
-[Скачать HeadSwap Desktop и DriveDeck · HeadSwap](https://github.com/SadykovIV/headswap_desk/releases/tag/v0.2.13) · [Установка и запуск](INSTALL.md)
+[Скачать HeadSwap Desktop и DriveDeck · HeadSwap](https://github.com/SadykovIV/headswap_desk/releases/tag/v0.2.14) · [Установка и запуск](INSTALL.md)
 
 | Профиль | Что появляется на ГУ | Что установить на телефон |
 | --- | --- | --- |

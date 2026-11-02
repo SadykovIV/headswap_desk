@@ -43,6 +43,7 @@ import com.headswap.desk.CarLifeState
 import com.headswap.desk.MainActivity
 import com.headswap.desk.ui.Actions
 import com.headswap.desk.ui.LogShare
+import com.headswap.desk.update.Updater
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
@@ -674,6 +675,7 @@ class DexSetupActivity : Activity() {
         button(adbAdvanced, "Открыть настройки отладки") { withNetworkPermission { openDebugSettings() } }
         text(developer, "Встроенный ADB — прежний способ запуска DeX через беспроводную отладку. Для «Доступа HeadSwap» используйте отдельную кнопку активации выше.", 13f)
         detail = text(developer, "", 12f).apply { setTextIsSelectable(true) }
+        button(advanced, "Проверить обновления HeadSwap Desktop") { Updater.check(this, manual = true) }
         button(advanced, "Отправить журнал") { LogShare.shareLog(this) }
         text(advanced, "Версия ${BuildConfig.VERSION_NAME}. Настройки экрана применяются при следующем подключении. Микрофон по USB не передаётся.", 12f)
         watch(host) { hostEdited = true }

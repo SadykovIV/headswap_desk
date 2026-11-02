@@ -1,36 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- update/Updater.kt: settings, home banner, dialogs -->
     <string name="upd_title">Обновления</string>
     <string name="upd_check_title">Проверять обновления</string>
-    <string name="upd_check_sub">Искать новую версию на GitHub при открытии приложения</string>
+    <string name="upd_check_sub">При открытии приложения проверять выпуски HeadSwap Desktop на GitHub</string>
     <string name="upd_status_never">Ещё не проверялось</string>
     <string name="upd_status_latest">Установлена последняя версия</string>
     <string name="upd_status_checking">Проверяю…</string>
     <string name="upd_status_available">Доступна версия %1$s</string>
-    <string name="upd_status_downloading">Скачиваю %1$s… %2$d%%</string>
-    <string name="upd_status_installing">Открываю установщик…</string>
     <string name="upd_btn_check">Проверить</string>
-    <string name="upd_btn_update">Обновить</string>
-    <string name="upd_btn_update_now">Обновить сейчас</string>
-    <string name="upd_banner_sub">Нажмите, чтобы обновить, настройки сохранятся</string>
+    <string name="upd_btn_update_now">Посмотреть обновление</string>
+    <string name="upd_banner_sub">Нажмите, чтобы посмотреть обновление HeadSwap Desktop</string>
     <string name="upd_later">Позже</string>
-
-    <string name="upd_dialog_title">Headswap %1$s</string>
-    <string name="upd_dialog_size">Загрузка: %1$s. Обновление встанет поверх текущей версии, настройки сохранятся.</string>
-    <string name="upd_dialog_no_size">Обновление встанет поверх текущей версии, настройки сохранятся.</string>
-    <string name="upd_dialog_bridge">Сейчас подключена машина: обновление оборвёт связь.</string>
-    <string name="upd_unknown_title">Разрешите установку обновлений</string>
-    <string name="upd_unknown_message">Откроются настройки Android: включите для Headswap «Разрешить установку из этого источника», вернитесь и нажмите «Обновить» ещё раз.</string>
-
-    <string name="upd_err_check">Не удалось проверить: %1$s</string>
-    <string name="upd_err_download">Не удалось скачать обновление: %1$s</string>
-    <string name="upd_err_install">Не удалось установить обновление: %1$s</string>
-    <string name="upd_err_no_release">на GitHub ещё нет релизов</string>
-    <string name="upd_err_no_apk">в релизе %1$s нет APK</string>
-    <string name="upd_err_incomplete">файл скачался не полностью</string>
-    <string name="upd_err_checksum">контрольная сумма не совпала</string>
-    <string name="upd_err_not_apk">файл не является APK Headswap</string>
-    <string name="upd_err_not_newer">версия на GitHub (%1$s) не новее установленной (%2$s)</string>
-    <string name="upd_err_conflict">конфликт с установленным приложением (подписано другим ключом?)</string>
+    <string name="upd_download">Скачать APK</string>
+    <string name="upd_open_browser">Скачать %1$s из выпуска HeadSwap Desktop на GitHub? Файл будет загружен через браузер.</string>
+    <string name="upd_err_check">Не удалось проверить обновления: %1$s</string>
+    <string name="upd_err_no_release">Нет опубликованных выпусков с APK HeadSwap Desktop</string>
+    <string name="upd_no_browser">Нет приложения, которое может открыть ссылку для скачивания</string>
 </resources>

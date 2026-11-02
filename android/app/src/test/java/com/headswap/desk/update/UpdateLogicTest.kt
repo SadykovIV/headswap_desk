@@ -1,6 +1,7 @@
 package com.headswap.desk.update
 
-import com.headswap.desk.update.UpdateLogic.Asset
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,105 +9,69 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateLogicTest {
-    @Test
-    fun parsesVersionsWithPrefixAndSuffix() {
-        assertEquals(listOf(1, 1, 10), UpdateLogic.parseVersion("1.1.10"))
-        assertEquals(listOf(1, 1, 10), UpdateLogic.parseVersion("v1.1.10"))
-        assertEquals(listOf(1, 1, 10), UpdateLogic.parseVersion("1.1.10-cx5test1"))
-        assertEquals(listOf(2), UpdateLogic.parseVersion("2"))
-        assertNull(UpdateLogic.parseVersion("?"))
-        assertNull(UpdateLogic.parseVersion(""))
+    // Use the published naming convention, with the companion first as in a multi-APK release.
+    private val owner = "https://github.com/SadykovIV/headswap_desk"
+    private fun desktop(v: String) = "HeadSwap-Desktop-$v-experimental.apk"
+    private fun release(v: String, vararg files: String, draft: Boolean = false, repo: String = owner) =
+        JSONObject().put("tag_name", "v$v").put("draft", draft).put("prerelease", true).put("assets",
+            JSONArray().apply { files.forEach { name ->
+                put(JSONObject().put("name", name).put("state", "uploaded")
+                    .put("browser_download_url", "$repo/releases/download/v$v/$name"))
+            } })
+
+    private fun page(vararg items: JSONObject) = JSONArray(items.toList())
+
+    @Test fun selectsOnlyDesktopAssetFromOwnPrerelease() {
+        assertEquals("https://api.github.com/repos/SadykovIV/headswap_desk/releases", UpdateLogic.API_RELEASES)
+        val rel = UpdateLogic.newestInPage(page(release("0.2.13", "DriveDeck-HeadSwap-0.6.7-code263.apk",
+            "headswap-0.2.13.apk", "SHA256SUMS.txt", desktop("0.2.13"))))!!
+        assertEquals("0.2.13", rel.version)
+        assertEquals("$owner/releases/download/v0.2.13/HeadSwap-Desktop-0.2.13-experimental.apk", rel.apkUrl)
     }
 
-    @Test
-    fun comparesNumericallyNotAsStrings() {
-        assertTrue(UpdateLogic.isNewer("1.1.10", "1.1.9"))
-        assertFalse(UpdateLogic.isNewer("1.1.9", "1.1.10"))
-        assertTrue(UpdateLogic.isNewer("1.2", "1.1.10"))
-        assertTrue(UpdateLogic.isNewer("2.0.0", "1.9.9"))
-        assertFalse(UpdateLogic.isNewer("1.1.10", "1.1.10"))
-        assertFalse(UpdateLogic.isNewer("1.2", "1.2.0"))
-        assertTrue(UpdateLogic.isNewer("1.2.0.1", "1.2"))
+    @Test fun neverOffersLoneOtherOrMismatchedApk() {
+        assertNull(UpdateLogic.newestInPage(page(
+            release("0.2.13", "DriveDeck-HeadSwap-0.6.7-code263.apk"),
+            release("3.0.0", "headswap-3.0.0.apk"),
+            release("0.2.14", desktop("0.2.13")),
+            release("0.2.13", desktop("0.2.13"), repo = "https://github.com/YegorkaPomidorka/headswap"),
+        )))
     }
 
-    @Test
-    fun testBuildSuffixIsIgnored() {
-        // тестовая сборка 1.1.10-cx5test1 не считает релиз 1.1.10 обновлением, а 1.1.11 - считает
-        assertFalse(UpdateLogic.isNewer("1.1.10", "1.1.10-cx5test1"))
-        assertTrue(UpdateLogic.isNewer("1.1.11", "1.1.10-cx5test1"))
+    @Test fun checksTagAndAssetStateBeforeOfferingDownload() {
+        assertNull(UpdateLogic.Release.fromTag("v0.2.14/../../other"))
+        assertNull(UpdateLogic.Release.fromTag("v0.2.14-beta3"))
+        val incomplete = release("0.2.14", desktop("0.2.14"))
+        incomplete.getJSONArray("assets").getJSONObject(0).put("state", "starter")
+        assertNull(UpdateLogic.newestInPage(page(incomplete)))
     }
 
-    @Test
-    fun unparsableVersionIsNeverNewer() {
-        assertFalse(UpdateLogic.isNewer("latest", "1.1.10"))
-        assertFalse(UpdateLogic.isNewer("1.1.11", "?"))
+    @Test fun ordersNumericallyAcrossPagesIgnoringDraftsAndNonDesktopReleases() {
+        val first = UpdateLogic.newestInPage(page(release("0.2.99", desktop("0.2.99"), draft = true),
+            release("0.3.1", "DriveDeck.apk"), release("0.2.9", desktop("0.2.9"))))
+        val second = UpdateLogic.newestInPage(page(release("0.2.13", desktop("0.2.13")),
+            release("0.2.8", desktop("0.2.8"))), first)
+        assertEquals("0.2.13", second?.version)
+        assertEquals("0.2.13", UpdateLogic.newestInPage(JSONArray(), second)?.version)
     }
 
-    @Test
-    fun versionFromTag() {
-        assertEquals("1.1.10", UpdateLogic.versionFromTag("v1.1.10"))
-        assertEquals("1.1.10", UpdateLogic.versionFromTag("1.1.10"))
+    @Test fun comparesInstalledDesktopVersionWithoutExperimentalSuffix() {
+        assertFalse(UpdateLogic.isNewer("0.2.13", "0.2.13-desktop-experimental"))
+        assertTrue(UpdateLogic.isNewer("0.2.14", "0.2.13-desktop-experimental"))
+        assertFalse(UpdateLogic.isNewer("0.2.9", "0.2.13-desktop-experimental"))
+        assertFalse(UpdateLogic.isNewer("latest", "0.2.13"))
+        assertFalse(UpdateLogic.isNewer("0.2.13", "?"))
     }
 
-    @Test
-    fun picksApkByNameThenSingleApk() {
-        val apk = Asset("headswap-1.1.11.apk", "https://x/a.apk", 3_000_000, "sha256:00")
-        val other = Asset("headswap-1.1.11.apk.sha256", "https://x/a.sha", 64, null)
-        assertEquals(apk, UpdateLogic.pickApk(listOf(other, apk), "1.1.11"))
-        val renamed = Asset("Headswap.apk", "https://x/h.apk", 3_000_000, null)
-        assertEquals(renamed, UpdateLogic.pickApk(listOf(renamed, other), "1.1.11"))
-        assertNull(UpdateLogic.pickApk(listOf(other), "1.1.11"))
-        // два APK с чужими именами: какой ставить, непонятно
-        assertNull(UpdateLogic.pickApk(listOf(renamed, renamed.copy(name = "debug.apk")), "1.1.11"))
-    }
-
-    @Test
-    fun sha256FromGithubDigest() {
-        val hex = "6A29D0035349124C850A1FFFDB676161987C047E2B7DE78F31F41A2390943E11"
-        assertEquals(hex.lowercase(), UpdateLogic.sha256("sha256:$hex"))
-        assertNull(UpdateLogic.sha256(null))
-        assertNull(UpdateLogic.sha256("md5:abc"))
-        assertNull(UpdateLogic.sha256("sha256:abc"))
-    }
-
-    @Test
-    fun tagFromRedirectLocation() {
-        assertEquals("v1.1.11", UpdateLogic.tagFromLocation("https://github.com/YegorkaPomidorka/headswap/releases/tag/v1.1.11"))
-        assertNull(UpdateLogic.tagFromLocation("https://github.com/YegorkaPomidorka/headswap/releases"))
-        assertNull(UpdateLogic.tagFromLocation(null))
-        assertEquals(
-            "https://github.com/YegorkaPomidorka/headswap/releases/download/v1.1.11/headswap-1.1.11.apk",
-            UpdateLogic.assetUrl("v1.1.11", "1.1.11"),
-        )
-    }
-
-    @Test
-    fun notesAreTrimmedAndCapped() {
-        assertEquals("a\n\nb", UpdateLogic.notes("\r\n a\r\n\r\n\r\n\r\nb \r\n"))
-        assertEquals("", UpdateLogic.notes(null))
-        val long = UpdateLogic.notes("x".repeat(5000))
-        assertTrue(long.length <= 1501)
-        assertTrue(long.endsWith("…"))
-    }
-
-    @Test
-    fun checksAtMostEverySixHours() {
-        val h = 3600_000L
-        val last = 100 * h
-        assertFalse(UpdateLogic.shouldCheck(false, 0, last))
-        assertTrue(UpdateLogic.shouldCheck(true, 0, last))
-        assertFalse(UpdateLogic.shouldCheck(true, last, last + 5 * h))
-        assertTrue(UpdateLogic.shouldCheck(true, last, last + 6 * h))
-        // часы перевели назад: не ждать 6 часов от «будущей» отметки
-        assertTrue(UpdateLogic.shouldCheck(true, last, last - h))
-    }
-
-    @Test
-    fun failedCheckRetriesInAnHour() {
-        // Updater после ошибки пишет lastCheck = now - CHECK_INTERVAL_MS + RETRY_MS
-        val now = 1_000_000_000L
-        val last = now - UpdateLogic.CHECK_INTERVAL_MS + UpdateLogic.RETRY_MS
-        assertFalse(UpdateLogic.shouldCheck(true, last, now + UpdateLogic.RETRY_MS - 1))
-        assertTrue(UpdateLogic.shouldCheck(true, last, now + UpdateLogic.RETRY_MS))
+    @Test fun optOutAndCheckIntervals() {
+        val now = 100 * 3600_000L
+        assertFalse(UpdateLogic.shouldCheck(false, 0, now))
+        assertTrue(UpdateLogic.shouldCheck(true, 0, now))
+        assertFalse(UpdateLogic.shouldCheck(true, now, now + UpdateLogic.CHECK_INTERVAL_MS - 1))
+        assertTrue(UpdateLogic.shouldCheck(true, now, now + UpdateLogic.CHECK_INTERVAL_MS))
+        assertTrue(UpdateLogic.shouldCheck(true, now, now - 1))
+        val retry = now - UpdateLogic.CHECK_INTERVAL_MS + UpdateLogic.RETRY_MS
+        assertFalse(UpdateLogic.shouldCheck(true, retry, now + UpdateLogic.RETRY_MS - 1))
+        assertTrue(UpdateLogic.shouldCheck(true, retry, now + UpdateLogic.RETRY_MS))
     }
 }

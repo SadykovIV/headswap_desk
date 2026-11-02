@@ -113,7 +113,7 @@ class HomeScreen(host: MainActivity) : Screen(host) {
     private fun refreshUpdate() {
         val c = ctx
         val rel = if (CarLifeState.running) null else Updater.banner(c)
-        val key = if (rel == null) "" else "${rel.version}|${Updater.step}|${Updater.progress}"
+        val key = if (rel == null) "" else rel.version
         if (key == updKey) return
         updKey = key
         updBox.removeAllViews()
@@ -122,11 +122,7 @@ class HomeScreen(host: MainActivity) : Screen(host) {
             return
         }
         updBox.visibility = View.VISIBLE
-        val sub = when (Updater.step) {
-            Updater.Step.DOWNLOADING -> c.getString(R.string.upd_status_downloading, rel.version, Updater.progress)
-            Updater.Step.INSTALLING -> c.getString(R.string.upd_status_installing)
-            else -> c.getString(R.string.upd_banner_sub)
-        }
+        val sub = c.getString(R.string.upd_banner_sub)
         val row = c.hbox(14).apply {
             pad(c, 16, 10, 4, 10)
             background = c.rippleBg(c.shape(c.clr(R.color.surf), 20), 20)

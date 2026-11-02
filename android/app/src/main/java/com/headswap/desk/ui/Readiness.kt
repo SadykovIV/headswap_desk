@@ -139,22 +139,6 @@ object Readiness {
         )
     }
 
-    fun requestIgnoreBattery(ctx: Context) {
-        try {
-            ctx.startActivity(
-                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${ctx.packageName}"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-        } catch (e: Exception) {
-            AppLog.e("не открыть запрос исключения из оптимизации батареи", e)
-            try {
-                ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            } catch (_: Exception) {
-                appDetails(ctx)
-            }
-        }
-    }
-
     /** Автозапуск Xiaomi (Безопасность); не вышло - карточка приложения. */
     fun openXiaomiAutostart(ctx: Context) {
         try {

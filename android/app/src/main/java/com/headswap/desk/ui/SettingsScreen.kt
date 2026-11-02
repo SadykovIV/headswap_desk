@@ -141,8 +141,6 @@ private fun Context.updateStatus(): Pair<String, Int> {
     val err = Updater.error
     return when {
         Updater.step == Updater.Step.CHECKING -> getString(R.string.upd_status_checking) to R.color.on2
-        Updater.step == Updater.Step.DOWNLOADING -> getString(R.string.upd_status_downloading, rel?.version ?: "", Updater.progress) to R.color.on2
-        Updater.step == Updater.Step.INSTALLING -> getString(R.string.upd_status_installing) to R.color.on2
         err != null -> err.get(this) to R.color.warn
         rel != null -> getString(R.string.upd_status_available, rel.version) to R.color.acc
         UpdatePrefs(this).lastCheck > 0 -> getString(R.string.upd_status_latest) to R.color.ok
@@ -1482,7 +1480,7 @@ class SettingsSectionScreen(host: MainActivity, val section: SettingsSection) : 
             pad(c, 14, 0, 14, 0)
             background = c.rippleBg(null, 20)
             isClickable = true
-            setOnClickListener { if (Updater.available(c) != null) Updater.start(host, confirm = false) else Updater.check(c, manual = true) }
+            setOnClickListener { if (Updater.available(c) != null) Updater.start(host) else Updater.check(c, manual = true) }
         }
         updStatus = status
         updButton = button
