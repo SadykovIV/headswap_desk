@@ -5,7 +5,10 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.ViewConfiguration
+import com.headswap.desk.CarLifeState
 import com.headswap.desk.aa.DesktopGeometryPolicy
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.cluster.YandexGuidanceCard
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
 import com.headswap.desk.dex.DesktopTouchState
@@ -22,11 +25,11 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
-        val mode: Int, val density: Int, val compactMapSymbols: Boolean)
+        val mode: Int, val density: Int, val compactMapSymbols: Boolean, val shizuku: Boolean)
     private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean,
         var density: Int) {
         lateinit var death: IBinder.DeathRecipient
-        var displayId = -1
+        @Volatile var displayId = -1
         val dismissTap = ImeDismissTap()
         @Volatile var linked = false
         @Volatile var packageName: String? = null
@@ -41,11 +44,11 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
-        density: Int, compactMapSymbols: Boolean) = synchronized(lock) {
+        density: Int, compactMapSymbols: Boolean, shizuku: Boolean = false) = synchronized(lock) {
         require(displayId > 0)
         DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols)
+        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols, shizuku)
     }
 
     fun renderConfig(parentId: Int, ownDesktop: Boolean): IntArray = synchronized(lock) {
@@ -56,6 +59,35 @@ internal object EmbeddedSessionRegistry {
 
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
         id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
+    }
+
+    private data class GuidanceTarget(val parent: Parent, val displayId: Int, val child: Lease?, val pkg: String?)
+
+    /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
+    private fun guidanceTargets(): List<GuidanceTarget> {
+        if (!CarLifeState.running) return emptyList()
+        val active = parent?.takeIf { it.remote.asBinder().isBinderAlive } ?: return emptyList()
+        val current = leases.values.filter { it.parent === active }
+        val foreground = current.filter { it.fullscreen }.ifEmpty { current }
+        return foreground.mapNotNull { lease ->
+            val pkg = lease.packageName
+            if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in YandexGuidanceCard.PACKAGES) null
+            else GuidanceTarget(active, lease.displayId, lease, pkg)
+        }.sortedBy { it.child?.handle } + GuidanceTarget(active, active.displayId, null, null)
+    }
+
+    fun guidanceDisplayIds(): List<Int> = synchronized(lock) { guidanceTargets().map { it.displayId } }
+
+    /** Called on a HUD worker, outside the input queue. Revalidate identity after crossing Binder. */
+    fun readShizukuGuidance(displayId: Int): ShellManeuverSample {
+        val target = synchronized(lock) { guidanceTargets().find { it.parent.shizuku && it.displayId == displayId } }
+            ?: return ShellManeuverSample.Unavailable
+        val result = try { ShellManeuverSample.decode(target.parent.remote.readShizukuGuidance(displayId)) }
+        catch (_: android.os.RemoteException) { return ShellManeuverSample.Unavailable }
+        catch (_: RuntimeException) { return ShellManeuverSample.Unavailable }
+        if (result is ShellManeuverSample.Card && target.pkg != null && result.packageName != target.pkg)
+            return ShellManeuverSample.Unavailable
+        return synchronized(lock) { if (target in guidanceTargets()) result else ShellManeuverSample.Unavailable }
     }
 
     /** Reject new operations immediately; retained leases can still acknowledge producer release. */

@@ -3,6 +3,7 @@ package com.headswap.desk.dex
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import com.headswap.desk.cluster.ShellManeuverSample
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -12,6 +13,9 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Main instrumentation process only. Blocking loopback I/O stays on the worker, never Android's UI thread. */
 internal object ShellPanelClient {
@@ -51,6 +55,9 @@ internal object ShellPanelClient {
     }
     fun power(on: Boolean) = command(if (on) RemotePanelWire.RESTORE else RemotePanelWire.OFF)
     fun refresh() = command(RemotePanelWire.RENEW)
+    /** HUD worker only. A slow third-party window never holds up panel renewals or IME routing. */
+    fun readGuidance(displayId: Int): ShellManeuverSample =
+        connection?.takeIf { it.alive && displayId > 0 }?.readGuidance(displayId) ?: ShellManeuverSample.Unavailable
     fun enableLocalIme(displayId: Int): Boolean = imeRequest(RemotePanelWire.LOCAL_IME, displayId) == RemotePanelWire.OK
     fun imeVisible(displayId: Int): Boolean? = when (imeRequest(RemotePanelWire.IME_VISIBLE, displayId)) {
         RemotePanelWire.OK -> true
@@ -99,6 +106,8 @@ internal object ShellPanelClient {
         private val input = DataInputStream(socket.getInputStream())
         private val output = DataOutputStream(socket.getOutputStream())
         private val ack = ArrayBlockingQueue<Int>(1)
+        private val nextQuery = AtomicInteger()
+        private val guidance = ConcurrentHashMap<Int, CompletableFuture<ShellManeuverSample>>()
         @Volatile var alive = true
             private set
 
@@ -120,16 +129,41 @@ internal object ShellPanelClient {
                 try {
                     while (alive) {
                         val result = input.readUnsignedByte()
-                        check(ack.offer(result))
+                        if (result == RemotePanelWire.GUIDANCE_REPLY) {
+                            val id = input.readInt()
+                            val sample = ShellGuidanceWire.read(input)
+                            guidance.remove(id)?.complete(sample)
+                        } else check(ack.offer(result))
                     }
                 } catch (_: Exception) { } finally { shutdown() }
             }, "headswap-panel-replies").apply { isDaemon = true; start() }
         }
+        fun readGuidance(displayId: Int): ShellManeuverSample {
+            val id = nextQuery.incrementAndGet()
+            val result = CompletableFuture<ShellManeuverSample>()
+            guidance[id] = result
+            try {
+                synchronized(output) {
+                    if (!alive) return ShellManeuverSample.Unavailable
+                    output.writeByte(RemotePanelWire.READ_GUIDANCE)
+                    output.writeInt(id)
+                    output.writeInt(displayId)
+                    output.flush()
+                }
+                return result.get(950, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (_: Exception) { /* missing card or ended activation */ }
+            finally { guidance.remove(id) }
+            return ShellManeuverSample.Unavailable
+        }
         fun call(op: Int, target: Long?, responseMs: Long): Int {
             check(alive)
-            output.writeByte(op)
-            if (target != null) output.writeLong(target)
-            output.flush()
+            synchronized(output) {
+                output.writeByte(op)
+                if (target != null) output.writeLong(target)
+                output.flush()
+            }
             val reply = ack.poll(responseMs, TimeUnit.MILLISECONDS)
                 ?: throw IOException("Истекло время ожидания ответа от службы панели")
             check(reply == RemotePanelWire.OK || reply == RemotePanelWire.UNAVAILABLE &&
@@ -137,6 +171,11 @@ internal object ShellPanelClient {
                 op == RemotePanelWire.IME_VISIBLE && reply == RemotePanelWire.HIDDEN) { "Служба панели отклонила операцию" }
             return reply
         }
-        fun shutdown() { alive = false; runCatching { socket.close() }; ack.offer(RemotePanelWire.FAILED) }
+        fun shutdown() {
+            alive = false
+            runCatching { socket.close() }
+            guidance.values.forEach { it.complete(ShellManeuverSample.Unavailable) }
+            ack.offer(RemotePanelWire.FAILED)
+        }
     }
 }

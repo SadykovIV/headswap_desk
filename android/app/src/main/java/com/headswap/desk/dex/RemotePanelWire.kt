@@ -15,6 +15,9 @@ internal object RemotePanelWire {
     const val RENEW = 4
     const val LOCAL_IME = 5
     const val IME_VISIBLE = 6
+    const val READ_GUIDANCE = 7
+    // Distinct from every synchronous panel/IME acknowledgement.
+    const val GUIDANCE_REPLY = 16
     const val UNAVAILABLE = 2
     const val HIDDEN = 3
     const val OK = 0

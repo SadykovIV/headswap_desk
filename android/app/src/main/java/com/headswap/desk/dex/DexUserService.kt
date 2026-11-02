@@ -20,6 +20,9 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import androidx.annotation.Keep
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.cluster.ShellYandexGuidance
+import com.headswap.desk.cluster.YandexGuidanceCard
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
@@ -483,6 +486,35 @@ class DexUserService private constructor(private val context: Context, private v
             requireChild(childToken)
             producerLifetime
         }
+    }
+
+    private data class GuidanceLease(val parent: Session, val child: ChildSession?, val revision: Long, val pkg: String?)
+
+    private fun guidanceLease(id: Int): GuidanceLease? = DesktopReadDeadline.call(handler::post, 150L, { null }) {
+        val active = session ?: return@call null
+        if (id <= 0 || active.epoch != generation.get() || !active.token.isBinderAlive) return@call null
+        val parentDisplay = active.display?.display?.takeIf { it.isValid } ?: return@call null
+        if (parentDisplay.displayId == id) return@call GuidanceLease(active, null, 0L, null)
+        val children = active.children.values
+        val child = children.singleOrNull { it.display?.display?.let { d -> d.isValid && d.displayId == id } == true }
+            ?: return@call null
+        if (!child.token.isBinderAlive || child.launchedPackage !in YandexGuidanceCard.PACKAGES ||
+            (!child.fullscreen && children.any { it.fullscreen })) return@call null
+        GuidanceLease(active, child, child.revision, child.launchedPackage)
+    }
+
+    override fun readShizukuGuidance(displayId: Int): Array<String>? {
+        enforceClient()
+        if (delegated) return null
+        val before = guidanceLease(displayId) ?: return null
+        // Read on this Binder thread, never on the display/input handler. Shizuku's virtual
+        // displays were created by its shell UID; the app UID determines the target Android user.
+        val identity = Binder.clearCallingIdentity()
+        val result = try { ShellYandexGuidance.read(displayId, Process.myUid(), clientUid / 100000) }
+        finally { Binder.restoreCallingIdentity(identity) }
+        if (before != guidanceLease(displayId) || (result is ShellManeuverSample.Card &&
+                before.pkg != null && before.pkg != result.packageName)) return null
+        return result.encode()
     }
 
     private fun injectChildTouchEvent(child: ChildSession, event: EmbeddedTouchState.Event) {

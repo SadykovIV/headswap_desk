@@ -171,9 +171,8 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
             synchronized(stateLock) {
                 check(!stopping.get() && retiringGeneration != generation) { "Сеанс завершён" }
                 DexState.displayId = id
-                if (desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
-                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols)
-                }
+                EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols,
+                    shizuku = true)
             }
             status("Рабочий стол ${input.width}×${input.height} готов, ожидаю видео…")
             AppLog.i("DESKTOP mode=$desktopMode Shizuku display=$id generation=$generation native=${input.width}x${input.height} density=$density preview=false singleEncode=true", false)

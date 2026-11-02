@@ -268,6 +268,22 @@ class AaMetaTest {
         assertEquals(1, r.link.turns.count { it.action == MetaRelay.ACTION_END })
     }
 
+    @Test fun incompleteDesktopHintClearsOldArrowUntilACompleteHintArrives() {
+        val r = Rig()
+        r.start()
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_NAVI), true)
+        val right = AaNavTurn(AaMeta.T_RIGHT, "Elm", "Android", null, null)
+        val left = AaNavTurn(AaMeta.T_LEFT, "Oak", "Android", null, null)
+        r.core.onDesktopNavigation(r.link, right, AaNavDistance(160, null))
+        r.core.onDesktopNavigation(r.link, left, null)
+        r.core.onDesktopNavigation(r.link, left, AaNavDistance(-1, null))
+        r.core.refreshDesktopNavigation(r.link)
+        r.core.onDesktopNavigation(r.link, left, AaNavDistance(0, null))
+        assertEquals(listOf(MetaRelay.ACTION_SHOW, MetaRelay.ACTION_END, MetaRelay.ACTION_SHOW), r.link.turns.map { it.action })
+        assertEquals(AaMeta.T_LEFT, r.link.turns.last().nextTurn)
+        assertEquals(0, r.link.turns.last().remainDistance)
+    }
+
     @Test fun desktopSessionSwitchNeverReplaysAStaleTrackOrProgress() {
         val r = Rig()
         r.start()

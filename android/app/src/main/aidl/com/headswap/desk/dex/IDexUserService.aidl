@@ -37,6 +37,8 @@ interface IDexUserService {
     int createFullscreenChildDisplay(in Surface surface, IBinder childToken, int width, int height, int density) = 19;
     /** Protocol 7: consume a cancelled outside tap only while this owned display still shows its IME. */
     void dismissChildIme(IBinder childToken) = 20;
+    /** Protocol 8: only a live display of this Shizuku producer can return a Yandex maneuver. */
+    @nullable String[] readShizukuGuidance(int displayId) = 21;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }

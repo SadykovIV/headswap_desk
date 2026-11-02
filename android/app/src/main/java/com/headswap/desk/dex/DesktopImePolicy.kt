@@ -66,7 +66,7 @@ internal object ShellDisplayIme {
     private val getPolicy by lazy { wmType.getMethod("getDisplayImePolicy", Int::class.javaPrimitiveType) }
     private val setPolicy by lazy { wmType.getMethod("setDisplayImePolicy", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType) }
 
-    private fun requireOwned(id: Int, ownerUid: Int) {
+    fun requireOwned(id: Int, ownerUid: Int) {
         require(id > 0)
         val info = checkNotNull(displayInfo.invoke(displayManager, id)) { "Виртуальный дисплей закрыт" }
         val cls = info.javaClass

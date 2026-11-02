@@ -745,16 +745,12 @@ class MetaRelay(
     fun onDesktopNavigation(t: AaNavTurn?, d: AaNavDistance?) {
         // The CarLife message requires metres. Zero is a real instruction at a turn,
         // not a substitute for a missing/stale distance.
-        if (t == null) {
+        if (t == null || d == null || d.meters < 0) {
             endRoute("Android guidance unavailable")
             return
         }
         startRoute("Android guidance")
         val changed = storeTurn(t)
-        if (d == null || d.meters < 0) {
-            remain = null
-            return
-        }
         storeDistance(d)
         emitTurn(force = changed, why = "Android guidance")
     }

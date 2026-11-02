@@ -9,6 +9,8 @@ import android.util.Log
 import android.view.Display
 import android.view.SurfaceControl
 import androidx.annotation.Keep
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.cluster.ShellYandexGuidance
 import dalvik.system.InMemoryDexClassLoader
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -19,6 +21,8 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.zip.ZipFile
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Authenticated app_process helper. IME policy is confined to the app's trusted virtual
@@ -96,6 +100,15 @@ object ShellPanelHelper {
 
     private fun serve(socket: Socket, input: DataInputStream, output: DataOutputStream, ownerUid: Int, allowPanel: Boolean) {
         val panel by lazy { check(allowPanel); PhysicalPanel() }
+        val guidance = Executors.newSingleThreadExecutor { Thread(it, "headswap-hud-card").apply { isDaemon = true } }
+        val reading = AtomicBoolean()
+        fun acknowledge(value: Int) = synchronized(output) { output.writeByte(value); output.flush() }
+        fun reply(id: Int, sample: ShellManeuverSample) = synchronized(output) {
+            output.writeByte(RemotePanelWire.GUIDANCE_REPLY)
+            output.writeInt(id)
+            ShellGuidanceWire.write(output, sample)
+            output.flush()
+        }
         socket.soTimeout = 350
         var deadline = 0L
         fun restore() {
@@ -109,6 +122,22 @@ object ShellPanelHelper {
                 val op = try { input.read() } catch (_: SocketTimeoutException) { continue }
                 if (op < 0) return
                 try {
+                    if (op == RemotePanelWire.READ_GUIDANCE) {
+                        val id = input.readInt()
+                        val displayId = input.readInt()
+                        if (displayId <= 0 || !reading.compareAndSet(false, true)) {
+                            reply(id, ShellManeuverSample.Unavailable)
+                        } else guidance.execute {
+                            try {
+                                val sample = try { ShellYandexGuidance.read(displayId, ownerUid, ownerUid / 100000) }
+                                catch (_: Exception) { ShellManeuverSample.Unavailable }
+                                catch (_: LinkageError) { ShellManeuverSample.Unavailable }
+                                reading.set(false)
+                                reply(id, sample)
+                            } catch (_: java.io.IOException) { /* activation ended */ }
+                        }
+                        continue
+                    }
                     if (op == RemotePanelWire.LOCAL_IME || op == RemotePanelWire.IME_VISIBLE) {
                         val target = input.readLong()
                         val reply = try {
@@ -121,8 +150,7 @@ object ShellPanelHelper {
                         } catch (e: Exception) {
                             Log.w(TAG, "Local IME unavailable for display $target", e); RemotePanelWire.UNAVAILABLE
                         } catch (e: LinkageError) { Log.w(TAG, "Local IME API unavailable", e); RemotePanelWire.UNAVAILABLE }
-                        output.writeByte(reply)
-                        output.flush()
+                        acknowledge(reply)
                         continue
                     }
                     check(allowPanel) { "Управление физической панелью не запрашивалось" }
@@ -135,7 +163,7 @@ object ShellPanelHelper {
                             catch (e: Exception) { Log.w(TAG, "Panel preparation unavailable", e); false }
                             catch (e: LinkageError) { Log.w(TAG, "Panel API unavailable", e); false }
                             if (!available) {
-                                output.writeByte(RemotePanelWire.UNAVAILABLE); output.flush(); continue
+                                acknowledge(RemotePanelWire.UNAVAILABLE); continue
                             }
                         }
                         RemotePanelWire.OFF -> {
@@ -152,14 +180,15 @@ object ShellPanelHelper {
                         RemotePanelWire.RESTORE -> restore()
                         else -> error("Неизвестный запрос панели")
                     }
-                    output.writeByte(RemotePanelWire.OK); output.flush()
+                    acknowledge(RemotePanelWire.OK)
                 } catch (error: Exception) {
                     Log.w(TAG, "Panel request failed", error)
-                    runCatching { output.writeByte(RemotePanelWire.FAILED); output.flush() }
+                    runCatching { acknowledge(RemotePanelWire.FAILED) }
                     return
                 }
             }
         } finally {
+            guidance.shutdownNow()
             // Also reset on socket failure, app exit, or a hung app that stopped renewing.
             // Power follows the current logical display state, including OFF and DOZE.
             for (attempt in 0..2) {
