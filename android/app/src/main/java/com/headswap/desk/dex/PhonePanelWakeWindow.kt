@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.app.KeyguardManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -20,12 +21,10 @@ import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewTreeObserver
 import android.view.WindowManager
-import android.window.TrustedPresentationThresholds
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import java.util.function.Consumer
 
 /** One nonexported Activity on display 0, in an empty private task, for the lifetime of the lease. */
 internal class PhonePanelWakeWindow(
@@ -37,10 +36,17 @@ internal class PhonePanelWakeWindow(
         private val main = Handler(Looper.getMainLooper())
         internal const val EXTRA = "panel_request"
         internal fun request(id: Long): PhonePanelWakeWindow? = active.get()?.takeIf { it.id == id }
+        @Suppress("DEPRECATION")
+        internal fun topOnPhone(context: Context): ComponentName? = runCatching {
+            context.getSystemService(ActivityManager::class.java).getRunningTasks(100).firstOrNull {
+                it.isVisible && FrameworkTaskIdentityReader.read(it)?.displayId == Display.DEFAULT_DISPLAY
+            }?.topActivity
+        }.getOrNull()
     }
     private val id = next.incrementAndGet()
     private val ready = CountDownLatch(1)
     @Volatile private var presented = false
+    @Volatile private var closed = false
     private var activity: PhonePanelWakeActivity? = null // main thread only
 
     fun show() {
@@ -48,11 +54,12 @@ internal class PhonePanelWakeWindow(
         check(mayStart()) { "На телефоне открыт системный запрос. Таймер попробует снова после его закрытия." }
         check(active.compareAndSet(null, this)) { "На телефоне уже есть окно пробуждения" }
         try {
+            check(!closed) { "Запрос гашения отменён" }
             val flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK or
                 Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS or Intent.FLAG_ACTIVITY_NO_ANIMATION or Intent.FLAG_ACTIVITY_NO_USER_ACTION
             val options = ActivityOptions.makeBasic().apply { launchDisplayId = Display.DEFAULT_DISPLAY }
             app.startActivity(Intent(app, PhonePanelWakeActivity::class.java).setFlags(flags).putExtra(EXTRA, id), options.toBundle())
-            check(ready.await(2500, TimeUnit.MILLISECONDS) && presented && active.get() === this) {
+            check(ready.await(5, TimeUnit.SECONDS) && presented && active.get() === this) {
                 "Android не показал окно пробуждения на экране телефона"
             }
         } catch (error: Throwable) { close(); throw error }
@@ -63,9 +70,7 @@ internal class PhonePanelWakeWindow(
     private fun mayStart(): Boolean = runCatching {
         val lock = app.getSystemService(KeyguardManager::class.java)
         if (lock.isKeyguardLocked || lock.isDeviceLocked || !DelegatedPanelAccess.outputIsFresh()) return false
-        val top = app.getSystemService(ActivityManager::class.java).getRunningTasks(100).firstOrNull {
-            it.isVisible && FrameworkTaskIdentityReader.read(it)?.displayId == Display.DEFAULT_DISPLAY
-        }?.topActivity ?: return false
+        val top = topOnPhone(app) ?: return false
         val pkg = top.packageName
         val sensitive = pkg == "android" || pkg == "com.android.systemui" ||
             pkg.endsWith(".permissioncontroller") || pkg.endsWith(".packageinstaller") ||
@@ -85,6 +90,7 @@ internal class PhonePanelWakeWindow(
         Log.i("HeadSwapPanel", "Phone wake Activity committed and ready on display 0")
     }
     fun hasSurface(a: PhonePanelWakeActivity) = active.get() === this && activity === a && presented
+    fun awaitingSurface(a: PhonePanelWakeActivity) = !closed && active.get() === this && activity === a && !presented
     fun doubleTap(a: PhonePanelWakeActivity) { if (hasSurface(a)) onDoubleTap() }
     fun lost(a: PhonePanelWakeActivity) {
         if (active.get() !== this || activity !== a) return
@@ -94,9 +100,10 @@ internal class PhonePanelWakeWindow(
         if (wasPresented) onWindowLost()
     }
     fun close() {
-        if (!active.compareAndSet(this, null)) return
+        closed = true
         presented = false
         ready.countDown()
+        if (!active.compareAndSet(this, null)) return
         main.post {
             activity?.let { a -> if (!a.isFinishing && !a.isDestroyed) a.finishAndRemoveTask() }
             activity = null
@@ -106,10 +113,8 @@ internal class PhonePanelWakeWindow(
 
 class PhonePanelWakeActivity : Activity() {
     private var owner: PhonePanelWakeWindow? = null
-    private var listener: Consumer<Boolean>? = null
     private var committed = false
-    private var compositorVisible = Build.VERSION.SDK_INT < 35
-    private var checkReady: (() -> Unit)? = null
+    private var checkReady: Runnable? = null
 
     private fun eligible(): Boolean {
         val lock = getSystemService(KeyguardManager::class.java)
@@ -154,30 +159,32 @@ class PhonePanelWakeActivity : Activity() {
         view.setBackgroundColor(Color.BLACK)
         view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         setContentView(view)
-        fun confirm() {
-            if (committed && compositorVisible && hasWindowFocus() && eligible() && view.isShown) request.presented(this)
+        // The trusted-presentation callback can count a window on the car display as an
+        // occluder of display 0. Verify the actual foreground task and focused window on
+        // the phone after its first committed frame. Never blank underneath a system dialog.
+        checkReady = object : Runnable {
+            override fun run() {
+                view.removeCallbacks(this)
+                if (!request.awaitingSurface(this@PhonePanelWakeActivity) || !committed) return
+                if (eligible() && hasWindowFocus() && view.isShown && view.isAttachedToWindow &&
+                    view.windowVisibility == View.VISIBLE && !isInMultiWindowMode && !isInPictureInPictureMode &&
+                    PhonePanelWakeWindow.topOnPhone(this@PhonePanelWakeActivity) == componentName) {
+                    request.presented(this@PhonePanelWakeActivity)
+                } else {
+                    view.postDelayed(this, 120)
+                }
+            }
         }
-        checkReady = ::confirm
         view.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
             override fun onPreDraw(): Boolean {
                 view.viewTreeObserver.removeOnPreDrawListener(this)
                 try {
                     check(view.isHardwareAccelerated)
-                    if (Build.VERSION.SDK_INT >= 35) {
-                        val cb = Consumer<Boolean> { visible ->
-                            compositorVisible = visible
-                            if (visible) confirm() else if (request.hasSurface(this@PhonePanelWakeActivity))
-                                request.lost(this@PhonePanelWakeActivity)
-                        }
-                        listener = cb
-                        windowManager.registerTrustedPresentationListener(view.windowToken,
-                            TrustedPresentationThresholds(0.99f, 0.9f, 80), mainExecutor, cb)
-                    }
                     view.viewTreeObserver.registerFrameCommitCallback {
                         view.post {
                             committed = true
                             Log.i("HeadSwapPanel", "Phone wake Activity first frame committed")
-                            confirm()
+                            checkReady?.run()
                         }
                     }
                 } catch (failure: RuntimeException) {
@@ -191,8 +198,9 @@ class PhonePanelWakeActivity : Activity() {
     }
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) checkReady?.invoke()
-        else if (owner?.hasSurface(this) == true && (Build.VERSION.SDK_INT < 35 || !PhoneIdleTrustedWindow.ownedDisplayHasFocus())) {
+        if (hasFocus) checkReady?.run()
+        else if (owner?.hasSurface(this) == true && (Build.VERSION.SDK_INT < 35 ||
+                !PhoneIdleTrustedWindow.ownedDisplayHasFocus() || PhonePanelWakeWindow.topOnPhone(this) != componentName)) {
             // A phone dialog or another primary window has taken focus. Let it be used normally.
             owner?.lost(this)
         }
@@ -200,7 +208,7 @@ class PhonePanelWakeActivity : Activity() {
     override fun onPause() { owner?.lost(this); super.onPause() }
     override fun onStop() { owner?.lost(this); super.onStop() }
     override fun onDestroy() {
-        if (Build.VERSION.SDK_INT >= 35) listener?.let { runCatching { windowManager.unregisterTrustedPresentationListener(it) } }
+        checkReady = null
         owner?.lost(this)
         super.onDestroy()
     }

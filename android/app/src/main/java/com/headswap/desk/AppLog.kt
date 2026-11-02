@@ -1,6 +1,7 @@
 package com.headswap.desk
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -10,11 +11,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Лог в три места: logcat (тег Headswap), файл headswap-<timestamp>.log в getExternalFilesDir(null)
+ * Лог в три места: logcat (тег HeadSwapDesk), файл HeadSwapDesk-<timestamp>.log в getExternalFilesDir(null)
  * и кольцо последних строк для экрана. Подробности (hexdump) идут только в logcat и файл.
  */
 object AppLog {
-    const val TAG = "Headswap"
+    const val TAG = "HeadSwapDesk"
     private const val RING = 200
 
     private val ring = ArrayDeque<String>()
@@ -29,7 +30,7 @@ object AppLog {
         val dir = ctx.getExternalFilesDir(null) ?: ctx.filesDir
         dir.mkdirs()
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        val f = File(dir, "headswap-$stamp.log")
+        val f = File(dir, "$TAG-$stamp.log")
         try {
             out = FileOutputStream(f, true)
             file = f
@@ -37,6 +38,8 @@ object AppLog {
             Log.e(TAG, "не открыть файл лога $f", e)
         }
         i("лог: ${f.absolutePath}")
+        i("$TAG ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE}), " +
+            "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ${Build.MANUFACTURER} ${Build.MODEL}")
         CrashLog.install(ctx)
     }
 

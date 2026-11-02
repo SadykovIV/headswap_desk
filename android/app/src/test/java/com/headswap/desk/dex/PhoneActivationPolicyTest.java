@@ -47,6 +47,30 @@ public final class PhoneActivationPolicyTest {
         rejected(() -> PhoneActivationPolicy.statusPath("../request"));
         rejected(() -> PhoneActivationPolicy.statusPath(TOKEN + ";rm"));
     }
+    @Test public void unsupportedPanelRequiresAnExplicitMarkerAndSuccessfulBaseActivation() {
+        String success = "HEADSWAP_PANEL_UNAVAILABLE\nHEADSWAP_READY\n";
+        assertEquals("READY_WITHOUT_PANEL", PhoneActivationPolicy.resultPhase(0, success, true));
+        assertEquals("READY", PhoneActivationPolicy.resultPhase(0, success, false));
+        assertEquals("READY", PhoneActivationPolicy.resultPhase(0, "HEADSWAP_READY\n", true));
+        assertEquals("FAILED", PhoneActivationPolicy.resultPhase(1, success, true));
+        assertEquals("FAILED", PhoneActivationPolicy.resultPhase(0, "HEADSWAP_PANEL_UNAVAILABLE\n", true));
+        assertEquals("FAILED", PhoneActivationPolicy.resultPhase(0, "Error: HEADSWAP_READY\n", true));
+    }
+
+    @Test public void requestsBeforeTheLoggingUpdateCannotRestoreAnOldFailureScreen() {
+        assertFalse(PhoneActivationPolicy.sameBuild(0, 23));
+        assertFalse(PhoneActivationPolicy.sameBuild(22, 23));
+        assertTrue(PhoneActivationPolicy.sameBuild(23, 23));
+    }
+
+    @Test public void diagnosticRetainsFailureReasonButOmitsPairingAndActivationSecrets() {
+        String output = PhoneActivationPolicy.logMessage("ошибка панели\n" + TOKEN + " 123456");
+        assertTrue(output.contains("ошибка панели"));
+        assertFalse(output.contains(TOKEN));
+        assertFalse(output.contains("123456"));
+        assertEquals("", PhoneActivationPolicy.logMessage("-----BEGIN PRIVATE KEY-----"));
+    }
+
     @Test public void onlyBoundedFailureLineIsPersisted() {
         String text = "unrelated log\nАктивация не завершена: Включите USB-звук\nHEADSWAP_READY\n";
         assertEquals("Включите USB-звук", PhoneActivationPolicy.failureMessage(text));

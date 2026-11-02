@@ -17,6 +17,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     private val context = context.applicationContext
     private val registry = DelegatedInputRegistry()
     @Volatile private var liveDisplayIds: Set<Int> = emptySet()
+    @Volatile private var panelParent: DelegatedInputRegistry.Entry? = null
     private val phonePanel = DelegatedPanelController(this.context)
     private val displays = checkNotNull(context.getSystemService(DisplayManager::class.java))
     private val inputManager = checkNotNull(context.getSystemService(InputManager::class.java))
@@ -40,10 +41,12 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
 
     @Synchronized fun beginGeneration(generation: Long, token: IBinder) {
         registry.begin(generation, token)
+        panelParent = null
         liveDisplayIds = emptySet()
         activeGateway.set(this)
     }
     @Synchronized fun deactivate() {
+        panelParent = null
         liveDisplayIds = emptySet()
         activeGateway.compareAndSet(this, null)
         phonePanel.restoreBestEffort()
@@ -53,6 +56,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized override fun registerParent(displayId: Int, token: IBinder, width: Int, height: Int) {
         requireActive(); requireTrustedDisplay(displayId)
         registry.registerParent(displayId, token, width, height)
+        panelParent = registry.requireDisplay(displayId, token)
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
@@ -70,7 +74,10 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized override fun unregisterDisplay(displayId: Int, token: IBinder) {
         requireCaller() // Cleanup remains possible after activation has ended.
         val owned = runCatching { registry.requireDisplay(displayId, token) }.getOrNull()
-        if (owned?.parent == null && owned != null) phonePanel.restoreBestEffort()
+        if (owned?.parent == null && owned != null) {
+            panelParent = null
+            phonePanel.restoreBestEffort()
+        }
         registry.unregister(displayId, token)
         liveDisplayIds = registry.registeredDisplayIds()
     }
@@ -133,12 +140,21 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
             DelegatedDesktopAccess.hasPermissions(context), tasks)
     }
 
-    @Synchronized override fun setPhonePanelOff(parentId: Int, token: IBinder, off: Boolean) {
+    internal fun setLocalPanelOff(generation: Long, off: Boolean) {
+        val parent = synchronized(this) { registry.requireParent(generation) }
+        setPhonePanelOff(parent.id, parent.token as IBinder, off)
+    }
+
+    override fun setPhonePanelOff(parentId: Int, token: IBinder, off: Boolean) {
         requireCaller()
         if (off) requireActive() // restoring a lease remains possible after grant/liveness loss
-        check(registry.requireDisplay(parentId, token).parent == null) { "Панель доступна только родительскому рабочему столу" }
-        if (off) requireTrustedDisplay(parentId)
-        phonePanel.setOff(parentId, token, off)
+        val parent = synchronized(this) {
+            registry.requireDisplay(parentId, token).also {
+                check(it === panelParent && it.parent == null) { "Панель доступна только родительскому рабочему столу" }
+                if (off) requireTrustedDisplay(parentId)
+            }
+        }
+        phonePanel.setOff(parentId, token, off) { panelParent === parent }
     }
 
     private fun requireCaller() {

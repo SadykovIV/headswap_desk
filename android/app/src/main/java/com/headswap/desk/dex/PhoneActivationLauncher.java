@@ -57,9 +57,10 @@ public final class PhoneActivationLauncher {
                 System.setOut(previousOut); System.setErr(previousErr);
             }
             String output = captured.text();
-            boolean ready = exit == 0 && output.contains("HEADSWAP_READY\n");
-            writeStatus(uid, token, ready ? "READY" : "FAILED", ready ? "Доступ включён на телефоне"
-                : PhoneActivationPolicy.failureMessage(output));
+            String phase = PhoneActivationPolicy.resultPhase(exit, output, screen);
+            boolean ready = !phase.equals("FAILED");
+            writeStatus(uid, token, phase, !ready ? PhoneActivationPolicy.failureMessage(output)
+                : phase.equals(PhoneActivationPolicy.READY_WITHOUT_PANEL) ? PhoneActivationPolicy.PANEL_MESSAGE : "Доступ включён на телефоне");
             if (!ready) openSetup(); // Failure must be visible even when instrumentation restarted the old UI.
             exit = ready ? 0 : 1;
         } catch (Exception failure) {
@@ -75,7 +76,8 @@ public final class PhoneActivationLauncher {
     private static JSONObject request(int uid, String token) throws Exception {
         JSONObject request = new JSONObject(command(null, "run-as", ManualAccessPolicy.PACKAGE, "--user",
             Integer.toString(uid / 100000), "cat", PhoneActivationPolicy.REQUEST));
-        if (request.getInt("protocol") != PhoneActivationPolicy.PROTOCOL || request.getInt("uid") != uid
+        if (!PhoneActivationPolicy.sameBuild(request.optInt("versionCode"), com.headswap.desk.BuildConfig.VERSION_CODE)
+                || request.getInt("protocol") != PhoneActivationPolicy.PROTOCOL || request.getInt("uid") != uid
                 || !token.equals(request.getString("token"))) throw new IllegalStateException("Request changed");
         return request;
     }

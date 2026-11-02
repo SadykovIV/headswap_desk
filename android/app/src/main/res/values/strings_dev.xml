@@ -88,7 +88,7 @@
     <string name="dev_open_failed">Can\'t open: %1$s</string>
 
     <string name="dev_clear_title">Clear log?</string>
-    <string name="dev_clear_message">Lines on the screen will be erased and old headswap-*.log files will be deleted. The current file stays.</string>
+    <string name="dev_clear_message">The lines on screen and previous HeadSwapDesk logs, including logs from older versions, will be deleted. The current file will be kept.</string>
     <string name="dev_clear_confirm">Clear</string>
     <string name="dev_clear_cancel">Cancel</string>
     <plurals name="dev_deleted_old_files">

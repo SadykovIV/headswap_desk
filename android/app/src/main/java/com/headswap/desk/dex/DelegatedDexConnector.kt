@@ -56,6 +56,7 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     private val binderCalls = Executors.newSingleThreadExecutor { r -> Thread(r, "dex-binder").apply { isDaemon = true } }
     private val input = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, LinkedBlockingQueue(128),
         { r -> Thread(r, "dex-mouse").apply { isDaemon = true } })
+    private val panel = Executors.newSingleThreadExecutor { r -> Thread(r, "desktop-panel").apply { isDaemon = true } }
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "dex-watch").apply { isDaemon = true } }
     @Volatile private var service: IDexUserService? = null
     @Volatile private var serviceBinder: IBinder? = null
@@ -293,10 +294,12 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
             DexState.phoneScreenError = null
             generation
         }
-        try { input.execute {
+        try { panel.execute {
             try {
                 if (stopping.get() || generation != token || retiringGeneration == token) return@execute
-                checkNotNull(service) { "Служба рабочего стола недоступна" }.setPhoneScreenOff(off)
+                // The physical panel is owned here. Waiting for the phone's wake Activity must
+                // neither block input nor time out the virtual display producer's Binder thread.
+                inputGateway.setLocalPanelOff(token, off)
                 // The main-process panel owner updates state; a late ACK must not undo watchdog restoration.
             } catch (error: Exception) {
                 if (generation == token) DexState.phoneScreenError =
@@ -366,6 +369,7 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
         if (firstStop) {
             connected.countDown()
             watchdog.shutdownNow()
+            panel.shutdownNow()
             input.shutdownNow().forEach { (it as? Future<*>)?.cancel(false) }
             // Release the producer first. Unlike a Shizuku user service, ordinary
             // unbind does not kill its process and cannot prove Surface safety.

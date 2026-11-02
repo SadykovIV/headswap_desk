@@ -20,6 +20,13 @@ class DesktopAudioPolicyTest {
         assertEquals("android.permission.CAPTURE_AUDIO_OUTPUT", DesktopAudioPolicy.PERMISSION)
     }
 
+    @Test fun signalReportDistinguishesSilenceFromSigned16BitSamplesInEitherChannel() {
+        assertEquals(0, DesktopPcmFrames.peak(ByteArray(16)))
+        assertEquals(1, DesktopPcmFrames.peak(byteArrayOf(0, 0, -1, -1)))
+        assertEquals(32768, DesktopPcmFrames.peak(byteArrayOf(0, -128, 0, 0)))
+        assertEquals(32767, DesktopPcmFrames.peak(byteArrayOf(0, 0, -1, 127)))
+    }
+
     @Test fun shortReadPartitionsPreserveStereoFramesAndSampleOrder() {
         val original = ByteArray(128) { it.toByte() }
         for (chunkSize in 1..31) {

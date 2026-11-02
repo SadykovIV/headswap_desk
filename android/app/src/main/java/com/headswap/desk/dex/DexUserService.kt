@@ -20,10 +20,8 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import androidx.annotation.Keep
-import dalvik.system.InMemoryDexClassLoader
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
-import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.FutureTask
@@ -771,18 +769,7 @@ class DexUserService private constructor(private val context: Context, private v
         }
 
         init {
-            val archive = context.assets.open("dex/scrcpy-server-v4.1").use { stream ->
-                val output = java.io.ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                while (output.size() <= DexUserServicePolicy.MAX_CODE_BYTES) {
-                    val count = stream.read(buffer, 0, minOf(buffer.size, DexUserServicePolicy.MAX_CODE_BYTES + 1 - output.size()))
-                    if (count < 0) break
-                    if (count > 0) output.write(buffer, 0, count)
-                }
-                output.toByteArray()
-            }
-            val dex = DexUserServicePolicy.verifiedDex(archive)
-            loader = InMemoryDexClassLoader(ByteBuffer.wrap(dex), DexUserService::class.java.classLoader)
+            loader = ScrcpyRuntime.loader(context)
             loader.loadClass("com.genymobile.scrcpy.Workarounds").getMethod("apply").invoke(null)
             displayManager = checkNotNull(loader.loadClass("com.genymobile.scrcpy.wrappers.ServiceManager").getMethod("getDisplayManager").invoke(null))
             create = displayManager.javaClass.getMethod("createNewVirtualDisplay", String::class.java,

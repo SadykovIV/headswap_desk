@@ -13,24 +13,27 @@ import android.os.Looper
 import android.os.PowerManager
 import android.os.SystemClock
 import android.view.Display
-import android.view.SurfaceControl
 import com.headswap.desk.AppLog
 
 /** Explicit --screen activation only. No global setting or runtime hidden-API exemption is changed. */
 object DelegatedPanelAccess {
-    private const val SURFACE_PERMISSION = "android.permission.ACCESS_SURFACE_FLINGER"
     private const val SAMSUNG_PERMISSION = "android.permission.DEVICE_POWER"
     const val ACTIVATION_ARGUMENT = "headswap_screen"
+    @Volatile internal var unsupportedThisActivation = false
     private val lock = Any()
     private val controllers = mutableSetOf<DelegatedPanelController>()
     private var outputOwner: Any? = null
     private var outputFresh: (() -> Boolean)? = null
 
     fun requestFromArgument(value: String?): Boolean = value == "true"
-    fun permission(): String = if (SamsungPanelOverride.isSupported()) SAMSUNG_PERMISSION else SURFACE_PERMISSION
-    fun hasPermission(context: Context): Boolean = context.checkSelfPermission(permission()) == PackageManager.PERMISSION_GRANTED
+    fun permission(): String? = if (SamsungPanelOverride.isSupported()) SAMSUNG_PERMISSION else null
+    fun usesShellBackend(): Boolean = permission() == null
+    fun hasPermission(context: Context): Boolean {
+        val permission = permission() ?: return ShellPanelClient.isConnected
+        return context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+    }
     fun isAvailable(context: Context): Boolean = DexPrefs(context).desktopPanelControl &&
-        DelegatedDesktopAccess.isReady(context) && hasPermission(context) && runCatching { preflight(context); true }.getOrDefault(false)
+        DelegatedDesktopAccess.isReady(context) && !unsupportedThisActivation && hasPermission(context)
 
     /** Read-only: resolves the scoped backend and exact physical display, never changes power. */
     fun preflight(context: Context) { PanelPlatform(context).prepare() }
@@ -80,42 +83,64 @@ internal class DelegatedPanelController(private val context: Context) {
         } }
     }
 
-    @Synchronized fun setOff(id: Int, token: IBinder, off: Boolean) {
+    fun setOff(id: Int, token: IBinder, off: Boolean, stillOwned: () -> Boolean) {
         if (!off) {
-            restoreFailures = 0 // explicit retry has its own bounded cleanup attempts
-            try { lease?.restore(token); if (lease?.hasLease != true) finish() }
-            catch (error: Throwable) {
-                report(error); main.removeCallbacks(tick); main.post(tick)
-                throw error
+            synchronized(this) {
+                if (owner != token) return
+                restoreFailures = 0
+                try { lease?.restore(token); if (lease?.hasLease != true) finish() }
+                catch (error: Throwable) {
+                    report(error); main.removeCallbacks(tick); main.post(tick); throw error
+                }
             }
             return
         }
-        check(id > 0 && DelegatedPanelAccess.isAvailable(context) && DelegatedPanelAccess.outputIsFresh()) {
+        check(id > 0 && stillOwned() && DelegatedPanelAccess.isAvailable(context) && DelegatedPanelAccess.outputIsFresh()) {
             "Для выключения панели нужен активный USB-сеанс и отдельная активация с --screen"
         }
-        if (lease != null) { check(owner == token && displayId == id); return }
         val platform = PanelPlatform(context)
-        platform.prepare()
         lateinit var window: PhonePanelWakeWindow
         window = PhonePanelWakeWindow(context,
             onDoubleTap = { main.post { restoreFromWindow(window, true) } },
             onWindowLost = { main.post { restoreFromWindow(window, false) } })
-        val value = PhonePanelLease(platform::mayBlank, platform::mayRestore,
-            acquire = { platform.acquire(); window.show() },
-            release = { try { window.close() } finally { platform.release() } },
-            power = platform::power, refresh = platform::refresh)
-        touchWindow = window
-        lease = value; owner = token; displayId = id; restoreFailures = 0
-        DelegatedPanelAccess.register(this)
-        try { value.blank(token, SystemClock.elapsedRealtime()) }
-        catch (error: Throwable) { if (!value.hasLease) finish(); else main.post(tick); throw error }
-        DexState.phoneScreenOff = true
-        main.post(tick)
-        AppLog.i("DESKTOP PANEL: internal display blanked; keyguard unchanged", false)
+        synchronized(this) {
+            if (touchWindow != null) { check(owner == token && displayId == id); return }
+            touchWindow = window
+            owner = token
+            displayId = id
+            restoreFailures = 0
+            DelegatedPanelAccess.register(this)
+        }
+        try {
+            platform.prepare()
+            check(stillOwned() && platform.mayBlank()) { "Сеанс управления панелью завершён" }
+            // The Activity must be able to run on the main thread; neither gateway nor panel
+            // monitors are held while waiting. A detach or display release cancels this window.
+            window.show()
+            synchronized(this) {
+                check(touchWindow === window && stillOwned()) { "Сеанс управления панелью завершён" }
+                val value = PhonePanelLease({ stillOwned() && platform.mayBlank() }, platform::mayRestore,
+                    acquire = platform::acquire, release = { try { window.close() } finally { platform.release() } },
+                    power = platform::power, refresh = platform::refresh)
+                lease = value
+                value.blank(token, SystemClock.elapsedRealtime())
+                DexState.phoneScreenOff = true
+                main.post(tick)
+                AppLog.i("DESKTOP PANEL: internal display blanked; keyguard unchanged", false)
+            }
+        } catch (error: Throwable) {
+            window.close()
+            synchronized(this) {
+                if (touchWindow === window) {
+                    if (lease?.hasLease != true) finish() else main.post(tick)
+                }
+            }
+            throw error
+        }
     }
 
     @Synchronized private fun restoreFromWindow(window: PhonePanelWakeWindow, doubleTap: Boolean) {
-        if (touchWindow !== window || lease?.isBlank != true) return
+        if (touchWindow !== window || doubleTap && lease?.isBlank != true) return
         if (doubleTap) AppLog.i("DESKTOP PANEL: phone double tap; restoring internal panel", false)
         restoreBestEffort()
     }
@@ -144,59 +169,87 @@ internal class DelegatedPanelController(private val context: Context) {
 }
 
 @SuppressLint("PrivateApi", "BlockedPrivateApi") // Enabled only by explicit am instrument --no-hidden-api-checks --screen.
-private class PanelPlatform(private val context: Context) {
-    private val displays = context.getSystemService(DisplayManager::class.java)
+internal class PanelPlatform(private val context: Context) {
     private val powerManager = context.getSystemService(PowerManager::class.java)
     private val keyguard = context.getSystemService(KeyguardManager::class.java)
-    private var token: IBinder? = null
     private var physicalId: Long? = null
     @Suppress("DEPRECATION")
     private val wake = powerManager.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK, "HeadSwap:PanelOff").apply { setReferenceCounted(false) }
     private val samsung = if (SamsungPanelOverride.isSupported()) SamsungPanelOverride() else null
-    private val powerMethod by lazy { SurfaceControl::class.java.getMethod("setDisplayPowerMode", IBinder::class.java, Int::class.javaPrimitiveType) }
-    private val tokenMethod by lazy { SurfaceControl::class.java.getMethod("getPhysicalDisplayToken", Long::class.javaPrimitiveType) }
+    private fun primary() = primaryPanel(context)
+    private fun physical() = physicalPanelId(primary())
 
-    private fun primary(): Display = checkNotNull(displays.getDisplay(Display.DEFAULT_DISPLAY)).also {
-        check(it.isValid && Display::class.java.getMethod("getType").invoke(it) == 1) { "Основной экран не является внутренней панелью" }
-    }
-    private fun physical(): Long {
-        val address = checkNotNull(Display::class.java.getMethod("getAddress").invoke(primary()))
-        check(Class.forName("android.view.DisplayAddress").isInstance(address)) { "Неизвестный адрес панели" }
-        return (address.javaClass.getMethod("getPhysicalDisplayId").invoke(address) as Long).also {
-            check(it != -1L) { "У внутренней панели нет физического ID" }
-        }
-    }
     fun prepare() {
         check(DelegatedPanelAccess.hasPermission(context)) { "Активация не разрешает управление панелью; используйте --screen" }
         physicalId = physical()
         if (samsung == null) {
-            token = checkNotNull(tokenMethod.invoke(null, physicalId) as? IBinder) { "SurfaceFlinger не предоставил токен внутренней панели" }
-            powerMethod // Resolve before advertising support, without changing power.
+            ShellPanelClient.prepare(checkNotNull(physicalId))
         }
     }
     fun mayBlank(): Boolean = DelegatedDesktopAccess.isReady(context) && DexPrefs(context).desktopPanelControl &&
-        DelegatedPanelAccess.hasPermission(context) && DelegatedPanelAccess.outputIsFresh() && primary().state == Display.STATE_ON && powerManager.isInteractive &&
+        DelegatedPanelAccess.hasPermission(context) && DelegatedPanelAccess.outputIsFresh() &&
+        primary().state == Display.STATE_ON &&
+        powerManager.isInteractive &&
         !keyguard.isKeyguardLocked && !keyguard.isDeviceLocked && physical() == physicalId
-    // Samsung removes only our override: this is safe even after the user locks/sleeps the phone.
-    fun mayRestore(): Boolean = physical() == physicalId && (samsung != null || primary().state == Display.STATE_ON)
+    // Samsung releases its override; the shell restores to Android's current logical state.
+    fun mayRestore(): Boolean = physical() == physicalId
     fun acquire() { wake.acquire(); check(wake.isHeld) { "Не удалось сохранить активность рабочего стола" } }
     fun release() { if (wake.isHeld) wake.release() }
     fun power(on: Boolean) {
+        check(physical() == physicalId) { "Внутренняя панель изменилась" }
         if (samsung != null) samsung.setOff(!on)
-        else powerMethod.invoke(null, checkNotNull(token), if (on) 2 else 0)
+        else ShellPanelClient.power(on)
     }
-    fun refresh() { samsung?.refresh() }
+    fun refresh() {
+        if (samsung != null) samsung.refresh()
+        else ShellPanelClient.refresh()
+    }
 }
+
+@SuppressLint("PrivateApi", "BlockedPrivateApi")
+internal fun primaryPanel(context: Context): Display =
+    checkNotNull(context.getSystemService(DisplayManager::class.java).getDisplay(Display.DEFAULT_DISPLAY)).also {
+        check(it.isValid && Display::class.java.getMethod("getType").invoke(it) == 1) { "Основной экран не является внутренней панелью" }
+    }
+
+@SuppressLint("PrivateApi", "BlockedPrivateApi")
+internal fun physicalPanelId(display: Display): Long {
+    val address = checkNotNull(Display::class.java.getMethod("getAddress").invoke(display))
+    return physicalPanelIdFromAddress(address)
+}
+
+/** Framework versions use distinct Physical and StablePhysical classes. Require a framework
+ * DisplayAddress with the actual physical-ID API, not an arbitrary class or a port number. */
+internal fun physicalPanelIdFromAddress(address: Any, base: Class<*> = Class.forName("android.view.DisplayAddress")): Long {
+    check(base.isInstance(address)) { "Неизвестный адрес панели" }
+    val method = address.javaClass.getMethod("getPhysicalDisplayId")
+    check(method.returnType == Long::class.javaPrimitiveType) { "Неизвестный тип физического ID панели" }
+    return (method.invoke(address) as Long).also {
+        check(it != -1L) { "У внутренней панели нет физического ID" }
+    }
+}
+
+internal fun physicalPanelTokenMethod(surface: Class<*>, displayControl: () -> Class<*>): java.lang.reflect.Method {
+    val name = "getPhysicalDisplayToken"
+    return try {
+        surface.getMethod(name, Long::class.javaPrimitiveType)
+    } catch (_: NoSuchMethodException) {
+        displayControl().getMethod(name, Long::class.javaPrimitiveType)
+    }
+}
+
+@SuppressLint("PrivateApi", "BlockedPrivateApi")
+internal fun systemDisplayManager(): Any = checkNotNull(Class.forName("android.hardware.display.IDisplayManager\$Stub")
+    .getMethod("asInterface", IBinder::class.java).invoke(null,
+        Class.forName("android.os.ServiceManager").getMethod("getService", String::class.java)
+            .invoke(null, Context.DISPLAY_SERVICE) as? IBinder)) { "DisplayManager недоступен" }
 
 /** Samsung DMS owns the timeout/death cleanup. No guessed Binder transactions or global sleep. */
 @SuppressLint("PrivateApi", "BlockedPrivateApi")
 private class SamsungPanelOverride {
     private val token = Binder()
     private val method = method()
-    private val service = Class.forName("android.hardware.display.IDisplayManager\$Stub")
-        .getMethod("asInterface", IBinder::class.java).invoke(null,
-            Class.forName("android.os.ServiceManager").getMethod("getService", String::class.java)
-                .invoke(null, Context.DISPLAY_SERVICE) as? IBinder ?: error("DisplayManager недоступен"))
+    private val service = systemDisplayManager()
     private var lastRenewedAt: Long? = null
 
     fun setOff(off: Boolean) {

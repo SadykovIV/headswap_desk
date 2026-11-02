@@ -83,10 +83,12 @@ object LogShare {
 
     fun dirs(ctx: Context): List<File> = listOf(logDir(ctx), reportDir(ctx))
 
-    /** Файлы headswap-*.log, новые первыми. */
-    fun logFiles(ctx: Context): List<File> =
-        logDir(ctx).listFiles { f -> f.name.startsWith("headswap-") && f.name.endsWith(".log") }
-            ?.sortedByDescending { it.name } ?: emptyList()
+    fun logFiles(ctx: Context): List<File> = logFiles(logDir(ctx))
+
+    /** Sort by the timestamp after either prefix so an update keeps the latest sessions first. */
+    internal fun logFiles(dir: File): List<File> = dir.listFiles { f ->
+        f.isFile && f.name.endsWith(".log") && (f.name.startsWith("${AppLog.TAG}-") || f.name.startsWith("headswap-"))
+    }?.sortedWith(compareByDescending<File> { it.name.substringAfter('-') }.thenBy { it.name }) ?: emptyList()
 
     fun uriFor(f: File): Uri = Uri.parse("content://$AUTHORITY/${Uri.encode(f.name)}")
 
@@ -107,7 +109,7 @@ object LogShare {
         }
     }
 
-    /** Текущий файл headswap-*.log как есть. */
+    /** Текущий файл журнала как есть. */
     fun shareLog(ctx: Context) {
         val f = AppLog.file?.takeIf { it.isFile } ?: logFiles(ctx).firstOrNull()
         if (f == null) {
@@ -159,7 +161,7 @@ object LogShare {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val dir = reportDir(ctx)
         dir.listFiles()?.forEach { it.delete() }
-        val out = File(dir, "headswap-$stamp.zip")
+        val out = File(dir, "${AppLog.TAG}-$stamp.zip")
         ZipOutputStream(out.outputStream().buffered()).use { z ->
             z.putNextEntry(ZipEntry("device.txt"))
             z.write(deviceInfo(ctx).toByteArray(Charsets.UTF_8))
@@ -222,7 +224,7 @@ object LogShare {
             "?"
         }
         return buildString {
-            appendLine("Headswap $ver")
+            appendLine("${AppLog.TAG} $ver")
             appendLine("Время: ${SimpleDateFormat("yyyy-MM-dd HH:mm:ss Z", Locale.US).format(Date())}")
             appendLine("Устройство: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}), ${Build.DISPLAY}")
             appendLine("Аптайм: ${SystemClock.elapsedRealtime() / 1000} с")
@@ -270,7 +272,7 @@ object LogShare {
         "ошибка ${e.javaClass.simpleName}"
     }
 
-    /** Очистить: удалить старые файлы headswap-*.log (текущий оставить). */
+    /** При явной очистке удаляются старые журналы обоих форматов. */
     fun deleteOldLogs(ctx: Context): Int {
         val cur = AppLog.file
         var n = 0

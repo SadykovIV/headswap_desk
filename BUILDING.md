@@ -13,6 +13,17 @@ cd android
 
 APK для отладки Gradle подписывает локальным ключом. Android разрешает обновление уже установленного пакета только при совместимой подписи. Сохраните свой ключ для последующих обновлений.
 
+Для проверки USB-звука и панели на отдельном эмуляторе Android 13–17 соберите в каталоге `android` также `./gradlew :app:assembleDebugAndroidTest`. Установите обычный и тестовый APK на этот эмулятор. Замените `emulator-5554` на его идентификатор из `adb devices`.
+
+```sh
+adb -s emulator-5554 install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s emulator-5554 install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb -s emulator-5554 shell am instrument --no-hidden-api-checks -w -e probe audio com.headswap.desk.test/com.headswap.desk.qa.CompatibilityProbe
+python3 ../tools/qa/panel_probe.py --serial emulator-5554
+```
+
+`probe audio` проверяет музыкальный и навигационный тон от другого UID и исключение звука будильника. Скрипт панели измеряет переход внутреннего дисплея ON → OFF → ON. Он также проверяет возврат экрана при потере связи и при отсутствии продления таймера. Код `INSTRUMENTATION_CODE: -1` означает, что проверка прошла. Тестовый APK не входит в сборку для водителя.
+
 ## Дополнительный профиль DriveDeck
 
 Готовые APK для установки на телефон и порядок активации приведены в [инструкции](INSTALL.md).

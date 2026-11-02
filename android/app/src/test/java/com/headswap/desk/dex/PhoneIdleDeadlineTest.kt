@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class PhoneIdleDeadlineTest {
+    @Test fun android14DisplayGroupClockDoesNotTreatTheHeadUnitAsPhoneActivity() {
+        val parser = PhoneIdleDeadline.GroupParser()
+        val lines = listOf("mLastUserActivityTime(excludingAttention)=950", "Display Group User Activity:",
+            "displayGroupId=3", "lastUserActivityTime=999 (1 ms ago)", "lastUserActivityTimeNoChangeLights=0 (1000 ms ago)",
+            "displayGroupId=0", "lastUserActivityTime=710 (290 ms ago)", "lastUserActivityTimeNoChangeLights=0 (1000 ms ago)",
+            "displayGroupId=1", "lastUserActivityTime=950 (50 ms ago)", "lastUserActivityTimeNoChangeLights=0 (1000 ms ago)")
+        assertEquals(listOf(710L), lines.mapNotNull { parser.line(it, 1000) })
+    }
     @Test fun onlyInternalPanelEventsAffectTheTimer() {
         val parser = PhoneIdleDeadline.GroupParser()
         val lines = listOf("lastUserActivityTime=998 (2 ms ago)", "Power Group User Activity:", "groupId: 12",

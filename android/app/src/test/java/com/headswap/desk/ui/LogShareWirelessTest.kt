@@ -2,8 +2,26 @@ package com.headswap.desk.ui
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.nio.file.Files
 
 class LogShareWirelessTest {
+    @Test
+    fun mixedLogPrefixesAreSortedBySessionTimeForSharingAfterAnUpdate() {
+        val dir = Files.createTempDirectory("headswap-log-test").toFile()
+        try {
+            val expected = listOf(
+                "HeadSwapDesk-20240102-140000.log",
+                "headswap-20240102-100000.log",
+                "HeadSwapDesk-20240101-230000.log",
+            )
+            (expected + listOf("other.log", "HeadSwapDesk-20240103-010000.zip")).forEach { dir.resolve(it).createNewFile() }
+            dir.resolve("headswap-20240103-020000.log").mkdir()
+            assertEquals(expected, LogShare.logFiles(dir).map { it.name })
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
     @Test
     fun picksOnlyLinesWithWlMark() {
         val lines = listOf(

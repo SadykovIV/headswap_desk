@@ -6,6 +6,9 @@ import java.util.regex.Pattern;
 public final class PhoneActivationPolicy {
     public static final int PROTOCOL = 1;
     public static final long DEADLINE_MS = 90_000;
+    static final String PANEL_UNAVAILABLE = "HEADSWAP_PANEL_UNAVAILABLE";
+    static final String READY_WITHOUT_PANEL = "READY_WITHOUT_PANEL";
+    static final String PANEL_MESSAGE = "Прошивка не предоставила управление панелью. Доступ к рабочему столу активен. Выключение экрана и его таймер недоступны.";
     public static final String REQUEST = "files/phone-activation-request.json";
     private static final String STATUS_PREFIX = "files/phone-activation-result-";
     public static final String ENTRY = ManualAccessPolicy.DEX_CLASS_PACKAGE + ".PhoneActivationLauncher";
@@ -26,6 +29,17 @@ public final class PhoneActivationPolicy {
         return started >= 0 && now >= started && now - started <= DEADLINE_MS;
     }
 
+    static boolean sameBuild(int savedCode, int installedCode) {
+        return savedCode > 0 && savedCode == installedCode;
+    }
+
+    static String logMessage(String text) {
+        if (text == null || text.contains("PRIVATE KEY") || text.contains("CERTIFICATE")) return "";
+        String clean = text.replaceAll("(?i)\\b[0-9a-f]{32,}\\b|\\b[0-9]{6}\\b", "[скрыто]")
+            .replaceAll("[\\p{Cntrl}\\s]+", " ").trim();
+        return clean.substring(0, Math.min(clean.length(), 480));
+    }
+
     public static String dispatchCommand(String apkPath, int appUid, String token) {
         if (!validToken(token) || appUid < 10000 || appUid % 100000 < 10000
                 || apkPath == null || !apkPath.startsWith("/data/app/") || !apkPath.endsWith(".apk")
@@ -39,6 +53,11 @@ public final class PhoneActivationPolicy {
     }
 
     static String quote(String value) { return "'" + value.replace("'", "'\"'\"'") + "'"; }
+
+    static String resultPhase(int exit, String output, boolean requestedScreen) {
+        if (exit != 0 || !output.lines().anyMatch("HEADSWAP_READY"::equals)) return "FAILED";
+        return requestedScreen && output.lines().anyMatch(PANEL_UNAVAILABLE::equals) ? READY_WITHOUT_PANEL : "READY";
+    }
 
     public static String failureMessage(String output) {
         if (output == null || output.contains("PRIVATE KEY") || output.contains("CERTIFICATE"))

@@ -87,7 +87,7 @@
     <string name="dev_open_failed">Не открыть: %1$s</string>
 
     <string name="dev_clear_title">Очистить лог?</string>
-    <string name="dev_clear_message">Строки на экране сотрутся, старые файлы headswap-*.log удалятся. Текущий файл останется.</string>
+    <string name="dev_clear_message">Строки на экране и старые журналы HeadSwapDesk, включая журналы прежних версий, будут удалены. Текущий файл сохранится.</string>
     <string name="dev_clear_confirm">Очистить</string>
     <string name="dev_clear_cancel">Отмена</string>
     <plurals name="dev_deleted_old_files">

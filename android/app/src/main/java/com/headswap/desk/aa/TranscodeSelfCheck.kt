@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong
  * Как и мост, проверка после потери кадра (onNeedAaKeyFrame) и после resetDecoder() перестаёт подавать P-кадры
  * и подаёт ближайший IDR из файла с SPS/PPS.
  *
- * Запуск (лог в AppLog, `adb logcat -s Headswap` или файл лога приложения; ищи `transcode_test`):
+ * Запуск (лог в AppLog, `adb logcat -s HeadSwapDesk` или файл лога приложения; ищи `transcode_test`):
  * ```
  * adb shell am start -n com.headswap.desk/.MainActivity --es cmd transcode_test
  * # медленный слив в ГУ / занятый монитор моста: onEncoderFrame спит 20 мс (петля энкодер -> GL -> декодер -> вход).

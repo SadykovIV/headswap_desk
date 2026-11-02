@@ -32,7 +32,7 @@ internal class CarLifePhoneIdleTimer(
         override fun onChange(selfChange: Boolean) { readTimeout(); refresh() }
     }
     private var active = false
-    private var unsupported = false
+    private var clockFailures = 0
     private var reading = false
     private var generation = 0L
     private var armedAt: Long? = null
@@ -73,7 +73,7 @@ internal class CarLifePhoneIdleTimer(
     @SuppressLint("WakelockTimeout") // Always timed. A dead handler cannot keep the device awake indefinitely.
     private fun refresh() {
         main.removeCallbacks(tick)
-        if (!active || unsupported) return
+        if (!active) return
         val now = SystemClock.uptimeMillis()
         val selected = prefs.phoneIdleTimeout
         if (selected != selectedTimeout) {
@@ -110,11 +110,15 @@ internal class CarLifePhoneIdleTimer(
                 if (selectedTimeout != prefs.phoneIdleTimeout) { refresh(); return@post }
                 val now = SystemClock.uptimeMillis()
                 if (activity == null) {
-                    unsupported = true
-                    disarm()
-                    AppLog.i("DESKTOP PANEL TIMER: activity clock unavailable; foreground timer only", false)
+                    if (clockFailures == 0) AppLog.i("DESKTOP PANEL TIMER: activity clock unavailable; will retry", false)
+                    nextProbe = now + minOf(30_000L, 2_000L shl clockFailures.coerceAtMost(4))
+                    clockFailures = (clockFailures + 1).coerceAtMost(4)
+                    if (clockOwner === this) clockOwner = null
+                    owned = false
+                    releaseGuard()
                     return@post
                 }
+                clockFailures = 0
                 if (!owned) {
                     owned = true
                     clockOwner = this
@@ -138,6 +142,7 @@ internal class CarLifePhoneIdleTimer(
     private fun disarm() {
         if (armedAt != null) generation++
         armedAt = null
+        clockFailures = 0
         if (clockOwner === this) clockOwner = null
         owned = false
         releaseGuard()

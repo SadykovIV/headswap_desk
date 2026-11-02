@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Process
 import android.os.SystemClock
 import android.util.AtomicFile
+import com.headswap.desk.BuildConfig
 import org.json.JSONObject
 import java.io.File
 import java.security.SecureRandom
@@ -17,16 +18,21 @@ object PhoneActivationStatus {
 
     fun read(context: Context): Snapshot {
         val request = readJson(context, PhoneActivationPolicy.REQUEST) ?: return Snapshot(Phase.IDLE, "")
+        // An update restarts instrumentation. Preserve pairing, but never show the previous APK's result.
+        if (!PhoneActivationPolicy.sameBuild(request.optInt("versionCode"), BuildConfig.VERSION_CODE)) return Snapshot(Phase.IDLE, "")
         val token = request.optString("token")
         val started = request.optLong("startedElapsedMs", -1)
         if (!PhoneActivationPolicy.validToken(token) || request.optInt("protocol") != PhoneActivationPolicy.PROTOCOL)
             return Snapshot(Phase.FAILED, "Сохранённая попытка запуска недействительна")
         val result = readJson(context, PhoneActivationPolicy.statusPath(token))?.takeIf { it.optString("token") == token }
-        if (result?.optString("phase") == "READY") {
+        val phase = result?.optString("phase")
+        val partial = phase == PhoneActivationPolicy.READY_WITHOUT_PANEL
+        if (phase == "READY" || partial) {
             val ready = DelegatedDesktopAccess.isReady(context) &&
                 (!request.optBoolean("audio") || DesktopAudioAccess.hasPermission(context)) &&
-                (!request.optBoolean("screen") || DelegatedPanelAccess.hasPermission(context))
-            return if (ready) Snapshot(Phase.READY, "Доступ включён на телефоне", started)
+                (if (partial) request.optBoolean("screen") && DelegatedPanelAccess.unsupportedThisActivation
+                 else !request.optBoolean("screen") || DelegatedPanelAccess.hasPermission(context))
+            return if (ready) Snapshot(Phase.READY, if (partial) PhoneActivationPolicy.PANEL_MESSAGE else "Доступ включён на телефоне", started)
             else Snapshot(Phase.FAILED, "Доступ завершён. Включите его снова на телефоне или с компьютера.", started)
         }
         if (result?.optString("phase") == "FAILED")
@@ -43,11 +49,23 @@ object PhoneActivationStatus {
         AtomicFile(file(context, PhoneActivationPolicy.REQUEST)).delete()
     }
 
+    /** A successful new activation supersedes an already finished failure, never its own pending result. */
+    @Synchronized internal fun clearPriorFailure(context: Context) {
+        val request = readJson(context, PhoneActivationPolicy.REQUEST) ?: return
+        val token = request.optString("token")
+        if (!PhoneActivationPolicy.validToken(token)) return
+        val result = readJson(context, PhoneActivationPolicy.statusPath(token)) ?: return
+        if (result.optString("token") == token && result.optString("phase") == "FAILED") {
+            deletePriorResult(context)
+            AtomicFile(file(context, PhoneActivationPolicy.REQUEST)).delete()
+        }
+    }
+
     @Synchronized internal fun begin(context: Context, audio: Boolean, screen: Boolean): Request {
         check(read(context).phase != Phase.PENDING) { "Предыдущая активация ещё выполняется" }
         val token = ByteArray(16).also(SecureRandom()::nextBytes).joinToString("") { "%02x".format(it.toInt() and 255) }
         val started = SystemClock.elapsedRealtime()
-        val request = JSONObject().put("protocol", PhoneActivationPolicy.PROTOCOL).put("token", token)
+        val request = JSONObject().put("protocol", PhoneActivationPolicy.PROTOCOL).put("versionCode", BuildConfig.VERSION_CODE).put("token", token)
             .put("uid", Process.myUid()).put("startedElapsedMs", started).put("audio", audio).put("screen", screen)
         deletePriorResult(context)
         write(context, PhoneActivationPolicy.REQUEST, request)
@@ -62,7 +80,7 @@ object PhoneActivationStatus {
 
     internal fun dispatched(context: Context, request: Request): Boolean =
         readJson(context, PhoneActivationPolicy.statusPath(request.token))?.let {
-            it.optString("token") == request.token && it.optString("phase") in setOf("PENDING", "READY")
+            it.optString("token") == request.token && it.optString("phase") in setOf("PENDING", "READY", PhoneActivationPolicy.READY_WITHOUT_PANEL)
         } ?: false
 
     private fun deletePriorResult(context: Context) {

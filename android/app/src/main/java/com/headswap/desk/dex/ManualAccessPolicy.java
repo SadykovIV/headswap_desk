@@ -44,8 +44,11 @@ public final class ManualAccessPolicy {
     public static List<String> arguments(String token, Options options) {
         requireToken(token);
         List<String> args = new ArrayList<>(Arrays.asList("instrument", "-w", "-r", "-e", "headswap_activation_token", token));
+        // Both the playback mix and the physical panel use system APIs. Scope access to
+        // this instrumentation invocation; base desktop activation needs neither.
+        if (options.audio || options.screen) args.add("--no-hidden-api-checks");
         if (options.audio) args.addAll(Arrays.asList("-e", "headswap_audio", "true"));
-        if (options.screen) args.addAll(Arrays.asList("--no-hidden-api-checks", "-e", "headswap_screen", "true"));
+        if (options.screen) args.addAll(Arrays.asList("-e", "headswap_screen", "true"));
         args.add(COMPONENT);
         return Collections.unmodifiableList(args);
     }

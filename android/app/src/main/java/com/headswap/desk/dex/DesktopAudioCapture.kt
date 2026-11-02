@@ -1,22 +1,20 @@
 package com.headswap.desk.dex
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
-import android.media.AudioFormat
 import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import com.headswap.desk.AppLog
 import com.headswap.desk.aa.AaBridgeCore
+import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.atomic.AtomicBoolean
 
 object DesktopAudioAccess {
-    fun hasPermission(context: Context): Boolean = context.checkSelfPermission(DesktopAudioPolicy.PERMISSION) ==
-        PackageManager.PERMISSION_GRANTED
+    fun hasPermission(context: Context): Boolean =
+        context.checkSelfPermission(DesktopAudioPolicy.PERMISSION) == PackageManager.PERMISSION_GRANTED &&
+            context.checkSelfPermission(DesktopAudioPolicy.ROUTING_PERMISSION) == PackageManager.PERMISSION_GRANTED
 }
 
 object DesktopAudioState {
@@ -119,36 +117,27 @@ class DesktopAudioCapture(context: Context) {
         }
     }
 
-    // This is a privileged OUTPUT source, not RECORD_AUDIO/microphone. The explicit
-    // instrumentation option delegates only CAPTURE_AUDIO_OUTPUT in addition to the desktop grants.
-    @SuppressLint("MissingPermission", "WrongConstant") // Privileged public REMOTE_SUBMIX is omitted by the SDK IntDef.
-    private fun openRecord(): AudioRecord {
-        val minimum = AudioRecord.getMinBufferSize(DesktopAudioPolicy.SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_STEREO, AudioFormat.ENCODING_PCM_16BIT)
-        check(minimum > 0) { "Android не поддерживает PCM 48 кГц, стерео" }
-        val builder = AudioRecord.Builder()
-            .setAudioSource(MediaRecorder.AudioSource.REMOTE_SUBMIX)
-            .setAudioFormat(AudioFormat.Builder().setSampleRate(DesktopAudioPolicy.SAMPLE_RATE)
-                .setChannelMask(AudioFormat.CHANNEL_IN_STEREO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
-            .setBufferSizeInBytes(maxOf(minimum * 2, DesktopAudioPolicy.READ_BYTES * 4))
-        if (Build.VERSION.SDK_INT >= 31) builder.setContext(context)
-        return builder.build().also {
-            if (it.state != AudioRecord.STATE_INITIALIZED) { it.release(); error("Android не создал источник звука") }
+    private fun updateSignalStatus(capture: Capture, hasSignal: Boolean) {
+        main.post {
+            if (worker === capture && !capture.cancelled.get()) {
+                DesktopAudioState.status = if (hasSignal) "Звук передаётся по USB"
+                    else "USB-звук подключён. Ожидаю музыку или подсказку"
+            }
         }
     }
 
     private fun runCapture(capture: Capture) {
-        var record: AudioRecord? = null
+        var mix: RegisteredPlaybackMix? = null
         var started = false
         var failure: Throwable? = null
         try {
             // AudioService propagates new delegated grants to its native permission cache asynchronously.
             for (attempt in 0..2) {
                 if (capture.cancelled.get()) return
-                try { record = openRecord(); break }
+                try { mix = RegisteredPlaybackMix.open(context); break }
                 catch (error: Exception) { if (attempt == 2) throw error; Thread.sleep(150) }
             }
-            val audio = checkNotNull(record)
+            val audio = checkNotNull(mix).record
             if (capture.cancelled.get()) return
             audio.startRecording()
             check(audio.recordingState == AudioRecord.RECORDSTATE_RECORDING) { "Android не запустил передачу звука" }
@@ -158,19 +147,42 @@ class DesktopAudioCapture(context: Context) {
             }
             main.post { if (worker === capture && !capture.cancelled.get()) {
                 DesktopAudioState.running = true
-                DesktopAudioState.status = "Звук передаётся по USB"
+                DesktopAudioState.status = "USB-звук подключён. Ожидаю музыку или подсказку"
             } }
-            AppLog.i("DESKTOP AUDIO: REMOTE_SUBMIX PCM 48000 Hz stereo16 started (memory only)")
+            AppLog.i("DESKTOP AUDIO: registered AudioMix LOOP_BACK media/navigation; PCM 48000 Hz stereo16 started")
+            var nextReport = SystemClock.elapsedRealtime() + 10_000L
+            var intervalPeak = 0
+            var reportedSignal = false
+            var intervalHadSignal = false
             val input = ByteArray(DesktopAudioPolicy.READ_BYTES)
             val frames = DesktopPcmFrames()
             while (!capture.cancelled.get()) {
                 val count = audio.read(input, 0, input.size, AudioRecord.READ_NON_BLOCKING)
                 check(count >= 0) { "Ошибка чтения звука Android: $count" }
+                val now = SystemClock.elapsedRealtime()
+                if (now >= nextReport) {
+                    AppLog.i("DESKTOP AUDIO: PCM bytes=${DesktopAudioState.pcmBytes} " +
+                        "non-silent buffers=${DesktopAudioState.nonSilentBuffers} peak10s=$intervalPeak", false)
+                    if (intervalPeak == 0 && intervalHadSignal) updateSignalStatus(capture, hasSignal = false)
+                    intervalHadSignal = intervalPeak > 0
+                    intervalPeak = 0
+                    nextReport = now + 10_000L
+                }
                 if (count == 0) { Thread.sleep(5); continue }
                 val pcm = frames.append(input, count)
                 if (pcm.isEmpty() || capture.cancelled.get()) continue
                 DesktopAudioState.pcmBytes += pcm.size
-                if (pcm.any { it != 0.toByte() }) DesktopAudioState.nonSilentBuffers++
+                val peak = DesktopPcmFrames.peak(pcm)
+                if (peak > 0) DesktopAudioState.nonSilentBuffers++
+                if (peak > 0 && !reportedSignal) {
+                    reportedSignal = true
+                    AppLog.i("DESKTOP AUDIO: first non-silent PCM peak=$peak", false)
+                }
+                if (peak > 0 && !intervalHadSignal) {
+                    intervalHadSignal = true
+                    updateSignalStatus(capture, hasSignal = true)
+                }
+                intervalPeak = maxOf(intervalPeak, peak)
                 sessions.runIfCurrent(capture.generation) {
                     if (!capture.cancelled.get()) capture.core.onAudioData(DesktopAudioPolicy.MEDIA_CHANNEL, pcm,
                         SystemClock.elapsedRealtimeNanos() / 1000)
@@ -178,13 +190,13 @@ class DesktopAudioCapture(context: Context) {
             }
         } catch (error: Exception) {
             if (!capture.cancelled.get()) {
-                failure = error
-                AppLog.e("DESKTOP AUDIO: playback unavailable; desktop remains active", error)
+                failure = (error as? InvocationTargetException)?.targetException ?: error
+                AppLog.e("DESKTOP AUDIO: playback unavailable; desktop remains active", failure)
             }
         } finally {
             // Stop rerouting output before notifying CarLife; never retain capture during USB grace.
-            if (started) runCatching { record?.stop() }
-            runCatching { record?.release() }
+            if (started) runCatching { mix?.record?.stop() }
+            runCatching { mix?.close() }.onFailure { AppLog.e("DESKTOP AUDIO: unable to release playback route", it) }
             if (started) runCatching { sessions.runIfCurrent(capture.generation) {
                 capture.core.onAudioStop(DesktopAudioPolicy.MEDIA_CHANNEL)
             } }
@@ -196,7 +208,7 @@ class DesktopAudioCapture(context: Context) {
                     if (error != null && core === capture.core && !capture.cancelled.get()) {
                         failed = true
                         DesktopAudioState.error = "${error.javaClass.simpleName}: ${error.message}"
-                        DesktopAudioState.status = "Звук по USB недоступен; рабочий стол продолжает работать"
+                        DesktopAudioState.status = "Android не открыл USB-звук. Повторите активацию с включённым звуком и подключитесь снова."
                     }
                 }
             }

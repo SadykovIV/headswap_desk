@@ -11,6 +11,7 @@ import android.os.SystemClock
 import android.util.AtomicFile
 import android.util.Log
 import androidx.annotation.Keep
+import com.headswap.desk.AppLog
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -21,10 +22,12 @@ import java.util.concurrent.TimeUnit
 class DelegatedDesktopInstrumentation : Instrumentation() {
     private var requestAudio = false
     private var requestScreen = false
+    private var panelToken: String? = null
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         requestAudio = DesktopAudioPolicy.requestFromArgument(arguments?.getString(DesktopAudioPolicy.ACTIVATION_ARGUMENT))
         requestScreen = DelegatedPanelAccess.requestFromArgument(arguments?.getString(DelegatedPanelAccess.ACTIVATION_ARGUMENT))
+        if (requestScreen) panelToken = arguments?.getString("headswap_activation_token")
         start()
     }
 
@@ -38,6 +41,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         var automation: UiAutomation? = null
         var adoptedHere = false
         var ready = false
+        var panelReady = false
         var failureReason: String? = null
         val heartbeat = AtomicFile(File(context.filesDir, "computer-access-status.json"))
         fun writeHeartbeat(active: Boolean) {
@@ -48,7 +52,8 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                 .put("permissionsChecked", permissions)
                 .put("mediaControl", active && context.checkSelfPermission(DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL) == android.content.pm.PackageManager.PERMISSION_GRANTED)
                 .put("playbackAudio", active && requestAudio && DesktopAudioAccess.hasPermission(context))
-                .put("panelControl", active && requestScreen && DelegatedPanelAccess.hasPermission(context))
+                .put("panelControl", active && panelReady && DelegatedPanelAccess.hasPermission(context))
+                .put("panelUnsupported", active && DelegatedPanelAccess.unsupportedThisActivation)
                 .toString().toByteArray(Charsets.UTF_8)
             runCatching {
                 val output = heartbeat.startWrite()
@@ -58,6 +63,8 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         }
         try {
             check(Application.getProcessName() == context.packageName) { "Activation requires the main app process" }
+            AppLog.init(context)
+            AppLog.i("ACTIVATION start: audio=$requestAudio screen=$requestScreen", false)
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY or
                 UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))
             check(!requestAudio || DexPrefs(context).usbPlaybackAudio) {
@@ -69,26 +76,62 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             val permissions = mutableListOf(DelegatedDesktopAccess.ADD_TRUSTED_DISPLAY,
                 DelegatedDesktopAccess.INJECT_EVENTS, DelegatedDesktopAccess.REAL_GET_TASKS,
                 DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL)
-            if (requestAudio) permissions.add(DesktopAudioPolicy.PERMISSION)
+            if (requestAudio) {
+                permissions.add(DesktopAudioPolicy.PERMISSION)
+                permissions.add(DesktopAudioPolicy.ROUTING_PERMISSION)
+            }
             if (requestScreen) {
-                permissions.add(DelegatedPanelAccess.permission())
+                DelegatedPanelAccess.permission()?.let(permissions::add)
                 permissions.add(PhonePowerActivity.PERMISSION)
             }
             automation.adoptShellPermissionIdentity(*permissions.toTypedArray())
             adoptedHere = true
             check(DelegatedDesktopAccess.hasPermissions(context)) { "Android не предоставил все права рабочего стола и управления музыкой. Повторите явную активацию HeadSwap." }
             check(!requestAudio || DesktopAudioAccess.hasPermission(context)) { "Android не разрешил захват звука приложений" }
-            check(!requestScreen || context.checkSelfPermission(PhonePowerActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                "Android не предоставил временное право чтения таймера экрана. Повторите активацию с управлением экраном."
+            if (requestScreen) {
+                try {
+                    // A previous build may have died with an active DMS override. Reset only
+                    // that matched internal panel. The normal capture/gesture path has no such grant.
+                    val interrupted = AndroidPanelPower.pending(context)
+                    if (interrupted != null) {
+                        try {
+                            automation.adoptShellPermissionIdentity(*(permissions + AndroidPanelPower.PERMISSION).toTypedArray())
+                            AndroidPanelPower.recover(context, interrupted)
+                        } finally {
+                            automation.adoptShellPermissionIdentity(*permissions.toTypedArray())
+                        }
+                    }
+                    check(context.checkSelfPermission(PhonePowerActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                        "Нет права чтения таймера экрана"
+                    }
+                    if (DelegatedPanelAccess.usesShellBackend()) {
+                        ShellPanelClient.connect(checkNotNull(panelToken) { "Отсутствует идентификатор запуска панели" })
+                    }
+                    DelegatedPanelAccess.preflight(context)
+                    panelReady = true
+                } catch (error: Exception) {
+                    AppLog.e("DESKTOP PANEL: preflight failed", error.cause ?: error)
+                } catch (error: LinkageError) {
+                    AppLog.e("DESKTOP PANEL: backend unavailable", error)
+                }
+                if (!panelReady) {
+                    // Keep only the confirmed desktop/audio capabilities; no screen or timer grants.
+                    ShellPanelClient.close()
+                    DelegatedPanelAccess.permission()?.let(permissions::remove)
+                    permissions.remove(PhonePowerActivity.PERMISSION)
+                    automation.adoptShellPermissionIdentity(*permissions.toTypedArray())
+                    check(DelegatedDesktopAccess.hasPermissions(context) &&
+                        (!requestAudio || DesktopAudioAccess.hasPermission(context))) { "Не удалось сохранить основной доступ HeadSwap" }
+                    DelegatedPanelAccess.unsupportedThisActivation = true
+                }
             }
-            if (requestScreen) try { DelegatedPanelAccess.preflight(context) }
-            catch (error: Throwable) { throw IllegalStateException(
-                "Управление панелью недоступно (${DelegatedPanelAccess.permission()}): ${error.cause?.message ?: error.message}", error) }
             lease = DelegatedDesktopAccess.begin { stop.countDown() }
             DexPrefs(context).useDelegated = true
             ready = true
             writeHeartbeat(true)
-            Log.i(DelegatedDesktopAccess.LOG_TAG, "READY protocol=1 uid=${Process.myUid()} pid=${Process.myPid()} permissions=${permissions.joinToString(",")} playbackAudio=$requestAudio panelControl=$requestScreen")
+            PhoneActivationStatus.clearPriorFailure(context)
+            AppLog.i("ACTIVATION ready: audio=$requestAudio panel=$panelReady", false)
+            Log.i(DelegatedDesktopAccess.LOG_TAG, "READY protocol=1 uid=${Process.myUid()} pid=${Process.myPid()} permissions=${permissions.joinToString(",")} playbackAudio=$requestAudio panelControl=$panelReady")
             runCatching { sendStatus(0, Bundle().apply { putString("headswap_access", "ready") }) }
             // USB detach and producer/service shutdown must never count this latch down.
             while (!stop.await(5, TimeUnit.SECONDS)) {
@@ -98,12 +141,15 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         } catch (error: Throwable) {
             if (error is InterruptedException) Thread.currentThread().interrupt()
             failureReason = ManualAccessPolicy.conciseFailure(error)
+            AppLog.i("ACTIVATION failed: ${PhoneActivationPolicy.logMessage(failureReason)}", false)
             Log.e(DelegatedDesktopAccess.LOG_TAG, "FAILED protocol=1 ${error.javaClass.simpleName}", error)
         } finally {
             lease?.let(DelegatedDesktopAccess::end) // reject new panel leases before cleanup snapshot
             DesktopMusicPlayback.cancel("activation ended")
             DelegatedPanelAccess.restoreAll()
+            ShellPanelClient.close()
             writeHeartbeat(false)
+            DelegatedPanelAccess.unsupportedThisActivation = false
             // A failed adoption must not drop another package's active delegation.
             if (adoptedHere) runCatching { automation?.dropShellPermissionIdentity() }
             Log.i(DelegatedDesktopAccess.LOG_TAG, "STOPPED protocol=1")

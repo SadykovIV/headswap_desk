@@ -3,6 +3,7 @@ package com.headswap.desk.dex
 /** Playback only. The microphone and call recording sources are never selectable. */
 object DesktopAudioPolicy {
     const val PERMISSION = "android.permission.CAPTURE_AUDIO_OUTPUT"
+    const val ROUTING_PERMISSION = "android.permission.MODIFY_AUDIO_ROUTING"
     const val ACTIVATION_ARGUMENT = "headswap_audio"
     const val SAMPLE_RATE = 48000
     const val CHANNELS = 2
@@ -19,6 +20,18 @@ object DesktopAudioPolicy {
 
 /** Preserve incomplete PCM frames instead of truncating/offsetting stereo on a short read. */
 internal class DesktopPcmFrames {
+    companion object {
+        /** Sample magnitude in signed little-endian PCM16; no sample data is retained in logs. */
+        fun peak(pcm: ByteArray): Int {
+            var max = 0
+            for (i in 0 until pcm.size - 1 step 2) {
+                val sample = (pcm[i].toInt() and 0xff) or (pcm[i + 1].toInt() shl 8)
+                max = maxOf(max, kotlin.math.abs(sample))
+            }
+            return max
+        }
+    }
+
     private val tail = ByteArray(DesktopAudioPolicy.BYTES_PER_FRAME)
     private var tailBytes = 0
 

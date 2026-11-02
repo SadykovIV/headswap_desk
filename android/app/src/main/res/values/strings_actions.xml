@@ -8,12 +8,12 @@
     <!-- ui/LogShare.kt -->
     <string name="share_failed">Can\'t open Share: %1$s</string>
     <string name="share_no_log">No log file yet</string>
-    <string name="share_subject_log">Headswap: log %1$s</string>
+    <string name="share_subject_log">HeadSwapDesk: log %1$s</string>
     <string name="share_report_failed">Can\'t build the report: %1$s</string>
-    <string name="share_subject_report">Headswap: problem report</string>
+    <string name="share_subject_report">HeadSwapDesk: problem report</string>
     <string name="share_zip_failed">Can\'t build the archive: %1$s</string>
     <string name="share_saved">Saved to Downloads: %1$s</string>
-    <string name="share_subject_archive">Headswap: log archive</string>
+    <string name="share_subject_archive">HeadSwapDesk: log archive</string>
     <string name="share_size_mib">%1$s MiB</string>
     <string name="share_size_kib">%1$d KiB</string>
 

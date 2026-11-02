@@ -18,11 +18,17 @@ internal object PhoneIdleDeadline {
         fun line(input: String, now: Long): Long? {
             val value = input.trim()
             when {
-                value == "Power Group User Activity:" -> inGroups = true
+                value == "Power Group User Activity:" || value == "Display Group User Activity:" -> {
+                    inGroups = true
+                    inPrimary = false
+                    normal = null
+                    noLights = null
+                }
                 !inGroups -> return null
                 value.isEmpty() -> { inPrimary = false; inGroups = false }
-                value.startsWith("groupId:") -> {
-                    inPrimary = value.substringAfter(':').trim() == "0"
+                value.startsWith("groupId:") || value.startsWith("displayGroupId=") -> {
+                    val id = value.removePrefix("groupId:").removePrefix("displayGroupId=").trim()
+                    inPrimary = id == "0"
                     normal = null
                     noLights = null
                 }

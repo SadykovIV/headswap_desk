@@ -6,6 +6,7 @@ import android.os.SystemClock;
 import androidx.annotation.Keep;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -94,12 +95,20 @@ public final class ManualAccessLauncher {
             System.out.println("Доступ уже работает. Служба не перезапускалась.");
             return;
         }
-        if (options.audio) System.out.println("Запрошен USB-звук: только воспроизводимое аудио, без микрофона.");
+        if (options.audio) System.out.println("Запрошен временный маршрут USB-звука: музыка и подсказки в CarLife, без микрофона.");
         if (options.screen) System.out.println("Запрошен временный доступ к панели и системной диагностике (DUMP) для чтения времени активности экрана телефона. Перед выключением панели HeadSwap откроет свой экран для двойного касания.");
         byte[] random = new byte[16]; new SecureRandom().nextBytes(random);
         StringBuilder hex = new StringBuilder(32);
         for (byte b : random) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
         String token = hex.toString();
+        if (options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend()) {
+            try { launchPanelHelper(uid, token); }
+            catch (Exception error) {
+                // The app preflight independently requires the authenticated helper. Keep base access
+                // available and let it return the explicit partial result if this shell lacks support.
+                System.err.println("Не удалось запустить временную службу панели: " + error.getClass().getSimpleName());
+            }
+        }
         java.lang.Process launcher = new ProcessBuilder("/system/bin/sh", "-c", ManualAccessPolicy.launchCommand(token, options))
             .redirectErrorStream(true).start();
         ArrayBlockingQueue<String> lines = new ArrayBlockingQueue<>(128);
@@ -147,13 +156,33 @@ public final class ManualAccessLauncher {
         }
     }
 
+    private static void launchPanelHelper(int uid, String token) throws Exception {
+        String paths = run(5000, "pm", "path", ManualAccessPolicy.PACKAGE);
+        String apk = null;
+        for (String line : paths.split("\\r?\\n")) {
+            if (line.startsWith("package:/data/app/") && line.endsWith("/base.apk")) {
+                check(apk == null, "Неоднозначный путь приложения");
+                apk = line.substring("package:".length());
+            }
+        }
+        check(apk != null && new File(apk).isFile(), "Не найден установленный APK");
+        ProcessBuilder helper = new ProcessBuilder("/system/bin/setsid", "/system/bin/nohup",
+            "/system/bin/app_process", "/", ShellPanelHelper.class.getName(), Integer.toString(uid), token);
+        helper.environment().put("CLASSPATH", apk);
+        File devNull = new File("/dev/null");
+        helper.redirectInput(devNull).redirectOutput(devNull).redirectError(devNull).start();
+    }
+
     private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {
         check(Boolean.TRUE.equals(status.opt("mediaControl")),
             "Работает предыдущая активация без управления музыкой. Завершите доступ в HeadSwap и активируйте его снова. Текущие права не изменены.");
         check(!options.audio || Boolean.TRUE.equals(status.opt("playbackAudio")),
             "Доступ уже работает без USB-звука. Включите USB-звук в HeadSwap, завершите доступ в приложении и повторите команду с --audio.");
-        check(!options.screen || Boolean.TRUE.equals(status.opt("panelControl")),
-            "Доступ уже работает без управления экраном. Включите эту опцию в HeadSwap, завершите доступ в приложении и повторите команду с --screen.");
+        if (options.screen && !Boolean.TRUE.equals(status.opt("panelControl"))) {
+            check(Boolean.TRUE.equals(status.opt("panelUnsupported")),
+                "Доступ уже работает без управления экраном. Включите эту опцию в HeadSwap, завершите доступ в приложении и повторите команду с --screen.");
+            System.out.println(PhoneActivationPolicy.PANEL_UNAVAILABLE + "\n" + PhoneActivationPolicy.PANEL_MESSAGE);
+        }
     }
 
     private static JSONObject heartbeat(int uid, Long after) {

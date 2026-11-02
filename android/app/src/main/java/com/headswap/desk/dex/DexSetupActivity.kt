@@ -934,6 +934,9 @@ class DexSetupActivity : Activity() {
         if (!prefs.useDelegated) return false
         val status = PhoneActivationStatus.read(this)
         val key = "${status.phase}:${status.startedElapsedMs}:${status.message}"
+        if (phoneStatusSeen != key && status.phase in setOf(PhoneActivationStatus.Phase.READY, PhoneActivationStatus.Phase.FAILED)) {
+            AppLog.i("PHONE ACTIVATION ${status.phase}: ${PhoneActivationPolicy.logMessage(status.message)}", false)
+        }
         when (status.phase) {
             PhoneActivationStatus.Phase.PENDING -> {
                 phoneLaunchCommitted = true
@@ -946,7 +949,7 @@ class DexSetupActivity : Activity() {
                 phoneSetupOpen = false
                 phonePairOpen = false
                 cancelContinuation()
-                showState("Доступ HeadSwap активен", "Wi-Fi теперь можно отключить. Подключите телефон к CarLife по USB.")
+                showState("Доступ HeadSwap активен", status.message + "\nWi-Fi теперь можно отключить. Подключите телефон к CarLife по USB.")
                 if (!stopped && visible) readyWithDesktop()
                 return true
             }
@@ -1067,6 +1070,7 @@ class DexSetupActivity : Activity() {
         panelControlHint.visibility = panelControlChoice.visibility
         panelControlHint.updateText(when {
             !prefs.desktopPanelControl -> "HeadSwap получит временный доступ к панели и системной диагностике, чтобы узнать время последней активности телефона. Перед выключением панели он откроет свой экран для двойного касания."
+            DelegatedPanelAccess.unsupportedThisActivation -> PhoneActivationPolicy.PANEL_MESSAGE
             !DelegatedPanelAccess.isAvailable(this) -> "Для таймера и двойного касания повторите активацию на телефоне или с --screen на компьютере. HeadSwap запросит управление панелью и чтение времени активности экрана."
             else -> "Перед выключением панели HeadSwap открывает свой экран для двойного касания. Прежнее приложение телефона может приостановиться до пробуждения."
         })
@@ -1087,7 +1091,7 @@ class DexSetupActivity : Activity() {
             "Запуск уже передан Android; дождитесь подтверждения. Он завершится или покажет ошибку не позднее чем через 90 секунд."
         else buildString {
             append("Wi-Fi нужен на время активации. HeadSwap получит временный доступ к управлению плеером и перезапустится.")
-            if (prefs.usbPlaybackAudio) append(" Для звука по USB HeadSwap получит доступ к воспроизводимому звуку телефона, включая музыку и подсказки.")
+            if (prefs.usbPlaybackAudio) append(" Для звука по USB HeadSwap получит временный доступ к воспроизведению и направит музыку и подсказки в CarLife. Микрофон не используется.")
             if (prefs.desktopPanelControl) append(" Для таймера HeadSwap получит доступ к панели и времени активности экрана. Двойное касание вернёт изображение.")
             append(" Выбор можно изменить перед активацией в «Дополнительно».")
         })
@@ -1145,7 +1149,9 @@ class DexSetupActivity : Activity() {
         idleTimeoutChoice.updateText("Гасить через: ${prefs.phoneIdleTimeout.label} ▾")
         idleModeHint.updateText(when (mode) {
             PhoneIdleMode.CURTAIN -> "Пока HeadSwap открыт и CarLife подключён, через выбранный интервал экран станет чёрным с минимальной яркостью. Сенсор останется активным; двойное касание вернёт интерфейс. Панель физически не выключается."
-            PhoneIdleMode.PANEL -> if (!prefs.useDelegated || !prefs.desktopPanelControl || !DelegatedPanelAccess.hasPermission(this))
+            PhoneIdleMode.PANEL -> if (prefs.useDelegated && DelegatedPanelAccess.unsupportedThisActivation)
+                PhoneActivationPolicy.PANEL_MESSAGE
+                else if (!prefs.useDelegated || !prefs.desktopPanelControl || !DelegatedPanelAccess.hasPermission(this))
                 "Для автоматического выключения панели выберите «Доступ HeadSwap», включите управление экраном и повторите активацию."
                 else "Во время работы CarLife панель гаснет через выбранный интервал бездействия телефона. Дважды коснитесь экрана для возврата. Если сенсор не реагирует, отсоедините USB."
             PhoneIdleMode.DISABLED -> "HeadSwap не использует таймер. Действуют обычные настройки блокировки телефона."
@@ -1498,7 +1504,9 @@ class DexSetupActivity : Activity() {
 
     private fun showState(value: String, explanation: String, busy: Boolean = false) {
         title.updateText(value)
-        hint.updateText(explanation)
+        val panelWarning = prefs.useDelegated && DelegatedPanelAccess.unsupportedThisActivation &&
+            !explanation.contains(PhoneActivationPolicy.PANEL_MESSAGE)
+        hint.updateText(if (panelWarning) explanation + "\n" + PhoneActivationPolicy.PANEL_MESSAGE else explanation)
         screenBusy = busy
         val visibility = if (busy) View.VISIBLE else View.GONE
         if (progress.visibility != visibility) progress.visibility = visibility

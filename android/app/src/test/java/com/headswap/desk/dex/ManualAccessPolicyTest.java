@@ -35,13 +35,21 @@ public final class ManualAccessPolicyTest {
         rejected(() -> options("--help", "--screen"));
     }
 
-    @Test public void defaultAndAudioNeverDisableHiddenApiChecks() {
-        for (ManualAccessPolicy.Options opt : Arrays.asList(options(), options("--audio"))) {
-            List<String> args = ManualAccessPolicy.arguments(TOKEN, opt);
-            assertFalse(args.contains("--no-hidden-api-checks"));
-            assertFalse(args.contains("headswap_screen"));
-            assertEquals(ManualAccessPolicy.COMPONENT, args.get(args.size() - 1));
-        }
+    @Test public void baseActivationDoesNotRequestPlaybackApisOrPanel() {
+        List<String> args = ManualAccessPolicy.arguments(TOKEN, options());
+        assertFalse(args.contains("--no-hidden-api-checks"));
+        assertFalse(args.contains("headswap_audio"));
+        assertFalse(args.contains("headswap_screen"));
+        assertEquals(ManualAccessPolicy.COMPONENT, args.get(args.size() - 1));
+    }
+
+    @Test public void audioOnlyCanRegisterSystemMixWithoutRequestingPanel() {
+        List<String> args = ManualAccessPolicy.arguments(TOKEN, options("--audio"));
+        assertTrue(args.contains("--no-hidden-api-checks"));
+        assertEquals("true", args.get(args.indexOf("headswap_audio") + 1));
+        assertFalse(args.contains("headswap_screen"));
+        assertEquals(1, ManualAccessPolicy.arguments(TOKEN, options("--audio", "--screen")).stream()
+            .filter("--no-hidden-api-checks"::equals).count());
     }
 
     @Test public void screenOptInScopesBothFlagAndArgumentToSingleInstrumentation() {
