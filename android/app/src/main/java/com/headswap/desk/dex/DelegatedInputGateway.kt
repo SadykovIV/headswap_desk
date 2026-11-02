@@ -11,6 +11,7 @@ import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyEvent
 import android.view.MotionEvent
+import com.headswap.desk.AppLog
 
 /** TestApi calls stay in the already instrumented main process, not in ordinary helper ART. */
 internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.Stub() {
@@ -56,6 +57,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized override fun registerParent(displayId: Int, token: IBinder, width: Int, height: Int) {
         requireActive(); requireTrustedDisplay(displayId)
         registry.registerParent(displayId, token, width, height)
+        routeIme(displayId)
         panelParent = registry.requireDisplay(displayId, token)
         liveDisplayIds = registry.registeredDisplayIds()
     }
@@ -69,7 +71,28 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized private fun registerChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {
         requireActive(); requireTrustedDisplay(parentId); requireTrustedDisplay(displayId)
         registry.registerChild(parentId, displayId, token, width, height, fullscreen)
+        routeIme(displayId)
         liveDisplayIds = registry.registeredDisplayIds()
+    }
+
+    private fun routeIme(displayId: Int) {
+        if (!ShellPanelClient.enableLocalIme(displayId)) {
+            AppLog.i("DESKTOP IME: клавиатура на дисплее $displayId недоступна. Если доступ остался от прежней версии, завершите доступ и снова активируйте HeadSwap.", false)
+        }
+    }
+
+    override fun childImeVisibility(displayId: Int, token: IBinder): Int {
+        val child = synchronized(this) {
+            requireActive()
+            requireTrustedDisplay(displayId)
+            registry.requireDisplay(displayId, token).also { check(it.parent != null) }
+        }
+        val visible = ShellPanelClient.imeVisible(displayId)
+        return synchronized(this) {
+            requireActive()
+            check(registry.requireDisplay(displayId, token) === child)
+            when (visible) { true -> 1; false -> 0; null -> -1 }
+        }
     }
 
     @Synchronized override fun resizeDisplay(displayId: Int, token: IBinder, width: Int, height: Int) {

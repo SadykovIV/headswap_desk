@@ -25,8 +25,11 @@ internal object ProtocolLogPolicy {
     fun protobuf(body: ByteArray, schema: Schema?, depth: Int = 0): String? {
         if (schema == null || depth > 4) return null
         val fields = PbReader.parse(body) ?: return null
+        val cluster = schema === Schemas.mediaInfo || schema === Schemas.naviNextTurnInfo
         return fields.mapNotNull { field ->
             val definition = schema.fields[field.number] ?: return@mapNotNull null
+            // HUD packets carry personal track, artist and road names. Log only their numeric state.
+            if (cluster && definition.kind != Kind.INT) return@mapNotNull null
             val value = when {
                 field.wire == 0 && definition.kind == Kind.INT -> field.num.toInt().toString()
                 field.wire == 0 && definition.kind == Kind.BOOL -> (field.num != 0L).toString()

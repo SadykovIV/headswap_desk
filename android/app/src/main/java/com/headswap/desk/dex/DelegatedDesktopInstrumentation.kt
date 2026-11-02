@@ -22,12 +22,12 @@ import java.util.concurrent.TimeUnit
 class DelegatedDesktopInstrumentation : Instrumentation() {
     private var requestAudio = false
     private var requestScreen = false
-    private var panelToken: String? = null
+    private var activationToken: String? = null
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         requestAudio = DesktopAudioPolicy.requestFromArgument(arguments?.getString(DesktopAudioPolicy.ACTIVATION_ARGUMENT))
         requestScreen = DelegatedPanelAccess.requestFromArgument(arguments?.getString(DelegatedPanelAccess.ACTIVATION_ARGUMENT))
-        if (requestScreen) panelToken = arguments?.getString("headswap_activation_token")
+        activationToken = arguments?.getString("headswap_activation_token")
         start()
     }
 
@@ -50,6 +50,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                 .put("ready", active && permissions).put("pid", Process.myPid())
                 .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
                 .put("permissionsChecked", permissions)
+                .put("keyboardRouting", active && ShellPanelClient.isConnected)
                 .put("mediaControl", active && context.checkSelfPermission(DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL) == android.content.pm.PackageManager.PERMISSION_GRANTED)
                 .put("playbackAudio", active && requestAudio && DesktopAudioAccess.hasPermission(context))
                 .put("panelControl", active && panelReady && DelegatedPanelAccess.hasPermission(context))
@@ -88,6 +89,12 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             adoptedHere = true
             check(DelegatedDesktopAccess.hasPermissions(context)) { "Android не предоставил все права рабочего стола и управления музыкой. Повторите явную активацию HeadSwap." }
             check(!requestAudio || DesktopAudioAccess.hasPermission(context)) { "Android не разрешил захват звука приложений" }
+            // The am process (and its UiAutomation Binder) is retired after activation. This
+            // authenticated helper stays available offline, without delegating INTERNAL_SYSTEM_WINDOW.
+            activationToken?.let { token ->
+                try { ShellPanelClient.connect(token) }
+                catch (error: Exception) { AppLog.e("DESKTOP IME: служба клавиатуры недоступна", error) }
+            }
             if (requestScreen) {
                 try {
                     // A previous build may have died with an active DMS override. Reset only
@@ -104,9 +111,6 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                     check(context.checkSelfPermission(PhonePowerActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                         "Нет права чтения таймера экрана"
                     }
-                    if (DelegatedPanelAccess.usesShellBackend()) {
-                        ShellPanelClient.connect(checkNotNull(panelToken) { "Отсутствует идентификатор запуска панели" })
-                    }
                     DelegatedPanelAccess.preflight(context)
                     panelReady = true
                 } catch (error: Exception) {
@@ -116,7 +120,6 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                 }
                 if (!panelReady) {
                     // Keep only the confirmed desktop/audio capabilities; no screen or timer grants.
-                    ShellPanelClient.close()
                     DelegatedPanelAccess.permission()?.let(permissions::remove)
                     permissions.remove(PhonePowerActivity.PERMISSION)
                     automation.adoptShellPermissionIdentity(*permissions.toTypedArray())

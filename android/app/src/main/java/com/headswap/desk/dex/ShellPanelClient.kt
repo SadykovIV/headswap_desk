@@ -2,6 +2,7 @@ package com.headswap.desk.dex
 
 import android.os.Process
 import android.os.SystemClock
+import android.util.Log
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -45,9 +46,24 @@ internal object ShellPanelClient {
         }
     }
 
-    fun prepare(physicalId: Long) = command(RemotePanelWire.PREPARE, physicalId)
+    fun prepare(physicalId: Long) {
+        check(command(RemotePanelWire.PREPARE, physicalId) == RemotePanelWire.OK) { "Служба не поддерживает управление панелью" }
+    }
     fun power(on: Boolean) = command(if (on) RemotePanelWire.RESTORE else RemotePanelWire.OFF)
     fun refresh() = command(RemotePanelWire.RENEW)
+    fun enableLocalIme(displayId: Int): Boolean = imeRequest(RemotePanelWire.LOCAL_IME, displayId) == RemotePanelWire.OK
+    fun imeVisible(displayId: Int): Boolean? = when (imeRequest(RemotePanelWire.IME_VISIBLE, displayId)) {
+        RemotePanelWire.OK -> true
+        RemotePanelWire.HIDDEN -> false
+        else -> null
+    }
+
+    private fun imeRequest(op: Int, displayId: Int): Int {
+        require(displayId > 0)
+        if (!isConnected) return RemotePanelWire.UNAVAILABLE
+        return try { command(op, displayId.toLong()) }
+        catch (e: IOException) { Log.w("HeadSwapDesk", "Display IME helper unavailable", e); RemotePanelWire.UNAVAILABLE }
+    }
     @Synchronized fun close() {
         generation++
         val s = connection
@@ -55,19 +71,23 @@ internal object ShellPanelClient {
         s?.shutdown()
     }
 
-    private fun command(op: Int, physical: Long? = null) {
+    private fun command(op: Int, target: Long? = null): Int {
         // PREPARE may cold-load the vendor system-server library. It cannot switch the panel off.
-        val responseMs = if (op == RemotePanelWire.PREPARE) 10_000L else 1_000L
-        work(responseMs + 500L) {
+        val responseMs = when (op) {
+            RemotePanelWire.PREPARE -> 10_000L
+            RemotePanelWire.LOCAL_IME -> 2_000L
+            else -> 1_000L
+        }
+        return work(responseMs + 500L) {
             val s = connection ?: throw IOException("Связь с управлением панелью прервана")
-            try { s.call(op, physical, responseMs) }
+            try { s.call(op, target, responseMs) }
             catch (error: Exception) { s.shutdown(); throw error }
         }
     }
 
-    private fun work(limit: Long, body: () -> Unit) {
+    private fun <T> work(limit: Long, body: () -> T): T {
         val task = executor.submit(Callable { body() })
-        try { task.get(limit, TimeUnit.MILLISECONDS) }
+        try { return task.get(limit, TimeUnit.MILLISECONDS) }
         catch (e: Exception) {
             task.cancel(true)
             close()
@@ -105,14 +125,17 @@ internal object ShellPanelClient {
                 } catch (_: Exception) { } finally { shutdown() }
             }, "headswap-panel-replies").apply { isDaemon = true; start() }
         }
-        fun call(op: Int, physical: Long?, responseMs: Long) {
+        fun call(op: Int, target: Long?, responseMs: Long): Int {
             check(alive)
             output.writeByte(op)
-            if (physical != null) output.writeLong(physical)
+            if (target != null) output.writeLong(target)
             output.flush()
             val reply = ack.poll(responseMs, TimeUnit.MILLISECONDS)
                 ?: throw IOException("Истекло время ожидания ответа от службы панели")
-            check(reply == RemotePanelWire.OK) { "Служба панели отклонила операцию" }
+            check(reply == RemotePanelWire.OK || reply == RemotePanelWire.UNAVAILABLE &&
+                op in setOf(RemotePanelWire.PREPARE, RemotePanelWire.LOCAL_IME, RemotePanelWire.IME_VISIBLE) ||
+                op == RemotePanelWire.IME_VISIBLE && reply == RemotePanelWire.HIDDEN) { "Служба панели отклонила операцию" }
+            return reply
         }
         fun shutdown() { alive = false; runCatching { socket.close() }; ack.offer(RemotePanelWire.FAILED) }
     }

@@ -8,6 +8,7 @@ import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -18,6 +19,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowInsetsController
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ListView
 import android.widget.ImageButton
@@ -169,7 +171,11 @@ class AndroidDesktopActivity : Activity() {
         layout.addView(sidebar, LinearLayout.LayoutParams(railWidth, -1))
         val workspace = FrameLayout(this)
         layout.addView(workspace, LinearLayout.LayoutParams(0, -1, 1f))
-        pane = DesktopAppPane(this, onOpened = { menu.visibility = View.GONE }, onHome = {
+        pane = DesktopAppPane(this, onOpened = {
+            setChildInputFocus(true)
+            menu.visibility = View.GONE
+        }, onHome = {
+            setChildInputFocus(false)
             menu.visibility = View.VISIBLE
             status.setTextColor(Color.rgb(180, 190, 203))
             status.text = when {
@@ -225,6 +231,15 @@ class AndroidDesktopActivity : Activity() {
         menu = body
         workspace.addView(menu, FrameLayout.LayoutParams(-1, -1))
         setContentView(layout)
+    }
+
+    private fun setChildInputFocus(open: Boolean) {
+        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.TIRAMISU) {
+            // Android 13 has one focused display. The rail stays touchable without
+            // taking keyboard focus from the editor during a forwarded gesture.
+            val flag = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            window.setFlags(if (open) flag else 0, flag)
+        }
     }
 
     private fun navButton(label: String, icon: Int, action: () -> Unit) = ImageButton(this).apply {

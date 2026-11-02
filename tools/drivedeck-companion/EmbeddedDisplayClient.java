@@ -8,6 +8,7 @@ import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.graphics.SurfaceTexture;
 import android.os.Binder;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -23,6 +24,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 import com.headswap.desk.embed.IEmbeddedDisplayGateway;
@@ -54,6 +56,8 @@ public final class EmbeddedDisplayClient {
     private static volatile int gatewayCapabilities;
     private static final int HOST_RENDER_CONFIG = 0x10;
     private static Context appContext;
+    // Android 13 lacks independent display focus. Only the last touched child borrows its host's focus.
+    private static Lease focusLease; // MAIN only.
     static { THREAD.start(); WORK = new Handler(THREAD.getLooper()); }
     private EmbeddedDisplayClient() {}
 
@@ -311,8 +315,41 @@ public final class EmbeddedDisplayClient {
         });
     }
     public static void pause(Activity host) {
+        releaseHostFocus(host);
         EmbeddedResumeGate gate = RESUMES.get(host);
         if (gate != null) gate.pause();
+    }
+
+    /** Restore before dispatch to a native control. An actual child DOWN reclaims focus in the same traversal. */
+    public static void beforeHostTouch(Activity host, MotionEvent event) {
+        if (Build.VERSION.SDK_INT == 33 && event.getActionMasked() == MotionEvent.ACTION_DOWN) releaseHostFocus(host);
+    }
+
+    private static void releaseHostFocus(Activity host) {
+        if (focusLease == null || host == null || DisplayOnlyLaunch.activity(focusLease.renderer.getContext()) != host) return;
+        focusLease = null;
+        host.getWindow().clearFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE);
+    }
+
+    private static void keepChildFocus(Lease lease) {
+        if (Build.VERSION.SDK_INT != 33 || android.os.Looper.myLooper() != android.os.Looper.getMainLooper()
+                || lease.closed || !lease.renderer.isShown()) return;
+        Activity host = DisplayOnlyLaunch.activity(lease.renderer.getContext());
+        if (host == null || DisplayOnlyLaunch.displayId(host) <= 0) return;
+        if (focusLease == lease) return;
+        if (focusLease != null) releaseHostFocus(DisplayOnlyLaunch.activity(focusLease.renderer.getContext()));
+        int flag = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE;
+        if ((host.getWindow().getAttributes().flags & flag) != 0) return; // Another owner set this flag.
+        host.getWindow().addFlags(flag);
+        focusLease = lease;
+    }
+
+    /** Y7 hands transformed events to its executor. Claim focus on the original UI-thread DOWN. */
+    public static void onChildTouch(View renderer, MotionEvent event) {
+        if (Build.VERSION.SDK_INT != 33 || event.getActionMasked() != MotionEvent.ACTION_DOWN) return;
+        Lease lease;
+        synchronized (LOCK) { lease = LEASES.get(renderer); }
+        if (lease != null && lease.handle > 0 && !lease.geometryBlocked) keepChildFocus(lease);
     }
     private static void restoreRenderer(View renderer, EmbeddedResumeGate.Ticket ticket) {
         int parent = DisplayOnlyLaunch.displayId(renderer.getContext());
@@ -874,7 +911,12 @@ public final class EmbeddedDisplayClient {
             HANDOFF.retire(lease.texture, lease);
         }
     }
-    private static void retire(Lease lease) { synchronized (LOCK) { retireLocked(lease); } }
+    private static void retire(Lease lease) {
+        synchronized (LOCK) { retireLocked(lease); }
+        if (Build.VERSION.SDK_INT == 33) MAIN.post(() -> {
+            if (focusLease == lease) releaseHostFocus(DisplayOnlyLaunch.activity(lease.renderer.getContext()));
+        });
+    }
     private static Lease find(int handle) {
         if (handle <= 0) return null;
         synchronized (LOCK) { for (Lease lease : LEASES.values()) if (!lease.closed && lease.handle == handle) return lease; }

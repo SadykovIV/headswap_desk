@@ -101,13 +101,9 @@ public final class ManualAccessLauncher {
         StringBuilder hex = new StringBuilder(32);
         for (byte b : random) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
         String token = hex.toString();
-        if (options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend()) {
-            try { launchPanelHelper(uid, token); }
-            catch (Exception error) {
-                // The app preflight independently requires the authenticated helper. Keep base access
-                // available and let it return the explicit partial result if this shell lacks support.
-                System.err.println("Не удалось запустить временную службу панели: " + error.getClass().getSimpleName());
-            }
+        try { launchDisplayHelper(uid, token, options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend()); }
+        catch (Exception error) {
+            System.err.println("Не удалось запустить службу клавиатуры на магнитоле: " + error.getClass().getSimpleName());
         }
         java.lang.Process launcher = new ProcessBuilder("/system/bin/sh", "-c", ManualAccessPolicy.launchCommand(token, options))
             .redirectErrorStream(true).start();
@@ -156,7 +152,7 @@ public final class ManualAccessLauncher {
         }
     }
 
-    private static void launchPanelHelper(int uid, String token) throws Exception {
+    private static void launchDisplayHelper(int uid, String token, boolean panel) throws Exception {
         String paths = run(5000, "pm", "path", ManualAccessPolicy.PACKAGE);
         String apk = null;
         for (String line : paths.split("\\r?\\n")) {
@@ -167,13 +163,17 @@ public final class ManualAccessLauncher {
         }
         check(apk != null && new File(apk).isFile(), "Не найден установленный APK");
         ProcessBuilder helper = new ProcessBuilder("/system/bin/setsid", "/system/bin/nohup",
-            "/system/bin/app_process", "/", ShellPanelHelper.class.getName(), Integer.toString(uid), token);
+            "/system/bin/app_process", "/", ShellPanelHelper.class.getName(), Integer.toString(uid), token,
+            panel ? "ime-and-panel" : "ime");
         helper.environment().put("CLASSPATH", apk);
         File devNull = new File("/dev/null");
         helper.redirectInput(devNull).redirectOutput(devNull).redirectError(devNull).start();
     }
 
     private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {
+        if (!Boolean.TRUE.equals(status.opt("keyboardRouting"))) {
+            System.out.println("Рабочий стол доступен. Для клавиатуры на магнитоле завершите доступ в HeadSwap и снова активируйте приложение.");
+        }
         check(Boolean.TRUE.equals(status.opt("mediaControl")),
             "Работает предыдущая активация без управления музыкой. Завершите доступ в HeadSwap и активируйте его снова. Текущие права не изменены.");
         check(!options.audio || Boolean.TRUE.equals(status.opt("playbackAudio")),

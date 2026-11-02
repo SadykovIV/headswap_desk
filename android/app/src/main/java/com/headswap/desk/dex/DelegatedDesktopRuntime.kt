@@ -39,8 +39,8 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
     // TRUSTED / DESTROY_CONTENT / SUPPORTS_TOUCH are permission-gated platform flags
     // omitted by the public SDK IntDef. The shared engine verifies the returned display.
     @SuppressLint("WrongConstant")
-    override fun createChildDisplay(surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
-        checkNotNull(displays.createVirtualDisplay("HeadSwap navigator widget", width, height, density,
+    override fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
+        checkNotNull(displays.createVirtualDisplay(name, width, height, density,
             surface, EmbeddedDisplayPolicy.displayFlags(Build.VERSION.SDK_INT) or powerGroupFlag)) { "Android отклонил экран виджета" }
 
     override fun inject(event: InputEvent, id: Int, actionButton: Int) {
@@ -122,6 +122,10 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
     }
 
     override fun childTaskState(id: Int, packageName: String) = childTaskQuery(id, packageName)()
+    override fun childImeVisibilityQuery(id: Int): () -> Boolean? {
+        val token = inputLeases[id] ?: return { null }
+        return { when (inputGateway.childImeVisibility(id, token)) { 1 -> true; 0 -> false; else -> null } }
+    }
     override fun childTaskQuery(id: Int, packageName: String): () -> Int {
         check(id > 0) { "Проверка основного экрана запрещена" }
         val token = inputLeases[id] ?: return { -1 }

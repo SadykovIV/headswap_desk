@@ -359,6 +359,8 @@ class ProtocolTest {
         assertEquals(4, PbReader.int(f, 1))
         val flags = PbReader.all(f, 2).map { PbReader.parse(it.data!!)!! }.map { PbReader.int(it, 1) to PbReader.int(it, 2) }
         assertEquals(listOf(0 to 1, 1 to 0, 2 to 1, 3 to 0), flags)
+        val musicOnly = PbReader.parse(Msgs.subscribeDone(req, navigation = false, music = true)!!)!!
+        assertEquals(listOf(0, 0, 1, 0), PbReader.all(musicOnly, 2).map { PbReader.int(PbReader.parse(it.data!!)!!, 2) })
         // на мусор не отвечаем
         assertNull(Msgs.subscribeDone(hex("12 05 01")))
         assertEquals(listOf(0), Msgs.subscribeIds(hex("08 01 12 02 08 00")))

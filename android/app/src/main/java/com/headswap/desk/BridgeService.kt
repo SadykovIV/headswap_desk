@@ -32,6 +32,8 @@ import com.headswap.desk.aa.VideoGeometry
 import com.headswap.desk.aa.VideoMode
 import com.headswap.desk.aa.DesktopVideoSelection
 import com.headswap.desk.aa.DesktopVideoGeometry
+import com.headswap.desk.cluster.ClusterMediaSource
+import com.headswap.desk.cluster.ClusterNavigationSource
 import com.headswap.desk.dex.DexConnector
 import com.headswap.desk.dex.ShizukuDexConnector
 import com.headswap.desk.dex.DelegatedDexConnector
@@ -83,6 +85,8 @@ class BridgeService : Service() {
 
     private val main = Handler(Looper.getMainLooper())
     private var session: CarLifeSession? = null
+    private var clusterMedia: ClusterMediaSource? = null
+    private var clusterNavigation: ClusterNavigationSource? = null
     private var host: BridgeHost? = null
     private var phoneIdleTimer: com.headswap.desk.dex.CarLifePhoneIdleTimer? = null
     private val desktopAudio by lazy { DesktopAudioCapture(applicationContext) }
@@ -882,9 +886,12 @@ class BridgeService : Service() {
         val desktopSelection = dexPrefs.desktopVideoSelection()
         val desktopVideo = desktopSelection.takeIf { dexPrefs.useDesktopService }
         val screenOn = getSystemService(PowerManager::class.java).isInteractive
+        val clusterTransport = transport.caps.kind == TransportCaps.USB_AOA.kind ||
+            transport.caps.kind == TransportCaps.TCP_DEBUG.kind
         val cfg = SessionConfig(
             screenOn, false, if (desktopVideo != null) dexPrefs.desktopFps else aaPrefs.fpsSetting,
-            metaMusic = false, metaNavi = false, naviField6 = aaPrefs.naviField6, desktopVideo = desktopVideo,
+            metaMusic = clusterTransport && aaPrefs.metaMusic, metaNavi = clusterTransport && aaPrefs.metaNavi,
+            naviField6 = aaPrefs.naviField6, desktopVideo = desktopVideo,
         )
         MetaRelay.PROGRESS_UNIT = if (aaPrefs.progressSeconds) 1 else 1000
 
@@ -942,8 +949,34 @@ class BridgeService : Service() {
                 requestOff = { session === s && h.setPhoneScreenOff(true) }).also { it.start() }
         } else null
         s.start()
+        startClusterSources(s, cfg)
         h.onUsbSessionStarted()
         if (transport.caps.kind == TransportCaps.USB_AOA.kind) Actions.onUsbSessionStarted()
+    }
+
+    private fun startClusterSources(owner: CarLifeSession, config: SessionConfig) {
+        stopClusterSources()
+        if (config.metaMusic) {
+            clusterMedia = ClusterMediaSource(applicationContext) { value ->
+                if (!stopRequested && session === owner) owner.onClusterMedia(value)
+            }.also { source ->
+                runCatching { source.start() }.onFailure { AppLog.e("CLUSTER: music source unavailable", it) }
+            }
+        }
+        if (config.metaNavi) {
+            clusterNavigation = ClusterNavigationSource(applicationContext) { hint ->
+                if (!stopRequested && session === owner) owner.onClusterNavigation(hint)
+            }.also { source ->
+                runCatching { source.start() }.onFailure { AppLog.e("CLUSTER: navigation source unavailable", it) }
+            }
+        }
+    }
+
+    private fun stopClusterSources() {
+        runCatching { clusterMedia?.close() }.onFailure { AppLog.e("CLUSTER: music source cleanup", it) }
+        runCatching { clusterNavigation?.close() }.onFailure { AppLog.e("CLUSTER: navigation source cleanup", it) }
+        clusterMedia = null
+        clusterNavigation = null
     }
 
     /** DeX uses the existing CarLife video pipeline; Android Auto certificates are not involved. */
@@ -1091,6 +1124,7 @@ class BridgeService : Service() {
     private fun onSessionClosed(s: CarLifeSession, reason: String) {
         AppLog.i("сервис: сессия завершена ($reason)")
         if (session !== s) return
+        stopClusterSources()
         if (!stopRequested && s.transportKind == TransportCaps.USB_AOA.kind) {
             observePhysicalUsbDetach("USB session closed and accessory absent")
         }
@@ -1164,6 +1198,7 @@ class BridgeService : Service() {
         } catch (_: Exception) {
         }
         stopRequested = true
+        stopClusterSources()
         cancelDesktopRecovery()
         alive = false
         autoMode = false

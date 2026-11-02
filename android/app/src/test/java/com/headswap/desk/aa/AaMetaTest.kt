@@ -245,6 +245,58 @@ class AaMetaTest {
         }
     }
 
+    @Test fun desktopRouteFollowsSubscriptionUpdatesAndClearsOnce() {
+        val r = Rig()
+        val turn = AaNavTurn(AaMeta.T_RIGHT, "Elm", "Android", null, null)
+        r.core.onDesktopNavigation(r.link, turn, AaNavDistance(260, 15))
+        r.start()
+        assertTrue(r.link.turns.isEmpty())
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_NAVI), true)
+        assertEquals(listOf(MetaRelay.ACTION_SHOW), r.link.turns.map { it.action })
+        r.now += 1200
+        r.core.onDesktopNavigation(r.link, turn, AaNavDistance(195, 10))
+        assertEquals(listOf(260, 195), r.link.turns.map { it.remainDistance })
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_NAVI), false)
+        r.core.onDesktopNavigation(r.link, turn, AaNavDistance(80, 5))
+        r.core.refreshDesktopNavigation(r.link)
+        assertEquals(2, r.link.turns.size)
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_NAVI), true)
+        assertEquals(MetaRelay.ACTION_SHOW, r.link.turns.last().action)
+        assertEquals(80, r.link.turns.last().remainDistance)
+        r.core.onDesktopNavigation(r.link, null, null)
+        r.core.onDesktopNavigation(r.link, null, null)
+        assertEquals(1, r.link.turns.count { it.action == MetaRelay.ACTION_END })
+    }
+
+    @Test fun desktopSessionSwitchNeverReplaysAStaleTrackOrProgress() {
+        val r = Rig()
+        r.start()
+        fun send(song: String, active: Boolean, pos: Int) {
+            r.core.onDesktopMedia(r.link, AaMediaStatus(if (active) 2 else 3, "player", pos, null, null, null),
+                AaMediaMetadata(song, "Artist", "Album", null, null, 100, null))
+        }
+        send("Previous", false, 31)
+        assertTrue(r.link.infos.isEmpty())
+        send("Current", true, 5)
+        assertEquals(listOf("Current"), r.link.infos.map { it.song })
+        assertEquals(5 * MetaRelay.PROGRESS_UNIT, r.link.progress.single())
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_MUSIC), false)
+        send("Next", true, 0)
+        assertEquals(1, r.link.infos.size)
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_MUSIC), true)
+        assertEquals("Next", r.link.infos.last().song)
+        r.core.onDesktopMedia(r.link, null, null)
+        r.core.onDesktopMedia(r.link, null, null)
+        assertEquals(listOf("Current", "Next", ""), r.link.infos.map { it.song })
+        r.core.desktopInputEnabled = true
+        r.core.onCarlifeClosed(r.link)
+        val newLink = MetaLink()
+        r.core.attach(newLink)
+        r.core.onCarlifeStart()
+        send("Old observer", true, 9)
+        assertTrue(newLink.infos.isEmpty())
+    }
+
     @Test
     fun musicDeferredUntilStartThenProgressInMsThrottled() {
         val r = Rig()

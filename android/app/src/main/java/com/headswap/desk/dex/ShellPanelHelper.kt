@@ -21,8 +21,8 @@ import java.nio.ByteBuffer
 import java.util.zip.ZipFile
 
 /**
- * app_process child of the user's explicit --screen launcher. Shell retains its native SurfaceFlinger
- * identity here; the regular app can only prepare, blank, renew or restore the verified internal panel.
+ * Authenticated app_process helper. IME policy is confined to the app's trusted virtual
+ * displays; the optional physical-panel commands require an explicit --screen launch.
  */
 @Keep
 object ShellPanelHelper {
@@ -30,13 +30,14 @@ object ShellPanelHelper {
 
     @JvmStatic fun main(args: Array<String>) {
         try {
-            check(Process.myUid() == 2000 && args.size == 2 && DelegatedPanelAccess.usesShellBackend())
+            check(Process.myUid() == 2000 && args.size == 3 && args[2] in setOf("ime", "ime-and-panel"))
             val uid = args[0].toInt()
             val token = args[1]
+            val allowPanel = args[2] == "ime-and-panel" && DelegatedPanelAccess.usesShellBackend()
             require(uid >= 10000 && uid % 100000 >= 10000 && PhoneActivationPolicy.validToken(token))
             @Suppress("DEPRECATION")
             if (Looper.myLooper() == null) Looper.prepareMainLooper()
-            listen(uid, token)
+            listen(uid, token, allowPanel)
         } catch (e: Exception) { Log.w(TAG, "Panel helper ended: ${e.javaClass.simpleName}: ${e.message}") }
         catch (e: LinkageError) { Log.w(TAG, "Panel system API unavailable", e) }
         finally {
@@ -46,7 +47,7 @@ object ShellPanelHelper {
         }
     }
 
-    private fun listen(uid: Int, token: String) {
+    private fun listen(uid: Int, token: String, allowPanel: Boolean) {
         val deadline = SystemClock.elapsedRealtime() + 25_000
         ServerSocket().use { server ->
             server.bind(InetSocketAddress(RemotePanelWire.loopback, RemotePanelWire.port(token)), 4)
@@ -62,7 +63,7 @@ object ShellPanelHelper {
                     catch (_: Exception) { false }
                     if (valid) {
                         server.close() // one activation owner; the socket EOF identifies its process death
-                        serve(socket, input, output)
+                        serve(socket, input, output, uid, allowPanel)
                         return
                     }
                 }
@@ -93,8 +94,8 @@ object ShellPanelHelper {
         return true
     }
 
-    private fun serve(socket: Socket, input: DataInputStream, output: DataOutputStream) {
-        val panel = PhysicalPanel()
+    private fun serve(socket: Socket, input: DataInputStream, output: DataOutputStream, ownerUid: Int, allowPanel: Boolean) {
+        val panel by lazy { check(allowPanel); PhysicalPanel() }
         socket.soTimeout = 350
         var deadline = 0L
         fun restore() {
@@ -108,8 +109,35 @@ object ShellPanelHelper {
                 val op = try { input.read() } catch (_: SocketTimeoutException) { continue }
                 if (op < 0) return
                 try {
+                    if (op == RemotePanelWire.LOCAL_IME || op == RemotePanelWire.IME_VISIBLE) {
+                        val target = input.readLong()
+                        val reply = try {
+                            require(target in 1..Int.MAX_VALUE.toLong())
+                            if (op == RemotePanelWire.LOCAL_IME) {
+                                ShellDisplayIme.enable(target.toInt(), ownerUid)
+                                RemotePanelWire.OK
+                            } else if (ShellDisplayIme.isVisible(target.toInt(), ownerUid)) RemotePanelWire.OK
+                            else RemotePanelWire.HIDDEN
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Local IME unavailable for display $target", e); RemotePanelWire.UNAVAILABLE
+                        } catch (e: LinkageError) { Log.w(TAG, "Local IME API unavailable", e); RemotePanelWire.UNAVAILABLE }
+                        output.writeByte(reply)
+                        output.flush()
+                        continue
+                    }
+                    check(allowPanel) { "Управление физической панелью не запрашивалось" }
                     when (op) {
-                        RemotePanelWire.PREPARE -> { check(deadline == 0L); panel.prepare(input.readLong()) }
+                        RemotePanelWire.PREPARE -> {
+                            check(deadline == 0L)
+                            val physicalId = input.readLong()
+                            // A vendor without panel-power support can still route its keyboard.
+                            val available = try { panel.prepare(physicalId); true }
+                            catch (e: Exception) { Log.w(TAG, "Panel preparation unavailable", e); false }
+                            catch (e: LinkageError) { Log.w(TAG, "Panel API unavailable", e); false }
+                            if (!available) {
+                                output.writeByte(RemotePanelWire.UNAVAILABLE); output.flush(); continue
+                            }
+                        }
                         RemotePanelWire.OFF -> {
                             check(deadline == 0L)
                             deadline = SystemClock.elapsedRealtime() + RemotePanelWire.LEASE_MS

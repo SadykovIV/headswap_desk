@@ -22,6 +22,17 @@ class ProtocolLogPolicyTest {
         assertFalse(result.header, result.header.contains("\\x"))
     }
 
+    @Test fun dashboardLogsOnlyNumbersAndNeverPrivateTrackOrRoadText() {
+        val media = PbWriter().string(2, "QAZ! track").string(3, "QAZ! artist").int32(6, 181).toByteArray()
+        val route = PbWriter().int32(1, 1).int32(2, 7).string(3, "QAZ! road").int32(5, 450).toByteArray()
+        val song = entry(Ch.CMD, Msg.MEDIA_INFO, media)
+        val turn = entry(Ch.CMD, Msg.NAVI_NEXT_TURN_INFO, route)
+        metadataOnly(song)
+        metadataOnly(turn)
+        assertTrue(song.header.contains("duration=181"))
+        assertTrue(turn.header.contains("remainDistance=450"))
+    }
+
     @Test fun everyShortAudioPayloadAndLongPcmAreMetadataOnly() {
         for ((channel, type) in listOf(Ch.MEDIA to 0x30006, Ch.TTS to 0x40003, Ch.VR to 0x50003, Ch.VR to Msg.VR_MIC_DATA)) {
             for (size in (0..16).toList() + listOf(3840, 10240)) {

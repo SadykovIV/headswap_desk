@@ -624,14 +624,14 @@ object Msgs {
      * moduleID зеркалится, supportFlag: 0 -> true, 1 -> false, 2 -> true, прочие false.
      * null, если запрос не разобрался (Baidu в этом случае не отвечает).
      */
-    fun subscribeDone(req: ByteArray): ByteArray? {
+    fun subscribeDone(req: ByteArray, navigation: Boolean = true, music: Boolean = true): ByteArray? {
         val f = PbReader.parse(req) ?: return null
         val items = PbReader.all(f, 2)
         val w = PbWriter().int32(1, items.size)
         for (item in items) {
             val sub = item.data?.let { d -> PbReader.parse(d) } ?: return null
             val id = PbReader.int(sub, 1) ?: return null
-            w.bytes(2, PbWriter().int32(1, id).bool(2, id == 0 || id == 2).toByteArray())
+            w.bytes(2, PbWriter().int32(1, id).bool(2, (id == 0 && navigation) || (id == 2 && music)).toByteArray())
         }
         return w.toByteArray()
     }

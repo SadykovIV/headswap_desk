@@ -103,7 +103,7 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             val command = "CLASSPATH=$REMOTE app_process / com.genymobile.scrcpy.Server ${ScrcpyProtocol.VERSION} " +
                 "scid=$scid log_level=info audio=false control=true video=true video_codec=h264 " +
                 "tunnel_forward=true send_device_meta=false send_dummy_byte=false " +
-                "new_display=${mode.aaW}x${mode.aaH}/$density " +
+                "new_display=${mode.aaW}x${mode.aaH}/$density display_ime_policy=local " +
                 "video_bit_rate=${DexVideoGeometry.SOURCE_BITRATE} max_fps=30 " +
                 "video_codec_options=i-frame-interval=1,profile=1,max-bframes=0 " +
                 "clipboard_autosync=false power_on=false cleanup=true vd_destroy_content=true"

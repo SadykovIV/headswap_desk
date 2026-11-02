@@ -13,6 +13,10 @@ internal object RemotePanelWire {
     const val OFF = 2
     const val RESTORE = 3
     const val RENEW = 4
+    const val LOCAL_IME = 5
+    const val IME_VISIBLE = 6
+    const val UNAVAILABLE = 2
+    const val HIDDEN = 3
     const val OK = 0
     const val FAILED = 1
     const val NONCE_BYTES = 16

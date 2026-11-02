@@ -589,6 +589,24 @@ class DexSetupActivity : Activity() {
         }
         mapSymbolsHint = text(imageSettings, "Кнопки сохраняют выбранный размер. Снимите галочку, чтобы карты тоже получали точный DPI рабочего стола.", 13f)
         densitySection = section(advanced)
+        button(densitySection, "Подсказки навигации на приборной панели") {
+            val component = android.content.ComponentName(this, com.headswap.desk.cluster.ClusterNavigationListener::class.java)
+            val details = Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
+                .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, component.flattenToString())
+            try { startActivity(details) }
+            catch (_: android.content.ActivityNotFoundException) {
+                runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                    .onFailure { showState("Доступ к уведомлениям", "Откройте в настройках телефона раздел «Доступ к уведомлениям» и выберите HeadSwap.") }
+            }
+        }
+        text(densitySection, "Для подсказок разрешите HeadSwap доступ к уведомлениям. Во время CarLife приложение обрабатывает только уведомления Яндекс Карт и Навигатора с ближайшим манёвром и расстоянием. Поддержка приборной панели и HUD зависит от магнитолы.", 13f)
+        button(densitySection, getString(com.headswap.desk.R.string.ime_outside_setup)) {
+            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            catch (_: android.content.ActivityNotFoundException) {
+                android.widget.Toast.makeText(this, getString(com.headswap.desk.R.string.ime_outside_hint), android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+        text(densitySection, getString(com.headswap.desk.R.string.ime_outside_hint), 13f)
         usbAudioChoice = CheckBox(this).apply {
             text = "Передавать звук по USB"
             tintChoice(this)
@@ -1026,6 +1044,8 @@ class DexSetupActivity : Activity() {
     private fun renderAccessControls() {
         val usingShizuku = prefs.useDesktopService
         accessHint.updateText(when {
+            prefs.useDelegated && DelegatedDesktopAccess.isReady(this) && !ShellPanelClient.isConnected ->
+                "$desktopName · ${prefs.desktopResolutionLabel}\nДля клавиатуры на магнитоле завершите доступ в «Дополнительно» и снова активируйте HeadSwap."
             prefs.useDelegated -> "$desktopName · доступ HeadSwap · ${prefs.desktopResolutionLabel}"
             usingShizuku -> "$desktopName · через Shizuku · ${prefs.desktopResolutionLabel}"
             else -> "Встроенное подключение · видео 1280×720"
@@ -1111,6 +1131,7 @@ class DexSetupActivity : Activity() {
             "Запуск уже передан Android; дождитесь подтверждения. Он завершится или покажет ошибку не позднее чем через 90 секунд."
         else buildString {
             append("Wi-Fi нужен на время активации. HeadSwap получит временный доступ к управлению плеером и перезапустится.")
+            append(" Штатная клавиатура будет открываться в окне приложения на магнитоле.")
             if (prefs.usbPlaybackAudio) append(" Для звука по USB HeadSwap получит временный доступ к воспроизведению и направит музыку и подсказки в CarLife. Микрофон не используется.")
             if (prefs.desktopPanelControl) append(" Для таймера HeadSwap получит доступ к панели и времени активности экрана. Двойное касание вернёт изображение.")
             append(" Выбор можно изменить перед активацией в «Дополнительно».")

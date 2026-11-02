@@ -449,6 +449,7 @@ class MetaRelay(
     private var info: CarlifeMediaInfo? = null
     private var infoKey: String? = null
     private var infoPending = false            // MEDIA_INFO отложен, пока AA не играет
+    private var shownMusicSource: String? = null // Only clear a track already offered on this link.
     private var trackSeq = 0
     private var posMs: Int? = null
     private var lastProgressMs: Int? = null
@@ -477,6 +478,7 @@ class MetaRelay(
     fun onAttach() {
         musicSubscribed = true
         navSubscribed = false
+        shownMusicSource = null
         shown = false
         lastSent = null
         awaitSubAt = NEVER
@@ -543,8 +545,12 @@ class MetaRelay(
     }
 
     fun onMediaMetadata(m: AaMediaMetadata) {
+        storeMetadata(m)?.let(::sendInfo)
+    }
+
+    private fun storeMetadata(m: AaMediaMetadata): String? {
         val key = listOf(m.song, m.artist, m.album, m.durationSeconds, m.art?.contentHashCode(), m.art?.size).joinToString("|")
-        if (key == infoKey) return
+        if (key == infoKey) return null
         // тот же трек с новой обложкой - источник прежний (ГУ различает треки по source), новый трек - новый ключ
         val sameTrack = info?.let { it.song == (m.song ?: "") && it.artist == (m.artist ?: "") && it.album == (m.album ?: "") } == true
         if (!sameTrack) trackSeq++
@@ -558,14 +564,52 @@ class MetaRelay(
             durationSeconds = m.durationSeconds ?: 0,
         )
         if (!sameTrack) lastProgressMs = null
-        sendInfo(if (sameTrack) "обложка/поля трека обновились" else "новый трек")
+        return if (sameTrack) "обложка/поля трека обновились" else "новый трек"
+    }
+
+    /** Android provides metadata and playback together. Do not replay the previous track
+     * or position while applying a change of the selected media session. */
+    fun onDesktopMedia(status: AaMediaStatus?, metadata: AaMediaMetadata?) {
+        if (status == null || metadata == null || metadata.song.isNullOrBlank()) {
+            clearDisplayedMusic()
+            if (playing) { playing = false; musicState(false) }
+            info = null
+            infoKey = null
+            infoPending = false
+            posMs = null
+            lastProgressMs = null
+            mediaSource = ""
+            return
+        }
+        val source = status.source.orEmpty()
+        if (mediaSource != source) { info = null; infoKey = null }
+        mediaSource = source
+        val change = storeMetadata(metadata)
+        posMs = status.playbackSeconds?.coerceIn(0, Int.MAX_VALUE / PROGRESS_UNIT)?.times(PROGRESS_UNIT)
+        val started = !playing && status.playing
+        if (playing != status.playing) {
+            playing = status.playing
+            musicState(playing)
+        }
+        when {
+            started -> replayMusic("Android playback")
+            change != null -> sendInfo(change)
+            else -> sendProgress(force = false)
+        }
     }
 
     private fun replayMusic(why: String) {
         lastProgressMs = null
         lastProgressAt = NEVER
         if (info != null) sendInfo(why)
-        else sendProgress(force = true)
+        else { clearDisplayedMusic(); sendProgress(force = true) }
+    }
+
+    private fun clearDisplayedMusic() {
+        val source = shownMusicSource ?: return
+        if (ready() && musicSubscribed && link().sendMediaInfo(CarlifeMediaInfo(source, "", "", "", null, 0))) {
+            shownMusicSource = null
+        }
     }
 
     private fun sendInfo(why: String) {
@@ -573,15 +617,18 @@ class MetaRelay(
         // трек на паузе не показываем: ГУ (Desay G6S, Mazda) считает CarLife-музыку активной и глушит радио
         if (!playing) {
             infoPending = true
-            log("META MEDIA_INFO отложен ($why): AA не играет; $i", false)
+            log("META MEDIA_INFO отложен ($why): плеер на паузе", false)
             return
         }
         infoPending = false
         if (!ready() || !musicSubscribed) {
-            log("META MEDIA_INFO отложен ($why): ${if (!ready()) "CarLife не START" else "музыка не подписана"}; $i", false)
+            log("META MEDIA_INFO отложен ($why): ${if (!ready()) "CarLife не START" else "музыка не подписана"}", false)
             return
         }
-        if (link().sendMediaInfo(i)) log("META -> MEDIA_INFO ($why): $i", true)
+        if (link().sendMediaInfo(i)) {
+            shownMusicSource = i.source
+            log("META -> MEDIA_INFO ($why): длительность=${i.durationSeconds} с", true)
+        }
         sendProgress(force = true)
     }
 
@@ -657,6 +704,11 @@ class MetaRelay(
 
     fun onNavTurn(t: AaNavTurn) {
         if (!acceptNav(t.legacy, "манёвр")) return
+        val changed = storeTurn(t)
+        emitTurn(force = changed, why = if (changed) "новый манёвр" else "манёвр повторён")
+    }
+
+    private fun storeTurn(t: AaNavTurn): Boolean {
         val key = "${t.nextTurn}|${t.keyRoad}|${t.roundaboutExit}"
         val changed = key != turnKey
         turn = t
@@ -665,13 +717,18 @@ class MetaRelay(
             remain = null              // старая дистанция относится к прошлому манёвру
             total = 0
             turnDirty = true           // первую дистанцию нового манёвра шлём без троттлинга
-            log("META манёвр: $t", true)
+            log("META манёвр: nextTurn=${t.nextTurn}", true)
         }
-        emitTurn(force = changed, why = if (changed) "новый манёвр" else "манёвр повторён")
+        return changed
     }
 
     fun onNavDistance(d: AaNavDistance) {
         if (!acceptNav(d.legacy, "дистанция")) return
+        storeDistance(d)
+        emitTurn(force = false, why = "дистанция")
+    }
+
+    private fun storeDistance(d: AaNavDistance) {
         // два одинаковых поворота подряд (тот же nextTurn|road|exit): ключ не меняется, новый манёвр виден только
         // по скачку дистанции вверх (h137: 10 -> 170 м). Иначе total остаётся от прошлого поворота.
         val prev = remain
@@ -683,7 +740,27 @@ class MetaRelay(
         remain = d
         // totalDistance - дистанция на момент смены манёвра (Baidu фиксирует при смене дороги)
         if (total == 0 || d.meters > total) total = d.meters
-        emitTurn(force = false, why = "дистанция")
+    }
+
+    fun onDesktopNavigation(t: AaNavTurn?, d: AaNavDistance?) {
+        // The CarLife message requires metres. Zero is a real instruction at a turn,
+        // not a substitute for a missing/stale distance.
+        if (t == null) {
+            endRoute("Android guidance unavailable")
+            return
+        }
+        startRoute("Android guidance")
+        val changed = storeTurn(t)
+        if (d == null || d.meters < 0) {
+            remain = null
+            return
+        }
+        storeDistance(d)
+        emitTurn(force = changed, why = "Android guidance")
+    }
+
+    fun refreshDesktopNavigation() {
+        if (routeActive) emitTurn(force = false, why = "обновление приборки")
     }
 
     private fun startRoute(why: String) {
@@ -703,7 +780,7 @@ class MetaRelay(
         log("META маршрут закончен ($why)", true)
         if (shown && ready() && navSubscribed) {
             val end = NaviTurnInfo(ACTION_END, AaMeta.T_DEST, AaMeta.END_ROAD, 0, 0, 0)
-            if (link().sendNaviTurn(end)) log("META -> NAVI_NEXT_TURN_INFO $end", true)
+            if (link().sendNaviTurn(end)) log("META -> NAVI_NEXT_TURN_INFO action=${end.action}", true)
         }
         shown = false
         turnDirty = false
@@ -758,7 +835,7 @@ class MetaRelay(
             turnDirty = false
             lastTurnAt = now
             lastSent = sig
-            log("META -> NAVI_NEXT_TURN_INFO ($tag) $info", loud)
+            log("META -> NAVI_NEXT_TURN_INFO ($tag) action=${info.action} nextTurn=${info.nextTurn} remain=${info.remainDistance}m time=${info.timeSeconds}s", loud)
         }
     }
 
@@ -778,6 +855,8 @@ class MetaRelay(
         info = null
         infoKey = null
         infoPending = false
+        shownMusicSource = null
+        mediaSource = ""
     }
 
     companion object {

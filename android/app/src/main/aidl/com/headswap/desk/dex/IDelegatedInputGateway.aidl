@@ -12,4 +12,6 @@ interface IDelegatedInputGateway {
     int childTaskState(int displayId, IBinder token, String packageName);
     void setPhonePanelOff(int parentId, IBinder token, boolean off);
     void registerFullscreenChild(int parentId, int displayId, IBinder token, int width, int height);
+    /** Only the IME visibility bit on a registered child: -1 unknown, 0 hidden, 1 shown. */
+    int childImeVisibility(int displayId, IBinder token);
 }

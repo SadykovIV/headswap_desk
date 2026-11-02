@@ -62,7 +62,7 @@ class StockAppUpdateIsolationTest(unittest.TestCase):
         self.assertTrue(changed.startswith(kept_prefix))
         self.assertNotIn('"update_auto"', changed)
         self.assertNotIn('Lc/y9;', changed)
-        self.assertIn('HeadSwap 0.6.8 (302)', changed)
+        self.assertIn('HeadSwap 0.6.8 (303)', changed)
         self.assertIn(patch.NOTICE, changed)
 
     def test_changed_settings_boundary_is_not_silently_patched(self):

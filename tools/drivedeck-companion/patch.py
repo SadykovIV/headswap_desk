@@ -19,6 +19,12 @@ def method(rel, signature, body):
 void='    .locals 0\n    return-void'
 false='    .locals 1\n    const/4 v0, 0x0\n    return v0'
 main='smali/ru/drivedeck/launcher/MainActivity.smali'
+# Android 13: let native controls accept focus before their original event dispatch.
+def release_child_focus_for_host_touch(s):
+    signature = '.method public final dispatchTouchEvent(Landroid/view/MotionEvent;)Z\n    .locals 18\n'
+    assert s.count(signature) == 1
+    return s.replace(signature, signature + '\n    invoke-static/range {p0 .. p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->beforeHostTouch(Landroid/app/Activity;Landroid/view/MotionEvent;)V\n')
+edit(main, release_child_focus_for_host_touch)
 # Completely remove home-role requests, global theme sync, and global-permission setup.
 for sig in ['public final f0()V','public final z0()V','public final u0()V','public final X(I)V']:
     method(main,sig,void)
@@ -47,6 +53,15 @@ method('smali/c/R8.smali','public static j()V', void)
 # No fallback navigator or renderer-created virtual display in dashboard mode.
 method('smali/c/f4.1.smali','public final A()Ljava/lang/String;', '    .locals 1\n    iget-object v0, p0, Lc/f4;->F:Lc/T4;\n    invoke-virtual {v0}, Lc/T4;->r()Ljava/lang/String;\n    move-result-object v0\n    return-object v0')
 renderer='smali/c/Y7.smali'
+def keep_child_focus_for_renderer_touch(s):
+    signature = '.method public final k(Landroid/view/MotionEvent;)Z\n    .locals 9\n'
+    start = s.index(signature)
+    end = s.index('.end method', start)
+    entry = '    :cond_1\n    invoke-virtual {p1}, Landroid/view/MotionEvent;->getActionMasked()I'
+    assert s[start:end].count(entry) == 1
+    body = s[start:end].replace(entry, '    :cond_1\n    invoke-static/range {p0 .. p1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->onChildTouch(Landroid/view/View;Landroid/view/MotionEvent;)V\n    invoke-virtual {p1}, Landroid/view/MotionEvent;->getActionMasked()I')
+    return s[:start] + body + s[end:]
+edit(renderer, keep_child_focus_for_renderer_touch)
 method(renderer,'public final c(Landroid/graphics/SurfaceTexture;II)V', '    .locals 0\n    invoke-static {p0, p1, p2, p3}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->attach(Landroid/view/View;Landroid/graphics/SurfaceTexture;II)V\n    return-void')
 method(renderer,'public final g()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->handle(Landroid/view/View;)I\n    move-result v0\n    return v0')
 method(renderer,'public final f()I', '    .locals 1\n    invoke-static {p0}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->density(Landroid/view/View;)I\n    move-result v0\n    return v0')
@@ -339,10 +354,10 @@ update_files, update_policy = disable_stock_app_updates(root)
 changes.extend(update_files)
 # Manifest: no system UID, HOME, launcher icon/aliases, boot entry or global overlays.
 ET.register_namespace('android','http://schemas.android.com/apk/res/android');a='{http://schemas.android.com/apk/res/android}'
-p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','302')
+p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','303')
 # Apktool's versionInfo overrides manifest attributes during rebuild.
 yml=root/'apktool.yml'
-yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 302', yml.read_text());assert n==1
+yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 303', yml.read_text());assert n==1
 yml.write_text(yml_text);changes.append('apktool.yml')
 for key in ['sharedUserId','sharedUserLabel','sharedUserMaxSdkVersion']:m.attrib.pop(a+key,None)
 remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED','TETHER_PRIVILEGED','WRITE_SETTINGS','MANAGE_APP_OPS_MODES'}
@@ -371,5 +386,5 @@ left=[]
 for p in (root/'smali').rglob('*.smali'):
     if re.search(r'->startActivity(?:ForResult)?\(',p.read_text()):left.append(str(p))
 assert not left,left
-(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','application_id':'ru.drivedeck.headswap','version_code':302,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
+(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','application_id':'ru.drivedeck.headswap','version_code':303,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
 print('Patched',len(set(changes)),'files;',launches,'activity launches guarded')

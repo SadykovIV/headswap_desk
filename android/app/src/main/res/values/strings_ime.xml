@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="ime_outside_label">HeadSwap — dismiss keyboard on head unit</string>
+    <string name="ime_outside_description">Tap outside a text field to hide the keyboard on your head unit. HeadSwap checks window and text field positions on its own virtual display. Typed text is never read or saved. You can disable the feature here.</string>
+    <string name="ime_outside_setup">Hide keyboard when tapping outside a text field</string>
+    <string name="ime_outside_hint">To use this feature, enable “HeadSwap — dismiss keyboard on head unit” in Android accessibility settings. The hardware Back button also works without this service.</string>
+</resources>

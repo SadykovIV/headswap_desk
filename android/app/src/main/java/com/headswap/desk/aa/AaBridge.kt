@@ -910,6 +910,9 @@ class AaBridgeCore(
         active = Source.PLACEHOLDER
         link = NoLink
         if (desktopInputEnabled) {
+            // A reconnect obtains new Android source snapshots. Do not replay a route which
+            // ended or a media session which disappeared while the USB cable was unplugged.
+            meta.onAaEnded()
             touchDecimator.reset()
             touchPacer.reset()
         }
@@ -1819,6 +1822,18 @@ class AaBridgeCore(
 
     @Synchronized
     override fun onNavDistance(d: AaNavDistance) = meta.onNavDistance(d)
+
+    @Synchronized fun onDesktopMedia(from: CarlifeLink, status: AaMediaStatus?, metadata: AaMediaMetadata?) {
+        if (link === from) meta.onDesktopMedia(status, metadata)
+    }
+
+    @Synchronized fun onDesktopNavigation(from: CarlifeLink, turn: AaNavTurn?, distance: AaNavDistance?) {
+        if (link === from) meta.onDesktopNavigation(turn, distance)
+    }
+
+    @Synchronized fun refreshDesktopNavigation(from: CarlifeLink) {
+        if (link === from && carlifeStarted) meta.refreshDesktopNavigation()
+    }
 
     // --- видео AA ---
     @Synchronized

@@ -35,6 +35,8 @@ interface IDexUserService {
     IBinder childProducerLifetime(IBinder childToken) = 18;
     /** Protocol 6: one internal fullscreen viewport, separate from DriveDeck's two companion tiles. */
     int createFullscreenChildDisplay(in Surface surface, IBinder childToken, int width, int height, int density) = 19;
+    /** Protocol 7: consume a cancelled outside tap only while this owned display still shows its IME. */
+    void dismissChildIme(IBinder childToken) = 20;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }
