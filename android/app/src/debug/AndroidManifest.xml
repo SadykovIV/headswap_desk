@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Distributable experimental APK: other apps must not start the privileged DeX bridge. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <service
+            android:name=".BridgeService"
+            android:exported="false"
+            tools:replace="android:exported" />
+    </application>
+</manifest>

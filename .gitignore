@@ -1,0 +1,43 @@
+# не входит в репо
+/re/
+/refs/
+/logs/
+/design/
+/site/
+/docs/post-*.md
+/docs/*.jpg
+!/docs/screenshot.jpg
+/pc-headunit/out/
+/pc-headunit/certs/
+
+# python
+**/.pytest_cache/
+__pycache__/
+*.pyc
+.venv/
+
+# android / gradle
+build/
+.gradle/
+.kotlin/
+local.properties
+
+# артефакты, ключи, сертификаты
+*.h264
+*.log
+!tools/logdiag_cases/*.log
+*.pem
+*.key
+*.jks
+*.keystore
+*.apk
+
+# редакторы, ОС, инструменты
+.idea/
+.vscode/
+Thumbs.db
+desktop.ini
+.claude/
+/research/
+# метки проверенных APK (verify-apk.ps1), по ним хук пускает деплой
+/.release/

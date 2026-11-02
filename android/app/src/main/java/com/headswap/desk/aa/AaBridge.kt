@@ -1,0 +1,3197 @@
+package com.headswap.desk.aa
+
+import com.headswap.desk.AnnexB
+import com.headswap.desk.Hex
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
+
+/** Что мост требует от CarLife-стороны (реализует CarLifeSession). */
+interface CarlifeLink {
+    /** Одно видео-сообщение CarLife (0x20001, Annex-B). false = не принято (очередь переполнена, сессия закрыта). */
+    fun sendVideo(payload: ByteArray): Boolean
+
+    /**
+     * Первый IDR из AA вместо заглушки: отправка и отключение кадров заглушки атомарно. Иначе P-кадр заглушки,
+     * проскочивший между sendVideo и hidePlaceholder, ложится на AA-IDR и ГУ рисует полосы до следующего IDR.
+     * Заглушку останавливать всё равно через hidePlaceholder.
+     */
+    fun sendVideoTakeover(payload: ByteArray): Boolean = sendVideo(payload)
+
+    /** Связь по воздуху (6 TCP-сокетов), а не USB / tcp-debug. */
+    val isAir: Boolean get() = false
+
+    /** Текущий кадр заглушки (null = её нет): с него перекодирование начинает переход в картинку AA. */
+    fun placeholderSnapshot(): android.graphics.Bitmap? = null
+
+    /** Показывать на ГУ заглушку с текстом (кодирует VideoSource); можно звать до CarLife START - запомнится. */
+    fun showPlaceholder(text: String)
+
+    /** Остановить заглушку: дальше видео идёт из AA (sendVideo). */
+    fun hidePlaceholder()
+
+    /** Аудио-сообщение CarLife: канал 3 MEDIA / 4 TTS, тип (INIT/DATA/STOP), тело. false = отброшено. */
+    fun sendAudio(channel: Int, type: Int, payload: ByteArray): Boolean
+
+    /** MODULE_STATUS об одном модуле CarLife (CarlifeAudio.MODULE_NAVI / MODULE_MUSIC / ...), как Baidu ModuleStatusManage. false = не ушло. */
+    fun sendModuleStatus(module: Int, status: Int): Boolean
+
+    /** Создать и запустить транскодер (AA H.264 -> декодер -> энкодер). null = MediaCodec не поднялся, работаем passthrough. */
+    fun createTranscoder(out: TranscodeOutput): VideoTranscoder? = null
+
+    /** Native desktop surface -> GL pacing -> the same CarLife encoder, without an input decoder. */
+    fun createSurfaceEncoder(out: TranscodeOutput): VideoTranscoder? = null
+
+    /**
+     * Попросить ГУ начать (true) / закончить (false) запись микрофона, как Baidu MD (VrManager): CMD
+     * MIC_RECORD_RECOG_START / MIC_RECORD_END (+ MODULE_STATUS VR). Данные придут в AaBridgeCore.onCarlifeMicData.
+     * false = сообщение не ушло (сессия закрыта).
+     */
+    fun requestMicRecord(start: Boolean): Boolean = false
+
+    /** Ключевой кадр энкодера (размер в байтах) ушёл в CarLife; зовётся только на ГУ с лимитом размера IDR (VW ID, h196; Mobis CCNC, h242). */
+    fun onEncodedKeyFrame(size: Int) {}
+
+    /** Состояние видео-очереди (слив, бэклог, длина) для статистики моста; null = нет данных. */
+    fun videoStats(): LinkVideoStats? = null
+
+    /** CMD MEDIA_INFO (0x10035); обложку (PNG из AA) перекодирует реализация, не задерживая вызывающего. false = не ушло. */
+    fun sendMediaInfo(info: CarlifeMediaInfo): Boolean = false
+
+    /** CMD MEDIA_PROGRESS_BAR (0x10036). */
+    fun sendMediaProgress(progressBar: Int): Boolean = false
+
+    /** CMD NAVI_NEXT_TURN_INFO (0x10030); поле 6 (иконка / time) по настройке реализации. */
+    fun sendNaviTurn(info: NaviTurnInfo): Boolean = false
+
+    /** CMD GO_TO_DESKTOP (0x10021): ГУ уходит на свой рабочий стол (плитка «Выйти» в AA). */
+    fun goToDesktop() {}
+
+    /** Выбросить из очереди транспорта ещё не записанные MEDIA_DATA (INIT/PAUSE/STOP, видео, TTS и команды остаются); сколько выброшено. */
+    fun dropQueuedMedia(): Int = 0
+}
+
+/** Ссылка на мёртвую CarLife-сессию (USB оборван): всё отбрасывает. */
+private object NoLink : CarlifeLink {
+    override fun sendVideo(payload: ByteArray) = false
+    override fun showPlaceholder(text: String) {}
+    override fun hidePlaceholder() {}
+    override fun sendAudio(channel: Int, type: Int, payload: ByteArray) = false
+    override fun sendModuleStatus(module: Int, status: Int) = false
+    override fun goToDesktop() {}
+}
+
+/** Звонок на телефоне: IDLE — нет, RINGING — входящий звонит, ACTIVE — разговор (AudioManager MODE_IN_CALL). */
+enum class PhoneCall { IDLE, RINGING, ACTIVE }
+
+/**
+ * Логика моста AA -> CarLife без Android и сокетов: приём видео от AA как AaVideoSink, правила первого
+ * сообщения для CarLife (SPS+PPS+IDR в одном), переключение заглушка/AA, маппинг тачей, запрос ключевого кадра.
+ */
+class AaBridgeCore(
+    private val log: (String, Boolean) -> Unit,
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000 },
+    private val clockUs: () -> Long = { System.nanoTime() / 1_000 },
+    micSchedule: ((Long, Runnable) -> MicTimerHandle)? = null,
+    audioSchedule: ((Long, Runnable) -> MicTimerHandle)? = null,
+    private val connectingText: String = TEXT_CONNECTING,
+    private val waitingText: String = TEXT_WAIT_FRAME,
+    private val disconnectedText: String = TEXT_AA_LOST,
+) : AaVideoSink, AaAudioSink, AaMicSink, AaMetaSink, TranscodeOutput, RefPictureSink {
+    enum class Source { PLACEHOLDER, AA }
+
+    @Volatile var peer: AaPeer? = null
+        set(v) {
+            synchronized(touchLock) {
+                field = v
+                fingers.clear()
+            }
+            v?.sendNightMode(huTheme == THEME_DARK)
+        }
+    @Volatile private var link: CarlifeLink = NoLink
+
+    /** Последний CHANGE_MD_THEME от ГУ (0 светлая, 1 тёмная, 2 авто); до него - светлая. */
+    @Volatile var huTheme: Int = THEME_LIGHT
+        private set
+
+    @Volatile private var carlifeStarted = false
+    private var aaConfig: ByteArray? = null
+    private var aaVideoSeen = false
+    private var gotIdr = false
+    private var active = Source.PLACEHOLDER
+    private var placeholderText = connectingText
+    private var waitSince = 0L
+    private var lastKeyframeRequest = NEVER
+    private var lastIdrSentMs = NEVER              // когда в CarLife ушёл последний IDR passthrough (h295)
+    private var h295TouchAt = NEVER                // когда тач запросил keyframe-цикл; NEVER = IDR после тача не ждём
+    private var h295LastTrigger = NEVER
+    private var h295LastTouchAt = NEVER            // последний тач от ГУ любого action
+
+    var dropped = 0L
+        private set
+    var sent = 0L
+        private set
+    var idrSent = 0L
+        private set
+    var keyframeRequests = 0
+        private set
+    private var dropLogged = 0L
+    private var touchDown = false
+
+    // --- видео: перекодирование (по умолчанию в приложении) или passthrough ---
+    /** Режим видео моста: true = AA -> декодер -> энкодер (кадры повторяются на статике), false = H.264 как есть. */
+    @Volatile var transcodeEnabled = false
+
+    /**
+     * Разрешение видео, снятое один раз при создании хоста (уже с учётом passthrough): им построена AA (SDR),
+     * его же берут CarLife-сессия (INIT_DONE, энкодер) и маппинг тача. Prefs отсюда не читаются.
+     */
+    @Volatile var videoMode: VideoGeometry = VideoMode.DEFAULT
+
+    /** Ручной DPI интерфейса AA, снятый вместе с videoMode (AaDensity.AUTO = density режима). Только SDR, на кроп и тач не влияет. */
+    @Volatile var densityOverride: Int = AaDensity.AUTO
+
+    /** Desktop sources handle CarLife HOME themselves; AA leaves that key to the head unit. */
+    @Volatile var mapHomeKey: Boolean = false
+
+    /** Desktop input accepts explicit CANCEL and releases contacts when CarLife disconnects. */
+    @Volatile var desktopInputEnabled: Boolean = false
+
+    /** Desktop source bitrate exceeds CarLife's limit, so encoder failure must never bypass it. */
+    @Volatile var desktopVideoError: String? = null
+        private set
+
+    @Volatile var desktopSurfaceEnabled: Boolean = false
+        private set
+    private var desktopSurfaceListener: DesktopSurfaceListener? = null
+    private var desktopSurfaceExecutor: ExecutorService? = null
+    private var desktopSurfaceSequence = 0L
+    private var desktopSurfaceGeneration = 0L
+    private var desktopSurfaceReady = false
+    private var desktopSurfaceFirstFrame = false
+    private var desktopSurfaceCsdVerified = false
+    private var desktopSurfaceCreating = false
+    private var desktopSurfaceStopped = false
+    private var desktopSurfaceStopComplete = false
+    private val desktopSurfaceStopCallbacks = ArrayList<() -> Unit>()
+    private data class RetiredSurfaceEncoder(val encoder: VideoTranscoder, val listener: DesktopSurfaceListener?)
+    private val retiredSurfaceEncoders = LinkedHashMap<Long, RetiredSurfaceEncoder>()
+    private val closedSurfaceProducers = HashSet<Long>()
+
+    /** Register before CarLife START. The source receives a new lease after every USB reconnect. */
+    @Synchronized
+    fun enableDesktopSurface(listener: DesktopSurfaceListener) {
+        check(!desktopSurfaceStopped) { "Desktop surface source was already stopped" }
+        check(desktopSurfaceListener == null || desktopSurfaceListener === listener) { "Desktop surface source is already registered" }
+        check(transcoder == null || desktopSurfaceEnabled) { "Compressed source encoder is already active" }
+        desktopSurfaceListener = listener
+        desktopSurfaceEnabled = true
+        desktopInputEnabled = true
+        transcodeEnabled = true
+        if (carlifeStarted) startTranscoder()
+    }
+
+    /** Call only after the source has created and verified its own native desktop display. */
+    @Synchronized
+    fun desktopSurfaceReady(generation: Long): Boolean {
+        if (!desktopSurfaceEnabled || desktopSurfaceStopped || generation != desktopSurfaceGeneration ||
+            generation == 0L || transcoder == null || !carlifeStarted || desktopVideoError != null) return false
+        desktopSurfaceReady = true
+        aaVideoSeen = true
+        gotIdr = true // No compressed source IDR exists in this mode.
+        outputEnabled = !carlifePaused
+        outGotIdr = false
+        waitSince = 0L
+        transcoder?.requestSyncFrame()
+        return true
+    }
+
+    @Synchronized
+    fun desktopSurfaceFailed(generation: Long, message: String) {
+        if (generation != 0L && generation == desktopSurfaceGeneration && !desktopSurfaceStopped) stopDesktopVideo(message)
+    }
+
+    /** Callback runs after source closure and encoder disposal, outside the bridge monitor. */
+    @Synchronized
+    fun stopDesktopSurface(onDone: () -> Unit) {
+        if (desktopSurfaceStopComplete) {
+            Thread(onDone, "dex-surface-stopped").start()
+            return
+        }
+        desktopSurfaceStopCallbacks.add(onDone)
+        if (desktopSurfaceStopped) return
+        desktopSurfaceStopped = true
+        stopTranscoderAsync()
+        desktopSurfaceWorker().execute { finishDesktopSurfaceStop() }
+    }
+
+    /** Keep the current CarLife handshake, but never reuse a producer/encoder generation.
+     * The owner may call this only after its source stop callback has completed. */
+    @Synchronized
+    fun rearmDesktopSurfaceAfterStop(): Boolean {
+        if (!desktopSurfaceEnabled || !desktopSurfaceStopped || !desktopSurfaceStopComplete ||
+            desktopSurfaceCreating || transcoder != null || desktopSurfaceGeneration != 0L ||
+            retiredSurfaceEncoders.isNotEmpty() || desktopSurfaceStopCallbacks.isNotEmpty() || link === NoLink) return false
+        desktopSurfaceEnabled = false
+        desktopSurfaceStopped = false
+        desktopSurfaceStopComplete = false
+        desktopSurfaceListener = null
+        desktopSurfaceExecutor = null
+        desktopVideoError = null
+        closedSurfaceProducers.clear()
+        // desktopSurfaceSequence deliberately survives: old codec/death callbacks stay stale.
+        return true
+    }
+
+    /** Proof from the producer's Binder death recipient. Safe before, during, or after a failed close. */
+    @Synchronized
+    fun desktopSurfaceProducerClosed(generation: Long) {
+        if (generation <= 0L || generation > desktopSurfaceSequence || desktopSurfaceStopComplete) return
+        closedSurfaceProducers.add(generation)
+        if (generation in retiredSurfaceEncoders) {
+            desktopSurfaceWorker().execute { disposeRetiredSurfaceEncoder(generation) }
+        }
+    }
+
+    /** Lifecycle-worker only. A failed source close never authorizes releasing its consumer surface. */
+    private fun disposeRetiredSurfaceEncoder(generation: Long) {
+        val retired = synchronized(this) {
+            if (generation in closedSurfaceProducers) retiredSurfaceEncoders[generation] else null
+        } ?: return
+        try { retired.encoder.stop() } finally {
+            synchronized(this) { retiredSurfaceEncoders.remove(generation); closedSurfaceProducers.remove(generation) }
+            finishDesktopSurfaceStop()
+        }
+    }
+
+    private fun finishDesktopSurfaceStop() {
+        val (callbacks, worker) = synchronized(this) {
+            if (!desktopSurfaceStopped || desktopSurfaceStopComplete || retiredSurfaceEncoders.isNotEmpty() || desktopSurfaceCreating) return
+            desktopSurfaceStopComplete = true
+            desktopSurfaceStopCallbacks.toList().also { desktopSurfaceStopCallbacks.clear() } to desktopSurfaceExecutor
+        }
+        // Capture/retire the old worker before callbacks can rearm the same live CarLife link.
+        worker?.shutdown()
+        callbacks.forEach { runCatching { it() } }
+    }
+
+    private fun desktopSurfaceWorker(): ExecutorService {
+        return desktopSurfaceExecutor ?: Executors.newSingleThreadExecutor { task ->
+            Thread(task, "dex-surface-lifecycle").also { it.isDaemon = true }
+        }.also { desktopSurfaceExecutor = it }
+    }
+
+    /** SDR ушёл с полями целиком справа и снизу (h529, ui_config): SPS-кроп режет только справа и снизу. Снимается вместе с videoMode. */
+    @Volatile var marginsAtBottom = false
+
+    /**
+     * Свой IDR в passthrough ([IdrSplice]): раз в столько мс ГУ получает ключевой кадр из декодированной на телефоне
+     * картинки AA, без перекодирования и без цикла VideoFocus. 0 - выкл. Ставит BridgeService на старте CarLife-сессии.
+     */
+    @Volatile var spliceMs = 0L
+
+    /**
+     * Сколько кадров AA перед картинкой своего IDR не уходит в ГУ (в движении): IDR встаёт вместо drop + 1 кадров AA,
+     * очередь ГУ с постоянной частотой показа укорачивается на drop кадров. P-кадр после IDR ссылается только на его картинку.
+     * Только для тестов: 0 - IDR встаёт вместо одного кадра AA, без выброса.
+     */
+    internal var spliceDrop = 1
+
+    /** Декодер опорных картинок для своего IDR (MediaCodec, ставит BridgeService); null - вставки нет. */
+    @Volatile var refDecoderFactory: ((RefPictureSink) -> RefPictureDecoder?)? = null
+    private var transcoder: VideoTranscoder? = null
+    private var encCsd: ByteArray? = null
+    private var outGotIdr = false
+    private val idrThrottle = IdrThrottle()            // запросы IDR при переполнении очереди CarLife
+    private var overflowIdrRequests = 0L
+    private var lastStatsIdrRequests = 0L
+    private var outputEnabled = false
+    private var lastAaFrameAt = 0L
+    private var lastStatsAt = 0L
+    private var lastStatsSent = 0L
+    private var lastStatsAaFrames = 0L
+    private var aaFrames = 0L
+    private var encDropped = 0L
+    val isTranscoding: Boolean @Synchronized get() = transcoder != null
+
+    // --- звук AA -> CarLife ---
+    /** Переключатель UI «Звук по USB». */
+    @Volatile var usbAudioEnabled = true
+
+    /** Ждать ли FEATURE_CONFIG ГУ перед подключением к AA (чтобы решить, объявлять ли аудио-синки). */
+    @Volatile var expectFeatureConfig = false
+    @Volatile var featureConfigSeen = false
+    @Volatile private var btAudio = false
+    @Volatile var huDesayG6S = false           // ГУ Desay G6S (Mazda CX-5): NAVI=1 глушит штатное радио, маршрутный NAVI не шлём
+        private set
+    @Volatile var huHonda = false              // Honda (STATISTIC_INFO channel 2077xxxx/2083xxxx, HU_INFO пустой): roadName на приборке режется по байтам и клеткам
+        private set
+    private var naviRaisedAt = NEVER          // Honda: когда последний раз ушёл MODULE_STATUS NAVI=1
+    private var naviShownSinceRaise = false   // Honda: после последнего NAVI=1 уже был SHOW (переход 0->1 приборкой «израсходован»)
+    @Volatile var huVwBt1420 = false           // VW BT 1420 (Павел, канал 20082138): по воздуху без heartbeat на PAUSE рвёт CarLife через ~1 мин
+    @Volatile var huVwCns2Delphi = false       // VW CNS2 Delphi 20082114 (h425): речь AA в голосовой сессии молчит в TTS, шлём в VR
+    @Volatile var huIdleVideoHeartbeat = false // 20082114 (h425), Skoda CNS3 21290002 (h625): без видео 5-6 с рвёт USB и вне PAUSE
+    private var vrReply = false                // поток ответа ассистента открыт в канале VR (VR_INIT ушёл)
+    @Volatile var huVw20082120 = false        // VW (STATISTIC_INFO channel 20082120 h93, 20082122 h222): без heartbeat рвёт USB через 3,7-5,6 с PAUSE
+        private set
+    @Volatile var huVw20082138 = false         // VW ID (channel 20082138 кроме "VW BT 1420"; ID.6 Crozz: 20082128 + "VW BT 9491"; пресет ID. UNYX): IDR > ~600 КиБ рвёт USB EIO
+        private set
+    @Volatile var huHyundaiCn7 = false         // ГУ Hyundai CN7 (product wp_cn7cpe_cn, h218): в режиме «Авто» музыка 32 кГц с ресэмплом 48→32
+        private set
+    @Volatile var huPioneerRm56 = false        // ГУ Pioneer RM56E8B (Dongfeng DF6, h277): 4-5 Мбит/с рвут USB EIO за 25-30 с, живёт на ~1 Мбит/с и fps ≤ 15
+        private set
+    @Volatile var huHonda20772121 = false      // Honda Civic 11 (channel 20772121, h295): после камеры/меню ГУ молча сбрасывает декодер, passthrough ждёт IDR
+        private set
+    @Volatile var huMazda20622111 = false      // Mazda Connect 2 из Китая (channel 20622111, h238/h359): VIDEO_DATA > ~16 КиБ вешает чтение USB
+        private set
+    @Volatile var huMobisNx4c = false          // Hyundai Tucson NX4 (Mobis CCNC, channel 20022188, h242): всё как у Baidu (запись AOA, keepalive, MIC, энкодер 20 fps)
+        private set
+    @Volatile var musicRateProvider: () -> MusicRate = { MusicRate.DEFAULT }
+    private var resampler: MusicResampler? = null    // null при 48000: PCM идёт как есть
+    private var mediaRateLogged = MEDIA_RATE
+    @Volatile var mediaChunkProvider: () -> MediaChunk = { MediaChunk.DEFAULT }
+    private var mediaChunkLogged = CarlifeAudio.MAX_CHUNK
+    @Volatile var voiceChunkProvider: () -> VoiceChunk = { VoiceChunk.DEFAULT }
+    private var voiceChunkLogged = CarlifeAudio.MAX_CHUNK
+    @Volatile var ttsPrerollProvider: () -> TtsPreroll = { TtsPreroll.DEFAULT }
+    private val audioInited = HashMap<Int, Boolean>()
+    private val audioLogged = HashMap<Int, Long>()
+
+    /** Эквалайзер музыки (только CarLife MEDIA); настройки читаются на каждом буфере, меняются из UI на лету. */
+    private val equalizer = Equalizer(48000, 2)
+    var eqProvider: () -> EqSettings = { EqLive.settings }
+    private var eqLogged: EqSettings? = null
+    var audioBytes = 0L
+        private set
+    var audioDropped = 0L
+        private set
+
+    // Серийность аудио, по MD Baidu: NAVI перед TTS, MEDIA отпускается PAUSE, TTS_STOP с задержкой.
+    private val audioTimer: ScheduledExecutorService by lazy {
+        Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "aa-audio-timer").also { it.isDaemon = true } }
+    }
+    private val audioSched: (Long, Runnable) -> MicTimerHandle = audioSchedule ?: { delayMs, task ->
+        val f = audioTimer.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+        MicTimerHandle { f.cancel(false) }
+    }
+
+    /** Одноразовый отменяемый таймер; задача идёт под блокировкой ядра, отменённая (даже уже вставшая в очередь) не выполняется. */
+    private inner class AudioTimer {
+        private var gen = 0
+        private var handle: MicTimerHandle? = null
+        val pending: Boolean get() = handle != null
+
+        fun start(delayMs: Long, task: () -> Unit) {
+            cancel()
+            val g = gen
+            handle = audioSched(delayMs, Runnable {
+                synchronized(this@AaBridgeCore) {
+                    if (g == gen && handle != null) {
+                        handle = null
+                        task()
+                    }
+                }
+            })
+        }
+
+        fun cancel(): Boolean {
+            val h = handle ?: return false
+            handle = null
+            gen++
+            h.cancel()
+            return true
+        }
+    }
+
+    private val ttsStopTimer = AudioTimer()
+
+    /** h425: Delphi глотает TTS_INIT в одну миллисекунду с NAVI=1; речь копится, INIT уходит через [TTS_INIT_AFTER_NAVI_MS]. */
+    private val ttsInitTimer = AudioTimer()
+    private val ttsPending = ArrayList<ByteArray>()
+    private var ttsPendingChan = 0
+    private var ttsPendingStop = false          // AA STOP пришёл, пока речь ждала INIT: повторить после выдачи
+
+    /** h425: VW CNS2 Delphi копит MOVE ~190 мс и шлёт пачкой; раздаём пачку равномерно. Только при [huVwCns2Delphi]. */
+    private val touchPacer = TouchBurstPacer(clockMs, audioSched) { a, x, y, px, py -> dispatchTouch(a, x, y, px, py) }
+    @Volatile private var touchPacerLogged = false
+
+    /** Прореживание MOVE ([TouchDecimation]) стоит перед пейсером и прямой отправкой. */
+    @Volatile var touchDecimationProvider: () -> TouchDecimation = { TouchDecimation.DEFAULT }
+    private val touchDecimator = TouchDecimator { a, x, y, px, py -> routeTouch(a, x, y, px, py) }
+    @Volatile private var touchDecimationLogged = 1
+    private val mediaReleaseTimer = AudioTimer()
+    private val voiceExitTimer = AudioTimer()
+    private var carlifePaused = false          // VIDEO_ENCODER_PAUSE после последнего START
+    private var exitPending = false            // «Выйти» в AA: GO_TO_DESKTOP ушёл, ждём PAUSE от ГУ, чтобы отдать AA NATIVE
+    private var huPausedAa = false             // плеер AA поставили на паузу, когда ГУ ушло на свой источник; MEDIA не пересылаем до play
+    private var callPausedAa = false           // huPausedAa поставил звонок (muteMediaOnCall), а не уход ГУ на радио: по концу звонка снимаем сами
+    private var resumeOnHuMusic = false        // паузу поставили мы (127 при игравшем AA): на MUSIC=1 от ГУ можно вернуть play
+    private var lastHuResumeMs = NEVER         // когда по MUSIC=1 от ГУ слали AA KEYCODE 126
+    @Volatile private var lastUserInputMs = NEVER   // последний тач DOWN / клавиша / шайба / голос с ГУ
+    @Volatile private var lastVoiceKeyMs = NEVER    // последний KEYCODE_SEARCH в AA (антидребезг h425)
+    private var lastHfpConnectMs = NEVER       // ГУ прислало BT_HFP_CONNECTION=connected (дальше AA сам запускает автоплей по BT)
+    private var lastPauseKeyMs = NEVER         // когда последний раз слали AA KEYCODE 127
+    private var naviSent = false               // MODULE_STATUS NAVI=1 ушёл (держит TTS и/или маршрут)
+    private var naviEndPending = false           // маршрут кончился, пока NAVI=1 держал TTS: NAVI=0 уйдёт после TTS STOP
+    private var ttsNaviHeld = false            // NAVI=1 нужен ради TTS (до stopAllAudio)
+    private var routeNaviHeld = false          // NAVI=1 нужен ради маршрута (MetaRelay)
+    private var mediaPaused = false            // MEDIA на ГУ стоит на PAUSE (STOP ещё не слали)
+    private var mediaGuard = false             // TTS_STOP уже ушёл, ждём +300 мс до управляющих пакетов MEDIA
+    private var pendingMediaPause = false      // желаемое состояние MEDIA = пауза, применим после TTS
+    private var voice = false
+    private var mediaGateDrops = 0L
+    private var ttsPackets = 0
+
+    /** MEDIA инициализирован на ГУ и играет (для ответа на MODULE_CONTROL MUSIC). */
+    val isMediaInited: Boolean @Synchronized get() = audioInited[CarlifeAudio.CH_MEDIA] == true
+
+    /** Ответ на MODULE_CONTROL MUSIC: звук по USB - по MEDIA INIT, иначе по состоянию плеера AA (ch9). */
+    val musicActive: Boolean @Synchronized get() = isMediaInited || (!audioViaUsb && meta.playing)
+
+    // --- метаданные AA (ch9/ch10) -> CarLife MEDIA_INFO / PROGRESS / NAVI_NEXT_TURN_INFO ---
+    private val meta = MetaRelay(
+        log = log,
+        clockMs = clockMs,
+        link = { link },
+        ready = { carlifeStarted && link !== NoLink },
+        navHold = { on -> routeNavi(on) },
+        musicState = { on -> musicByState(on) },
+        navRearm = { rearmNavi() },
+        emptyRoadText = { huHonda },
+    )
+
+    val metaRelay: MetaRelay get() = meta
+
+    /** Звук идёт по USB: включён в UI и ГУ не просит Bluetooth. Читает AapOptions.sdProvider (какие синки объявлять). */
+    val audioViaUsb: Boolean get() = usbAudioEnabled && !btAudio
+
+    val activeSource: Source @Synchronized get() = active
+    val currentPlaceholderText: String @Synchronized get() = placeholderText
+    val isCarlifeStarted: Boolean @Synchronized get() = carlifeStarted
+
+    /** Есть живая (не закрытая) CarLife-сессия: USB подключён. Читается без блокировки. */
+    val hasCarlifeLink: Boolean get() = link !== NoLink
+
+    /**
+     * Сменить текст заглушки на ГУ («Запускаю сервер...», «Разблокируйте телефон»); когда уже идёт видео AA, не трогаем.
+     * Запоминается и для будущей CarLife-сессии.
+     */
+    @Synchronized
+    fun showStatus(text: String) {
+        if (active == Source.AA || text == placeholderText) return
+        placeholderText = text
+        link.showPlaceholder(text)
+        log("BRIDGE заглушка: '$text'", true)
+    }
+
+    // --- микрофон AA: запрос открыл телефон, звук берём у ГУ (CarLife VR) или с микрофона телефона ---
+    /** Режим микрофона читается в момент каждого open: переключатель в UI действует сразу. */
+    @Volatile var micModeProvider: () -> MicMode = { MicMode.AUTO }
+    /** Состояние звонка на телефоне (AudioManager.mode): на [huVwCns2Delphi] перемотка руля на время звонка = принять/положить. */
+    @Volatile var phoneCallProvider: () -> PhoneCall = { PhoneCall.IDLE }
+
+    /** Состояние звонка из TelephonyManager (CarLifeSession.onCallState); null = телефония не сообщала (нет READ_PHONE_STATE) - тогда [phoneCallProvider]. */
+    @Volatile private var telephonyCall: PhoneCall? = null
+
+    /** Звонок: телефония приоритетнее AudioManager.mode (RINGING приходит раньше, чем mode станет RINGTONE). */
+    private fun currentCall(): PhoneCall = telephonyCall ?: phoneCallProvider()
+
+    /** Микрофон телефона (AudioRecord); null = нет. Один экземпляр на всё время: router вызывает start/stop по очереди. */
+    @Volatile var phoneMic: PhoneMic? = null
+
+    private val micTimer: ScheduledExecutorService by lazy {
+        Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "aa-mic-timer").also { it.isDaemon = true } }
+    }
+
+    private val mic = AaMicRouter(
+        log = log,
+        mode = { micModeProvider() },
+        huLinkUp = { carlifeStarted && link !== NoLink },
+        huRecord = { start -> link.requestMicRecord(start) },
+        phone = { phoneMic },
+        toAa = { pcm, ts -> peer?.sendMicPcm(pcm, ts) },
+        schedule = micSchedule ?: { delayMs, task ->
+            val f = micTimer.schedule(task, delayMs, TimeUnit.MILLISECONDS)
+            MicTimerHandle { f.cancel(false) }
+        },
+        nowMs = clockMs,
+        nowUs = clockUs,
+    )
+
+    override fun onMicOpen(): Boolean = mic.open()
+
+    override fun onMicClose(why: String) = mic.close(why)
+
+    /** PCM микрофона ГУ (VR 0x00058001, тело сообщения) -> AA. */
+    fun onCarlifeMicData(pcm: ByteArray) = mic.onHuData(pcm)
+
+    /**
+     * Вызвать при старте CarLife-сессии: заглушка. Если AA уже жива и играет (USB вернулся в grace-окно),
+     * текст «ждём кадр» вместо «запустите сервер», а ключевой кадр уйдёт на CarLife START.
+     */
+    @Synchronized
+    fun attach(link: CarlifeLink) {
+        if (desktopSurfaceEnabled && this.link !== link) stopTranscoderAsync()
+        this.link = link
+        active = Source.PLACEHOLDER
+        carlifeStarted = false
+        carlifePaused = false
+        exitPending = false
+        huPausedAa = false
+        callPausedAa = false
+        telephonyCall = null                   // CarLifeSession.calls пришлёт текущее состояние заново
+        resumeOnHuMusic = false
+        lastHuResumeMs = NEVER
+        gotIdr = false
+        huDesayG6S = false                    // HU_INFO / STATISTIC_INFO придут заново в этой сессии
+        huVw20082120 = false                   // HU_INFO / STATISTIC_INFO придут заново в этой сессии
+        huHonda = false                        // STATISTIC_INFO придёт заново в этой сессии
+        huVwBt1420 = false                     // HU_INFO придёт заново в этой сессии
+        huVw20082138 = false                   // HU_INFO / STATISTIC_INFO придут заново в этой сессии
+        vwIdName = null
+        vwIdChannel = null
+        huHyundaiCn7 = false                   // HU_INFO придёт заново в этой сессии
+        huPioneerRm56 = false                  // HU_INFO придёт заново в этой сессии
+        huHonda20772121 = false                // HU_INFO / STATISTIC_INFO придут заново в этой сессии
+        huMazda20622111 = false                // STATISTIC_INFO придёт заново в этой сессии
+        huMobisNx4c = false                    // HU_INFO / STATISTIC_INFO придут заново в этой сессии
+        huVwCns2Delphi = false                 // STATISTIC_INFO придёт заново в этой сессии
+        huIdleVideoHeartbeat = false           // STATISTIC_INFO придёт заново в этой сессии
+        vrReply = false
+        touchDecimator.reset()
+        touchDecimationLogged = 1
+        touchPacer.reset()
+        touchPacerLogged = false
+        h295TouchAt = NEVER
+        h295LastTrigger = NEVER
+        h295LastTouchAt = NEVER
+        sessionKickDone = false
+        spliceCancel("новая CarLife-сессия")
+        latStats.resetSession()
+        mediaRateLogged = MEDIA_RATE
+        mediaChunkLogged = CarlifeAudio.MAX_CHUNK
+        voiceChunkLogged = CarlifeAudio.MAX_CHUNK
+        resampler?.reset()
+        if (aaVideoSeen) placeholderText = waitingText
+        meta.onAttach()
+        link.showPlaceholder(placeholderText)
+        log("BRIDGE CarLife-сессия подключена: источник = заглушка '$placeholderText' (AA ${if (aaVideoSeen) "жива" else "нет видео"})", true)
+    }
+
+    // --- события CarLife ---
+    @Synchronized
+    fun onCarlifeStart() {
+        // Desay G6S (Mazda) шлёт START без PAUSE на каждое нажатие NAVI/MEDIA: звук уже идёт, повторный INIT
+        // посреди трека рвёт его на ГУ (лог 2026-10-11). Звук сбрасываем только на первом START и после PAUSE.
+        val warm = carlifeStarted && !carlifePaused
+        // Воздух, возврат после PAUSE: декодер всю паузу ел кадры AA (гейт выкидывал только выход энкодера), его
+        // состояние живо. Не ждём IDR от AA (цикл VideoFocus, 0.2-2 с тишины), а сразу берём IDR у энкодера.
+        // VW BT 1420 (лог Павла 2026-10-16) закрывал сокет через 0.16-0.42 с после такого START. Только для него:
+        // остальные ГУ (Mazda G6S по воздуху, задний ход) - как было, через IDR от AA.
+        val resume = AIR_WARM_RESUME_ENABLED && huVwBt1420 && link.isAir && carlifeStarted && carlifePaused &&
+            transcodeEnabled && transcoder != null && gotIdr && active == Source.AA
+        // START после PAUSE - та же живая сессия: отложенный TTS STOP шлём сразу, иначе resetAudio его съест,
+        // ГУ так и держит канал подсказок открытым и глушит музыку до следующей подсказки (h482, ix35 HSAE).
+        if (carlifeStarted && carlifePaused && ttsStopTimer.pending) {
+            log("BRIDGE CarLife START после PAUSE: отложенный TTS STOP шлю сразу", true)
+            stopAudio(CarlifeAudio.CH_TTS)
+        }
+        carlifeStarted = true
+        carlifePaused = false
+        if (warm) log("BRIDGE CarLife START без PAUSE: звук не трогаю, INIT не повторяю", true)
+        else resetAudio()                      // новый START: MEDIA/TTS init заново на первом пакете
+        if (desktopSurfaceEnabled) {
+            startTranscoder()
+            if (!warm) meta.onCarlifeStart()
+            return
+        }
+        if (resume) {
+            lastKeyframeRequest = NEVER
+            log("BRIDGE CarLife START после PAUSE (воздух): декодер жив, сразу IDR энкодера, AA не жду", true)
+            startTranscoder()
+            outputEnabled = true
+            if (!warm) meta.onCarlifeStart()
+            if (huPausedAa) log("BRIDGE CarLife START: AA на паузе после ухода ГУ на свой источник, музыку не запускаю", true)
+            return
+        }
+        gotIdr = false
+        h295TouchAt = NEVER
+        spsCropKickAt = NEVER
+        waitSince = if (aaVideoSeen) clockMs() - KEYFRAME_WAIT_MS else 0L
+        lastKeyframeRequest = NEVER
+        log("BRIDGE CarLife START: источник=$active, AA видео ${if (aaVideoSeen) "идёт, запрашиваю ключевой кадр" else "ещё нет"}", true)
+        if (transcodeEnabled) startTranscoder()
+        else log("BRIDGE видео: режим passthrough (H.264 AA как есть)", true)
+        if (aaVideoSeen) {
+            // AA уже играет (тёплая сессия): не ждать тик, сразу цикл NATIVE -> PROJECTED (декодеру нужен IDR от AA)
+            lastKeyframeRequest = clockMs()
+            keyframeRequests++
+            peer?.requestKeyFrame()
+        }
+        if (!warm) meta.onCarlifeStart()
+        // play на START не шлём: звук CarLife сразу отбирает у ГУ радио, а слушать радио под навигацию - сценарий (h33).
+        // Вернуть музыку - только по явному MUSIC=1 от ГУ (onCarlifeMusicControl).
+        if (huPausedAa) log("BRIDGE CarLife START: AA на паузе после ухода ГУ на свой источник, музыку не запускаю", true)
+    }
+
+    /**
+     * MODULE_CONTROL MUSIC от ГУ; ответ - MODULE_STATUS MUSIC. status=0 - ГУ ушло на свой источник (радио): Desay G6S
+     * (Mazda) шлёт его после PAUSE, другие ГУ - без PAUSE. Плеер AA на паузу, хвост его буфера не пересылаем до
+     * следующего play, отвечаем MUSIC=0 - иначе ГУ видит CarLife-музыку активной и спорит с радио.
+     * Хвост держим и когда AA уже на паузе (Honda: MUSIC=0 после паузы ассистентом, хвост буфера давал MEDIA INIT
+     * через 40 мс), и MUSIC=0 отвечаем, даже если MEDIA PAUSE отложен до конца TTS (лог Егора 2026-10-13).
+     *
+     * status=1 - Desay G6S вернулся на CarLife-музыку (пачка 10-20 MUSIC=1 рядом с START). После нашей паузы это выбор
+     * пользователя на ГУ: AA KEYCODE 126 и MUSIC=1 на всю пачку (лог h214 2026-10-17). Простой возврат на карту
+     * (NAVI) приходит без MUSIC=1 - там радио не трогаем. Свежая сессия тоже шлёт MUSIC=1, но паузы нашей там нет.
+     */
+    @Synchronized
+    fun onCarlifeMusicControl(status: Int?): Boolean {
+        if (HU_MUSIC_FOLLOW_ENABLED && status == 0 && carlifeStarted) {
+            val p = peer
+            if (meta.playing && !huPausedAa && p != null) {
+                log("BRIDGE ГУ ушло на свой источник (MUSIC=0${if (carlifePaused) " после PAUSE" else ""}): AA KEYCODE $KEYCODE_MEDIA_PAUSE, MEDIA на паузу", true)
+                sendPauseKey(p)
+                resumeOnHuMusic = true
+            } else if (!huPausedAa) {
+                log("BRIDGE ГУ ушло на свой источник (MUSIC=0), AA не играет: хвост MEDIA не пересылаю до play", true)
+                resumeOnHuMusic = false
+            }
+            huPausedAa = true
+            requestMediaPause("ГУ MODULE_CONTROL MUSIC=0")
+            return false
+        }
+        if (HU_MUSIC_RESUME_ENABLED && status == 1 && huDesayG6S) {
+            val now = clockMs()
+            val p = peer
+            if (huPausedAa && resumeOnHuMusic && p != null) {
+                huPausedAa = false
+                callPausedAa = false
+                resumeOnHuMusic = false
+                lastHuResumeMs = now
+                lastUserInputMs = now              // выбор источника на ГУ - ввод пользователя, BT-гард его не перебивает
+                log("BRIDGE ГУ вернулось на CarLife-музыку (MUSIC=1) после нашей паузы: AA KEYCODE $KEYCODE_MEDIA_PLAY", true)
+                p.sendKey(KEYCODE_MEDIA_PLAY)
+                return true
+            }
+            if (now - lastHuResumeMs < HU_RESUME_ANSWER_MS) return true   // пачка MUSIC=1, пока AA раскачивается
+        }
+        return musicActive
+    }
+
+    private fun sendPauseKey(p: AaPeer) {
+        lastPauseKeyMs = clockMs()
+        p.sendKey(KEYCODE_MEDIA_PAUSE)
+    }
+
+    /** BT_HFP_CONNECTION от ГУ: state=2 - телефон подключился к ГУ по Bluetooth (0 - отключился). */
+    @Synchronized
+    fun onHuBtHfpConnection(state: Int?) {
+        if (state == 2) {
+            lastHfpConnectMs = clockMs()
+            log("BRIDGE ГУ: BT HFP подключён (автоплей AA в ближайшие $BT_AUTOPLAY_WINDOW_MS мс не снимет паузу)", true)
+        } else {
+            log("BRIDGE ГУ: BT HFP состояние=$state", true)
+        }
+    }
+
+    /** AA снова заиграл сам (play пользователя): звук опять пересылаем. После BT HFP без ввода с ГУ это автоплей - паузу держим. */
+    private fun releaseHuPause(why: String) {
+        if (!huPausedAa) return
+        val now = clockMs()
+        val p = peer
+        if (BT_AUTOPLAY_GUARD_ENABLED && p != null && now - lastHfpConnectMs < BT_AUTOPLAY_WINDOW_MS &&
+            now - lastUserInputMs > USER_INPUT_WINDOW_MS) {
+            if (now - lastPauseKeyMs >= REPAUSE_MIN_MS) {
+                log("BRIDGE $why через ${now - lastHfpConnectMs} мс после BT HFP без ввода пользователя: автоплей, снова KEYCODE $KEYCODE_MEDIA_PAUSE", true)
+                sendPauseKey(p)
+            }
+            return
+        }
+        huPausedAa = false
+        callPausedAa = false
+        resumeOnHuMusic = false
+        log("BRIDGE $why: MEDIA снова пересылаю", true)
+    }
+
+    private fun ago(t: Long): String = if (t == NEVER) "не было" else "${clockMs() - t} мс назад"
+
+    /** CARLIFE_DATA_SUBSCRIBE_START (on=true) / STOP от ГУ; moduleID подписки: 0 навигация, 2 музыка. */
+    @Synchronized
+    fun onCarlifeSubscribe(moduleIds: List<Int>, on: Boolean) {
+        for (id in moduleIds) meta.onSubscribe(id, on)
+    }
+
+    /** CHANGE_MD_THEME от ГУ (h294): тёмная -> ночной режим AA, светлая -> день; авто (2) и прочее - день. */
+    fun onCarlifeTheme(mode: Int?) {
+        val m = mode ?: return log("BRIDGE CHANGE_MD_THEME без themeModes, тему не меняю", true)
+        val prev = huTheme
+        huTheme = m
+        val night = m == THEME_DARK
+        log("BRIDGE тема ГУ $prev -> $m (${themeName(m)}): AA night=$night${if (peer == null) ", AA не подключён, отдам при подключении" else ""}", true)
+        peer?.sendNightMode(night)
+    }
+
+    /** VIDEO_ENCODER_PAUSE от ГУ: следующий START - полный, со сбросом звука. */
+    @Synchronized
+    fun onCarlifePause() {
+        carlifePaused = true
+        if (desktopSurfaceEnabled) outputEnabled = false
+        if (exitPending) {
+            // ГУ ушёл с CarLife после нашего GO_TO_DESKTOP: говорим AA, что проекции нет (NATIVE), возврат - через START
+            exitPending = false
+            log("BRIDGE ГУ вышел из CarLife (PAUSE) после «Выйти»: AA VideoFocus NATIVE", true)
+            peer?.sendVideoFocusNative()
+        }
+    }
+
+    /** Плитка «Выйти» в AA: VIDEO_FOCUS_REQUEST NATIVE. Просим ГУ на рабочий стол; NATIVE для AA - когда ГУ пришлёт PAUSE. */
+    @Synchronized
+    override fun onAaNativeFocusRequest() {
+        if (link === NoLink || !carlifeStarted) {
+            log("BRIDGE AA: «Выйти» (VIDEO_FOCUS NATIVE) проигнорирован: CarLife ${if (link === NoLink) "не подключён" else "ещё не START"}", true)
+            return
+        }
+        log("BRIDGE AA: «Выйти» (VIDEO_FOCUS NATIVE) -> CarLife GO_TO_DESKTOP", true)
+        exitPending = true
+        link.goToDesktop()
+        // AA ждёт ответа на NATIVE с чёрной областью лаунчера. Desay G6S (Mazda) не шлёт ни PAUSE на выходе, ни START
+        // на возврате (лог 2026-10-12), так что ответ сразу: цикл NATIVE -> PROJECTED возвращает AA на главный экран.
+        lastKeyframeRequest = clockMs()
+        keyframeRequests++
+        peer?.requestKeyFrame()
+    }
+
+    /** FEATURE_CONFIG ГУ разобран; mode = значение AUDIO_TRANSMISSION_MODE (null - ключа нет). */
+    fun onHuFeatureConfig(audioTransmissionMode: Int?) {
+        featureConfigSeen = true
+        if (audioTransmissionMode == CarlifeAudio.AUDIO_MODE_BT) {
+            btAudio = true
+            log("BRIDGE !!!!!! ГУ: AUDIO_TRANSMISSION_MODE=1 (звук по Bluetooth). Звук по USB НЕ шлю, AA-звук остаётся на телефоне (синки MEDIA/SPEECH не объявляю)", true)
+        } else {
+            log("BRIDGE AUDIO_TRANSMISSION_MODE=${audioTransmissionMode ?: "нет в списке"}: звук по USB ${if (usbAudioEnabled) "включён" else "выключен в UI"}", true)
+        }
+    }
+
+    /**
+     * HU_INFO ГУ разобран: Desay G6S опознаём по производителю и модели (другие ГУ Desay SV под запрет не попадают),
+     * Hyundai CN7 - по product.
+     */
+    fun onHuInfo(manufacturer: String?, model: String?, product: String? = null, board: String? = null) {
+        if (board == MOBIS_BOARD || model == MOBIS_BOARD) enableMobisNx4c()
+        if (manufacturer == DESAY_MANUFACTURER && model == DESAY_G6S_MODEL) huDesayG6S = true
+        vwIdName = manufacturer
+        if (manufacturer == VW_BT_1420_MANUFACTURER) huVwBt1420 = true
+        updateVwId()
+        if (product == HYUNDAI_CN7_PRODUCT) huHyundaiCn7 = true
+        if (manufacturer == PIONEER_MANUFACTURER && model == PIONEER_RM56_MODEL) {
+            if (!huPioneerRm56) log("BRIDGE ГУ Pioneer RM56E8B: потолок ${PIONEER_RM56_CEILING_BPS / 1000} кбит/с, fps ≤ $PIONEER_RM56_MAX_FPS", true)
+            huPioneerRm56 = true
+            // в passthrough потолок и fps не работают (h277 test1); BridgeService вернёт поле к настройке на следующей сессии
+            if (!transcodeEnabled) {
+                transcodeEnabled = true
+                log("BRIDGE ГУ Pioneer RM56E8B: passthrough отключаю, перекодирование принудительно", true)
+            }
+        }
+    }
+
+    /**
+     * Hyundai Tucson NX4 (Mobis CCNC, h242). Флаг включается как можно раньше (HU_INFO, запасной признак - канал
+     * STATISTIC_INFO), потому что часть реакций (запись AOA, auth, BT) нужна до STATISTIC_INFO. Прямой проброс под
+     * флагом не используем: энкодер Baidu (20 fps, VBR, 3,84 Мбит/с) есть только в перекодировании.
+     */
+    private fun enableMobisNx4c() {
+        if (huMobisNx4c) return
+        huMobisNx4c = true
+        log("MOBIS CCNC: режим Baidu включён", true)
+        if (!transcodeEnabled) {
+            transcodeEnabled = true
+            log("BRIDGE ГУ Mobis CCNC: passthrough отключаю, перекодирование принудительно", true)
+        }
+    }
+
+    private var vwIdName: String? = null       // HU_INFO manufacturer = BT-имя ГУ ("VW BT NNNN", цифры свои у каждой машины)
+    private var vwIdChannel: String? = null    // STATISTIC_INFO channel = прошивка ГУ
+
+    /** «Мой автомобиль» = VW ID. UNYX: потолок по размеру IDR и без опознания ГУ. BridgeService ставит на каждую сессию. */
+    @Volatile var carVwId = false
+
+    /**
+     * VW ID - прошивка 20082138 с любым BT-именем, кроме VW BT 1420 (Павел: 8 Мбит/с по воздуху и USB без обрывов,
+     * лог 2026-10-16); имя ждём, чтобы отличить Павла. Встречались "VW BT 1538" (h196) и "VW BT 4370" (ID. UNYX, 26.10.2026).
+     * Прочие прошивки - строго парой из [VW_ID_IDR_LIMIT_HUS]: 20082128 + "VW BT 9491" (ID.6 Crozz, 24.10.2026).
+     * Пресет [carVwId] включает потолок сам.
+     */
+    private fun updateVwId() {
+        val was = huVw20082138
+        val name = vwIdName
+        val channel = vwIdChannel
+        huVw20082138 = carVwId || (name != null && channel != null && name != VW_BT_1420_MANUFACTURER &&
+            (channel == VW_20082138_CHANNEL || channel == VW_ID_IDR_LIMIT_HUS[name]))
+        if (huVw20082138 && !was) {
+            val why = if (carVwId) "пресет VW ID. UNYX" else "$channel, $name"
+            log("BRIDGE ГУ VW ID ($why): потолок битрейта по размеру IDR", true)
+        }
+    }
+
+    /** STATISTIC_INFO ГУ разобран: запасной признак Desay G6S и признак VW 20082120 - канал сборки прошивки. */
+    fun onHuStatistic(channel: String?) {
+        if (channel == MOBIS_NX4C_CHANNEL) enableMobisNx4c()
+        if (channel == DESAY_G6S_CHANNEL) huDesayG6S = true
+        if (channel == HONDA_20772121_CHANNEL || channel == HONDA_20832125_CHANNEL) huHonda20772121 = true
+        if (channel == MAZDA_20622111_CHANNEL && !huMazda20622111) {
+            huMazda20622111 = true
+            log("BRIDGE ГУ Mazda 20622111: VIDEO_DATA режу на куски ≤ $MAZDA_20622111_MAX_VIDEO_PACKET Б, потолок ${MAZDA_20622111_CEILING_BPS / 1000} кбит/с", true)
+        }
+        if (channel == VW_20082120_CHANNEL || channel == VW_CNS3_20082122_CHANNEL || channel == VW_CNS3_20082134_CHANNEL ||
+            channel == VW_CNS2_20082114_CHANNEL || channel == SKODA_CNS3_21290002_CHANNEL) huVw20082120 = true
+        if (channel == VW_CNS2_20082114_CHANNEL || channel == SKODA_CNS3_21290002_CHANNEL) huIdleVideoHeartbeat = true
+        if (channel == VW_CNS2_20082114_CHANNEL && !huVwCns2Delphi) {
+            huVwCns2Delphi = true
+            log("BRIDGE ГУ VW CNS2 Delphi 20082114: ответ ассистента в канал VR, антидребезг кнопки голоса", true)
+        }
+        if (isHondaChannel(channel) && !huHonda) {
+            huHonda = true
+            log("BRIDGE ГУ Honda (channel $channel): roadName под приборку, стрелки после SUBSCRIBE_START, перевзвод NAVI 0->1", true)
+        }
+        vwIdChannel = channel
+        updateVwId()
+    }
+
+    /** Ушёл MODULE_STATUS NAVI=1 (маршрут / TTS / перевзвод). Honda: ГУ ответит SUBSCRIBE_START - стрелки ждут его. */
+    private fun naviRaised() {
+        naviRaisedAt = clockMs()
+        naviShownSinceRaise = false
+        if (huHonda) meta.awaitSubscribe()
+    }
+
+    /**
+     * Honda: перед первым SHOW (новый маршрут, перестроение) и повторным после тишины приборке нужен переход MODULE_STATUS
+     * NAVI 0->1 (h137, 2026-10-16 20:43:45: NAVI=1 держал TTS, SHOW нового маршрута ушёл без перехода - стрелок не было до
+     * конца поездки). Свежий NAVI=1 (моложе NAVI_REARM_FRESH_MS, стрелок после него не было) не трогаем: переход уже был.
+     */
+    @Synchronized
+    private fun rearmNavi() {
+        if (!huHonda || huDesayG6S || !ROUTE_NAVI_STATUS_ENABLED) return
+        if (naviSent && !naviShownSinceRaise && clockMs() - naviRaisedAt < NAVI_REARM_FRESH_MS) {
+            naviShownSinceRaise = true
+            return
+        }
+        if (naviSent) link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 0)
+        if (link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 1)) {
+            naviSent = true
+            naviRaised()
+            log("BRIDGE CarLife MODULE_STATUS NAVI 0->1 (Honda: перевзвод приборки перед SHOW)", true)
+        }
+    }
+
+    /** CarLife-сессия закрыта (USB EIO / detach / Стоп). AA не трогаем; from - закрываемая ссылка, чужую не отцепляем. */
+    fun onCarlifeClosed(from: CarlifeLink? = null) {
+        if (closeCarlife(from)) mic.onCarlifeLost()      // вне блокировки ядра: роутер микрофона берёт свою
+    }
+
+    @Synchronized
+    private fun closeCarlife(from: CarlifeLink?): Boolean {
+        if (from != null && from !== link) {
+            log("BRIDGE закрытие старой CarLife-сессии, текущая уже другая: игнор", false)
+            return false
+        }
+        carlifeStarted = false
+        exitPending = false
+        gotIdr = false
+        telephonyCall = null                   // подписка на телефонию закрыта вместе с сессией
+        callPausedAa = false
+        spliceCancel("CarLife закрыт")
+        resetAudio()
+        stopTranscoderAsync()
+        active = Source.PLACEHOLDER
+        link = NoLink
+        if (desktopInputEnabled) {
+            touchDecimator.reset()
+            touchPacer.reset()
+        }
+        synchronized(touchLock) {
+            if (desktopInputEnabled && fingers.isNotEmpty()) peer?.let { sendFingers(it, 3, 0, "CANCEL") }
+            fingers.clear()
+        }
+        log("BRIDGE CarLife закрыт (AA ${if (aaVideoSeen) "жива" else "без видео"}, держим)", true)
+        return true
+    }
+
+    /** Палец CarLife-тача: id для AA и последние координаты кадра ГУ. */
+    private class Finger(val id: Int, var x: Int, var y: Int) {
+        fun set(nx: Int, ny: Int) {
+            x = nx
+            y = ny
+        }
+    }
+
+    private val touchLock = Any()
+
+    /** Активные пальцы в порядке индекса MotionEvent ГУ: x,y TOUCH_ACTION - индекс 0, pointerx/pointery - индекс 1. */
+    private val fingers = ArrayList<Finger>(2)
+
+    /**
+     * TOUCH_ACTION ГУ -> AA. action как у MotionEvent: action&255 = 0 DOWN, 1 UP, 2 MOVE, 5 POINTER_DOWN, 6 POINTER_UP,
+     * action>>8 = индекс пальца. Второй палец - в (px, py); 0,0 = координат нет (тогда последние известные).
+     * До двух пальцев; id оставшегося пальца после POINTER_UP не меняется. Координаты кадра ГУ -> кадр AA через
+     * [VideoMode.mapTouch] (без margin-ов 1:1). Один палец уходит в AA так же, как до мультитача (id 0, action_index 0).
+     */
+    fun onCarlifeTouch(action: Int, x: Int, y: Int, px: Int = 0, py: Int = 0) {
+        if (desktopInputEnabled && action and 0xFF == 3) {
+            // Discard delayed MOVE events instead of replaying them into an already cancelled gesture.
+            touchDecimator.reset()
+            touchPacer.reset()
+            dispatchTouch(action, x, y, px, py)
+            return
+        }
+        val every = touchDecimationProvider().every
+        if (every != touchDecimationLogged) {
+            touchDecimationLogged = every
+            log("BRIDGE тач: прореживание MOVE ${if (every > 1) "×$every" else "выкл"} (настройка)", true)
+        }
+        touchDecimator.onTouch(action, x, y, px, py, every)
+        onHuTouch(action and 0xFF)                                            // вне touchLock: вложенных блокировок нет
+    }
+
+    /** Выход прореживателя: на Delphi через пейсер пачек, на остальных ГУ сразу в AA. */
+    private fun routeTouch(action: Int, x: Int, y: Int, px: Int, py: Int) {
+        if (huVwCns2Delphi) {
+            touchPacer.onTouch(action, x, y, px, py)
+            if (touchPacer.bursts == 1 && !touchPacerLogged) {
+                touchPacerLogged = true
+                log("BRIDGE тач: ГУ шлёт MOVE пачками, раздаю равномерно между пачками (h425)", true)
+            }
+        } else {
+            dispatchTouch(action, x, y, px, py)
+        }
+    }
+
+    /**
+     * h295, Honda Civic 11 (20772121): ГУ после камеры заднего хода / меню машины молча сбрасывает декодер и ничего не шлёт
+     * (ни PAUSE, ни START), а AA в passthrough даёт IDR раз в минуты. Камера/меню - пауза в тачах CarLife, при обычной
+     * работе тапы идут чаще. DOWN после паузы >= [H295_TOUCH_IDLE_MS] при старом IDR - вероятно, чёрный экран: сразу просим
+     * у AA ключевой кадр полным циклом NATIVE -> PROJECTED (мягкий PROJECTED на Samsung IDR не давал), gate не закрываем,
+     * P-кадры идут. Пришедший IDR в [onFrame] получает SPS/PPS из CODEC_CONFIG: после сброса декодера ГУ голый IDR может не принять.
+     * Время прошлого тача читаем до обновления, поэтому второй DOWN-дубль ГУ (~2 мс) триггер не повторяет.
+     */
+    @Synchronized
+    private fun onHuTouch(act: Int) {
+        val now = clockMs()
+        val firstTouch = h295LastTouchAt == NEVER
+        val sinceTouch = now - h295LastTouchAt
+        h295LastTouchAt = now
+        if (act != AapMessages.TOUCH_DOWN) return
+        if (!huHonda20772121 || transcoder != null || !carlifeStarted || !gotIdr) return
+        if (spliceWorks) return     // свой IDR и так раз в 2 с, цикл NATIVE -> PROJECTED только дёргает картинку под пальцем
+        val sinceIdr = now - lastIdrSentMs
+        if (sinceIdr <= H295_IDR_STALE_MS || sinceTouch < H295_TOUCH_IDLE_MS || now - h295LastTrigger < H295_TRIGGER_MIN_MS) return
+        h295LastTrigger = now
+        h295TouchAt = now
+        lastKeyframeRequest = now
+        keyframeRequests++
+        log("BRIDGE h295: тач после $sinceIdr мс без IDR, ${if (firstTouch) "первый тач в сессии" else "пауза в тачах $sinceTouch мс"} -> keyframe-цикл", true)
+        peer?.requestKeyFrame()
+    }
+
+    /** h295: IDR после цикла так и не пришёл за [H295_WAIT_GIVEUP_MS] - не вешаем на него чужой IDR в логе и склейке. */
+    private fun h295GiveUp(now: Long) {
+        if (h295TouchAt == NEVER || now - h295TouchAt <= H295_WAIT_GIVEUP_MS) return
+        log("BRIDGE h295: IDR после тача не пришёл за ${H295_WAIT_GIVEUP_MS / 1000} с", true)
+        h295TouchAt = NEVER
+    }
+
+    /** h295: IDR, которого ждали после тача, уходит с SPS/PPS из CODEC_CONFIG, если в кадре их нет. Иначе кадр как есть. */
+    private fun h295Prepare(b: ByteArray, types: List<Int>): ByteArray {
+        if (h295TouchAt == NEVER || 5 !in types || (AnnexB.startsWithSps(b) && 8 in types)) return b
+        val cfg = aaConfig ?: return b
+        return AnnexB.glue(cfg, b)
+    }
+
+    private var spsCropKickAt = NEVER              // h529: когда запросить повторный IDR после первого в CarLife-сессии
+    private var spsCropKickBase = NEVER            // когда ушёл тот первый IDR: свой IDR после него заменяет повтор
+    private var spsCropKickDeferred = false        // повтор уже отложен один раз в ожидании своего IDR
+    private var sessionKickDone = false            // повторный IDR уже назначен в этой CarLife-сессии; после PAUSE/START мост и так шлёт цикл
+    private var spsCropSrc: ByteArray? = null      // последний исходный SPS AA и его переписанная версия (null = не вышло)
+    private var spsCropDst: ByteArray? = null
+
+    /**
+     * Passthrough с полями (WIDE*, R1024 при включённом SPS-кропе, h529): к кропу каждого SPS прибавляются поля AA,
+     * их отрезает декодер ГУ. Не разобрался SPS - уходит исходный (ГУ покажет кадр с полями), причина в логе один раз.
+     * Зовётся только из ветки без транскодера, поэтому срабатывает и при откате с несозданного транскодера.
+     */
+    private fun spsCrop(au: ByteArray): ByteArray {
+        if (videoMode.crop.isNone) return au
+        return SpsCrop.mapSps(au) { sps ->
+            if (!sps.contentEquals(spsCropSrc)) {
+                spsCropSrc = sps
+                spsCropDst = cropSps(sps, "")
+            }
+            spsCropDst ?: sps
+        }
+    }
+
+    /** SPS из AU в лог: POC, опорные кадры, VUI (bitstream_restriction решает, держит ли декодер ГУ кадры в DPB). */
+    private fun logSps(who: String, au: ByteArray) {
+        for (nal in IdrSplicer.nals(au)) {
+            if (nal[0].toInt() and 0x1F != 7) continue
+            val d = try {
+                SpsVui.parse(nal).toString()
+            } catch (e: RuntimeException) {
+                "не разобрался: ${e.message}"
+            }
+            log("BRIDGE SPS $who: $d (${Hex.compact(nal, 48)})", true)
+        }
+    }
+
+    private fun cropSps(sps: ByteArray, who: String): ByteArray? {
+        val g = videoMode
+        return try {
+            val r = if (marginsAtBottom) SpsCrop.rewrite(sps, 0, g.marginW, 0, g.marginH)
+            else SpsCrop.rewrite(sps, g.marginW / 2, g.marginW / 2, g.marginH / 2, g.marginH / 2)
+            if (r.after.visibleW != g.outW || r.after.visibleH != g.outH) {
+                throw SpsCrop.SpsException("видимая часть ${r.after.visibleW}x${r.after.visibleH}, ГУ ждёт ${g.outW}x${g.outH}")
+            }
+            log("BRIDGE SPS-кроп$who: ${r.before} -> ${r.after}, ${sps.size} -> ${r.sps.size} Б", true)
+            r.sps
+        } catch (e: SpsCrop.SpsException) {
+            log("BRIDGE SPS-кроп$who не применён (${e.message}), SPS ${sps.joinToString("") { "%02x".format(it) }} уходит как есть", true)
+            null
+        }
+    }
+
+    /**
+     * Заглушка в passthrough с SPS-кропом кодируется в кадре AA (aaW×aaH) и режется тем же кропом (h529, Мазда 20622116):
+     * ГУ настраивает декодер по первому SPS после START и смену размера кадра посреди потока не переносит,
+     * после заглушки 1728x648 поток AA 1920x1088 шёл кашей из точек до следующего PAUSE/START.
+     */
+    val stubInAaGeometry: Boolean get() = !transcodeEnabled && !videoMode.crop.isNone
+
+    /** Левый верхний угол видимой части кадра AA при SPS-кропе: там заглушка рисует надпись. */
+    val spsCropOrigin: Pair<Int, Int> get() = if (marginsAtBottom) 0 to 0 else videoMode.marginW / 2 to videoMode.marginH / 2
+
+    private var stubCropSrc: ByteArray? = null     // то же, что spsCropSrc/Dst, для SPS энкодера заглушки (нить drain энкодера)
+    private var stubCropDst: ByteArray? = null
+
+    /** SPS энкодера заглушки с теми же полями, что у AA ([stubInAaGeometry]). */
+    fun stubSpsCrop(au: ByteArray): ByteArray = SpsCrop.mapSps(au) { sps ->
+        if (!sps.contentEquals(stubCropSrc)) {
+            stubCropSrc = sps
+            stubCropDst = cropSps(sps, " заглушки")
+        }
+        stubCropDst ?: sps
+    }
+
+    private fun h295IdrSeen(before: ByteArray, after: ByteArray) {
+        if (h295TouchAt == NEVER) return
+        log("BRIDGE h295: IDR через ${lastIdrSentMs - h295TouchAt} мс после тача, nal=${AnnexB.nalTypes(before)} -> ${AnnexB.nalTypes(after)}", true)
+        h295TouchAt = NEVER
+    }
+
+    private fun dispatchTouch(action: Int, x: Int, y: Int, px: Int, py: Int) = synchronized(touchLock) {
+        val act = action and 0xFF
+        val idx = action ushr 8
+        if (act == AapMessages.TOUCH_DOWN || act == AapMessages.TOUCH_POINTER_DOWN) lastUserInputMs = clockMs()
+        val name = if (desktopInputEnabled && act == 3) "CANCEL" else TOUCH_NAMES[act]
+        if (name == null) {
+            log("BRIDGE тач action=$action x=$x y=$y не передаю (нет аналога в AA)", false)
+            return@synchronized
+        }
+        val p = peer
+        if (p == null) {
+            log("BRIDGE тач $name $x,$y проигнорирован: AA не подключён", false)
+            fingers.clear()
+            return@synchronized
+        }
+        val second = px != 0 || py != 0
+        when (act) {
+            3 -> {
+                if (fingers.isNotEmpty()) sendFingers(p, act, 0, name)
+                fingers.clear()
+            }
+            AapMessages.TOUCH_DOWN -> {
+                fingers.clear()
+                fingers.add(Finger(0, x, y))
+                sendFingers(p, act, 0, name)
+            }
+            AapMessages.TOUCH_MOVE -> {
+                if (fingers.isEmpty()) fingers.add(Finger(0, x, y))   // DOWN потерян: как раньше, один палец id 0
+                fingers[0].set(x, y)
+                if (fingers.size > 1 && second) fingers[1].set(px, py)
+                sendFingers(p, act, 0, name)
+            }
+            AapMessages.TOUCH_POINTER_DOWN -> {
+                if (fingers.size >= 2 || idx > 1) {
+                    log("BRIDGE тач $name action=$action: больше двух пальцев не передаю", false)
+                    return@synchronized
+                }
+                if (fingers.isEmpty()) fingers.add(Finger(0, x, y))
+                val pos = idx.coerceAtMost(fingers.size)
+                val fresh = Finger(if (fingers[0].id == 0) 1 else 0, x, y)
+                fingers.add(pos, fresh)
+                fingers[0].set(x, y)
+                if (second) fingers[1].set(px, py) else if (fingers[1] === fresh) fresh.set(x, y)
+                sendFingers(p, act, pos, name)
+            }
+            AapMessages.TOUCH_POINTER_UP -> {
+                if (fingers.size < 2 || idx > 1) {
+                    log("BRIDGE тач $name action=$action: пальцев ${fingers.size}, не передаю", false)
+                    return@synchronized
+                }
+                fingers[0].set(x, y)
+                if (second) fingers[1].set(px, py)
+                sendFingers(p, act, idx, name)
+                fingers.removeAt(idx)
+            }
+            else -> {                                              // UP последнего пальца
+                if (fingers.size > 1) {                            // POINTER_UP потерян: сначала снимаем второй палец
+                    sendFingers(p, AapMessages.TOUCH_POINTER_UP, 1, "POINTER_UP")
+                    fingers.removeAt(1)
+                }
+                if (fingers.isEmpty()) fingers.add(Finger(0, x, y))
+                fingers[0].set(x, y)
+                sendFingers(p, act, 0, name)
+                fingers.clear()
+            }
+        }
+    }
+
+    /** Все активные пальцы -> AA одним событием; лог как до мультитача для одного пальца. */
+    private fun sendFingers(p: AaPeer, act: Int, index: Int, name: String) {
+        val mode = videoMode
+        val points = fingers.map { f ->
+            val (ax, ay) = mode.mapTouch(f.x, f.y)
+            TouchPoint(f.id, ax, ay)
+        }
+        val ui = act != AapMessages.TOUCH_MOVE
+        if (points.size == 1) {
+            val f = fingers[0]
+            val a = points[0]
+            if (a.x == f.x && a.y == f.y) log("BRIDGE тач $name ${f.x},${f.y} -> AA", ui)
+            else log("BRIDGE тач $name ГУ ${f.x},${f.y} -> AA ${a.x},${a.y} (${mode.label})", ui)
+        } else {
+            val gu = fingers.joinToString(" ") { "#${it.id} ${it.x},${it.y}" }
+            val aa = points.joinToString(" ") { "#${it.id} ${it.x},${it.y}" }
+            log("BRIDGE тач $name[$index] пальцев ${points.size}: ГУ $gu -> AA $aa (${mode.label})", ui)
+        }
+        p.sendTouch(act, index, points)
+    }
+
+    /** TOUCH_CAR_HARD_KEY_CODE ГУ (кнопки руля) -> AA: нажатие Android KeyEvent по [HARD_KEY_TO_ANDROID]. */
+    fun onCarlifeHardKey(code: Int) {
+        lastUserInputMs = clockMs()
+        HARD_KEY_TO_ROTARY[code]?.let { delta ->
+            val p = peer
+            if (p == null) {
+                log("BRIDGE шайба keycode=$code проигнорирована: AA не подключён", true)
+                return
+            }
+            log("BRIDGE шайба keycode=$code -> AA rotary $delta", true)
+            p.sendRotary(delta)
+            return
+        }
+        val call = if (huVwCns2Delphi) currentCall() else PhoneCall.IDLE
+        if (code == HARD_KEY_MEDIA_STOP) muteMediaOnCall("ГУ прислало keycode=$code")
+        val android = if (mapHomeKey && code == 0x01) 3 else delphiKey(code, call) ?: HARD_KEY_TO_ANDROID[code]
+        if (call == PhoneCall.ACTIVE && code == HARD_KEY_SEEK_SUB) {
+            log("BRIDGE руль keycode=$code: идёт звонок, назад не шлю", true)
+            return
+        }
+        if (android == null) {
+            log("BRIDGE руль keycode=$code: нет аналога в AA, игнор", true)
+            return
+        }
+        val p = peer
+        if (p == null) {
+            log("BRIDGE руль keycode=$code проигнорирован: AA не подключён", true)
+            return
+        }
+        if (android == KEYCODE_SEARCH && voiceKeyBounce("руль keycode=$code")) return
+        val note = if (call != PhoneCall.IDLE) " (звонок ${call.name})" else ""
+        log("BRIDGE руль keycode=$code -> AA KEYCODE $android$note", true)
+        p.sendKey(android)
+    }
+
+    /**
+     * На новых рулях VW нет кнопки трубки: пока звонит или идёт звонок, перемотка отвечает за звонок.
+     * Как на телефоне: зелёная слева, красная справа. Звонит: назад = принять (CALL), вперёд = отклонить (ENDCALL).
+     * Разговор: вперёд = положить трубку.
+     * Кнопки паузы тоже нет: удержание перемотки ГУ шлёт как keycode 0, вне звонка это пауза/плей.
+     * Только VW CNS2 Delphi 20082114 ([huVwCns2Delphi], Дмитрий); на прочих ГУ всё как было.
+     */
+    private fun delphiKey(code: Int, call: PhoneCall): Int? = when {
+        !huVwCns2Delphi -> null
+        call == PhoneCall.IDLE && code == HARD_KEY_SEEK_HOLD -> KEYCODE_MEDIA_PLAY_PAUSE
+        call == PhoneCall.RINGING && code == HARD_KEY_SEEK_SUB -> KEYCODE_CALL
+        call != PhoneCall.IDLE && code == HARD_KEY_SEEK_ADD -> KEYCODE_ENDCALL
+        else -> null
+    }
+
+    /**
+     * VW CNS2 Delphi (h425) шлёт VR_START дважды за 1-2 мс: второй KEYCODE_SEARCH закрывает только что открытого
+     * ассистента. Повтор кнопки голоса чаще [VOICE_KEY_DEBOUNCE_MS] глотаем.
+     */
+    private fun voiceKeyBounce(what: String): Boolean {
+        val now = clockMs()
+        val dup = now - lastVoiceKeyMs < VOICE_KEY_DEBOUNCE_MS
+        if (dup) log("BRIDGE $what: повтор кнопки голоса через ${now - lastVoiceKeyMs} мс, глотаю", true)
+        else lastVoiceKeyMs = now
+        return dup
+    }
+
+    /** MODULE_CONTROL VR=1 от ГУ (кнопка голоса) -> AA KEYCODE_SEARCH: AA открывает ассистента и сам просит микрофон. */
+    fun onCarlifeVoiceKey() {
+        lastUserInputMs = clockMs()
+        val p = peer
+        if (p == null) {
+            log("BRIDGE кнопка голоса проигнорирована: AA не подключён", true)
+            return
+        }
+        if (voiceKeyBounce("кнопка голоса (MODULE_CONTROL VR=1)")) return
+        log("BRIDGE кнопка голоса (MODULE_CONTROL VR=1) -> AA KEYCODE $KEYCODE_SEARCH", true)
+        p.sendKey(KEYCODE_SEARCH)
+    }
+
+    // --- события AA ---
+    @Synchronized
+    fun onAaConnecting() {
+        resetTranscodeForAa()
+        spliceReset()
+        gotIdr = false
+        aaConfig = null
+        aaVideoSeen = false
+    }
+
+    @Synchronized
+    fun onAaEnded(established: Boolean) {
+        meta.onAaEnded()
+        stopAllAudio("AA завершился")
+        resetTranscodeForAa()
+        spliceReset()
+        val wasAa = active == Source.AA
+        gotIdr = false
+        aaConfig = null
+        aaVideoSeen = false
+        if (established || wasAa) placeholderText = disconnectedText
+        if (wasAa || established) {
+            active = Source.PLACEHOLDER
+            log("BRIDGE AA завершился: источник -> заглушка '$placeholderText'", true)
+            link.showPlaceholder(placeholderText)
+        }
+    }
+
+    // --- звук AA ---
+    private fun carlifeChannel(aaChan: Int): Int? = when (aaChan) {
+        AapMessages.CH_AUDIO_MEDIA -> CarlifeAudio.CH_MEDIA
+        AapMessages.CH_AUDIO_SPEECH -> CarlifeAudio.CH_TTS      // навигационные подсказки / голос
+        else -> null                                              // SYSTEM (5): сигналы AA на ГУ не шлём
+    }
+
+    private fun chName(ch: Int) = if (ch == CarlifeAudio.CH_MEDIA) "MEDIA" else "TTS"
+
+    @Synchronized
+    override fun onAudioStart(chan: Int) {
+        log("BRIDGE AA audio START ch$chan (${AapMessages.channelName(chan)}) -> CarLife ${carlifeChannel(chan)?.let { chName(it) } ?: "не пересылается"}", true)
+        if (carlifeChannel(chan) == CarlifeAudio.CH_MEDIA) releaseHuPause("AA MEDIA START")
+        if (carlifeChannel(chan) == CarlifeAudio.CH_TTS) ttsPendingStop = false
+        if (carlifeChannel(chan) == CarlifeAudio.CH_TTS && ttsStopTimer.cancel()) {
+            log("BRIDGE TTS STOP отменён: SPEECH START до истечения ${TTS_STOP_DELAY_MS} мс, INIT не повторяю", true)
+        }
+    }
+
+    @Synchronized
+    override fun onAudioData(chan: Int, pcm: ByteArray, ptsUs: Long) {
+        val ch = carlifeChannel(chan)
+        if (ch == null || !audioViaUsb || !carlifeStarted) {
+            audioDropped++
+            if (audioDropped <= 2 || audioDropped % 500 == 0L) {
+                val why = when {
+                    ch == null -> "SYSTEM-канал"
+                    !audioViaUsb -> "звук по USB выключен/BT"
+                    else -> "CarLife ещё не START"
+                }
+                log("BRIDGE AA audio ch$chan ${pcm.size} Б не пересылаю ($why), всего отброшено $audioDropped", false)
+            }
+            return
+        }
+        if (ch == CarlifeAudio.CH_TTS && (vrReply || (huVwCns2Delphi && voice && micModeProvider() != MicMode.PHONE))) {
+            sendVrReply(chan, pcm)
+            return
+        }
+        if (ch == CarlifeAudio.CH_TTS) {
+            if (ttsStopTimer.cancel()) log("BRIDGE TTS STOP отменён: данные ch$chan до истечения ${TTS_STOP_DELAY_MS} мс, INIT не повторяю", true)
+        } else if (!admitMedia()) {
+            return
+        }
+        if (audioInited[ch] != true) {
+            val setting = if (ch == CarlifeAudio.CH_MEDIA) musicRateProvider() else MusicRate.AUTO
+            val rate = when {
+                ch != CarlifeAudio.CH_MEDIA -> 16000
+                huPioneerRm56 -> MEDIA_RATE_PIONEER_RM56    // независимо от настройки: USB ГУ не тянет видео + музыку
+                else -> setting.hz ?: if (huHyundaiCn7) MEDIA_RATE_CN7 else MEDIA_RATE
+            }
+            val channels = if (ch == CarlifeAudio.CH_MEDIA) 2 else 1
+            if (ch == CarlifeAudio.CH_TTS && NAVI_STATUS_ENABLED) {
+                ttsNaviHeld = true
+                // как MD: перед TTS шлёт MODULE_STATUS NAVI=1 и держит его
+                if (!naviSent && link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 1)) {
+                    naviSent = true
+                    naviRaised()
+                    log("BRIDGE CarLife MODULE_STATUS NAVI=1 (перед TTS INIT)", true)
+                }
+            }
+            if (ch == CarlifeAudio.CH_TTS && huVwCns2Delphi && naviSent) {
+                val wait = TTS_INIT_AFTER_NAVI_MS - (clockMs() - naviRaisedAt)
+                if (ttsInitTimer.pending || wait > 0) {
+                    if (!ttsInitTimer.pending) {
+                        log("BRIDGE TTS INIT через $wait мс после NAVI=1 (h425), речь коплю", true)
+                        ttsInitTimer.start(wait) { flushTtsPending() }
+                    }
+                    ttsPendingChan = chan
+                    ttsPending.add(pcm.copyOf())
+                    return
+                }
+            }
+            if (!link.sendAudio(ch, CarlifeAudio.initType(ch), CarlifeAudio.initBody(rate, channels, 16))) {
+                audioDropped++
+                return
+            }
+            audioInited[ch] = true
+            log("BRIDGE CarLife ${chName(ch)} INIT ${rate}Гц ${channels}к 16бит (0x%08x)".format(CarlifeAudio.initType(ch)), true)
+            if (ch == CarlifeAudio.CH_TTS) {
+                val prerollMs = ttsPrerollProvider().ms ?: if (huVw20082120) TTS_PREROLL_MS else 0
+                if (prerollMs > 0) sendTtsPreroll(prerollMs)
+                ttsPackets = 0
+                mediaGuard = false
+                mediaReleaseTimer.cancel()
+            } else {
+                mediaPaused = false
+                mediaGateDrops = 0
+                // частота фиксируется на MEDIA INIT; каждый новый INIT - поток с чистого листа
+                resampler = if (rate == MEDIA_RATE) null else resampler?.takeIf { it.outRate == rate }?.also { it.reset() } ?: MusicResampler(rate)
+                if (rate != MEDIA_RATE && rate != mediaRateLogged) {
+                    val why = when {
+                        huPioneerRm56 -> "авто: Pioneer RM56E8B"
+                        setting.hz != null -> "настройка"
+                        else -> "авто: Hyundai CN7"
+                    }
+                    log("BRIDGE музыка $rate Гц, ресэмпл $MEDIA_RATE→$rate ($why)", true)
+                }
+                mediaRateLogged = rate
+                musicStatus(1)
+            }
+        }
+        var out = pcm
+        if (ch == CarlifeAudio.CH_MEDIA) {
+            val eq = eqProvider()
+            if (eq != eqLogged) {
+                eqLogged = eq
+                log("BRIDGE EQ: ${if (eq.isFlat) "без обработки" else "полосы ${eq.bandsCsv()} дБ, preamp ${eq.preamp} дБ"}", false)
+            }
+            equalizer.update(eq)
+            equalizer.process(pcm)
+            val rs = resampler
+            if (rs != null) {
+                out = rs.process(pcm)
+                if (out.isEmpty()) return
+            }
+        }
+        val chunkMax = when (ch) {
+            CarlifeAudio.CH_MEDIA -> mediaChunkProvider().bytes ?: CarlifeAudio.MAX_CHUNK
+            CarlifeAudio.CH_TTS -> voiceChunkMax()
+            else -> CarlifeAudio.MAX_CHUNK
+        }
+        if (ch == CarlifeAudio.CH_MEDIA && chunkMax != mediaChunkLogged) {
+            mediaChunkLogged = chunkMax
+            log("BRIDGE музыка: пакеты по $chunkMax Б (настройка)", true)
+        }
+        var off = 0
+        while (off < out.size) {
+            val n = minOf(chunkMax, out.size - off)
+            val chunk = if (off == 0 && n == out.size) out else out.copyOfRange(off, off + n)
+            if (!link.sendAudio(ch, CarlifeAudio.dataType(ch), chunk)) {
+                audioDropped++
+            } else {
+                audioBytes += n
+                AaState.audioBytes = audioBytes
+            }
+            off += n
+        }
+        val c = (audioLogged[ch] ?: 0L) + 1
+        audioLogged[ch] = c
+        if (c <= 2 || c % 200 == 0L) log("BRIDGE AA audio ch$chan ${pcm.size} Б -> CarLife ${chName(ch)} (#$c, всего ${audioBytes / 1024} КиБ)", false)
+        if (ch == CarlifeAudio.CH_TTS && ++ttsPackets <= TTS_DIAG_PACKETS) {
+            val (peak, rms) = CarlifeAudio.pcm16Stats(pcm)
+            log("BRIDGE TTS пакет #$ttsPackets: ${pcm.size} Б, peak=$peak rms=%.1f${if (peak == 0) " (ВСЕ НУЛИ)" else ""}".format(rms), false)
+        }
+    }
+
+    @Synchronized
+    override fun onAudioStop(chan: Int) {
+        val ch = carlifeChannel(chan) ?: return
+        log("BRIDGE AA audio STOP ch$chan", true)
+        if (ch == CarlifeAudio.CH_TTS && ttsInitTimer.pending) {
+            ttsPendingStop = true
+            log("BRIDGE TTS STOP после выдачи накопленной речи (${ttsPending.sumOf { it.size }} Б)", true)
+            return
+        }
+        if (vrReply && ch == CarlifeAudio.CH_TTS) {
+            vrReply = false
+            link.sendAudio(CarlifeAudio.CH_VR, CarlifeAudio.VR_STOP, ByteArray(0))
+            log("BRIDGE CarLife VR STOP (0x%08x)".format(CarlifeAudio.VR_STOP), true)
+            vrModuleOff("последний VR STOP после голосовой сессии")
+            return
+        }
+        if (ch == CarlifeAudio.CH_MEDIA) {
+            requestMediaPause("AA STOP ch$chan")
+        } else if (TTS_DEBOUNCE_ENABLED) {
+            if (audioInited[ch] == true && !ttsStopTimer.pending) {
+                log("BRIDGE CarLife TTS STOP отложен на ${TTS_STOP_DELAY_MS} мс", true)
+                ttsStopTimer.start(TTS_STOP_DELAY_MS) { ttsStopNow() }
+            }
+        } else {
+            stopAudio(ch)
+        }
+    }
+
+    /**
+     * Речь AA во время голосовой сессии -> канал VR (VR_INIT 16 кГц моно, VR_DATA), как ответ помощника Baidu.
+     * VW CNS2 Delphi (h425) речь ассистента, пришедшую в TTS сразу после записи микрофона, не играет.
+     */
+    private fun sendVrReply(chan: Int, pcm: ByteArray) {
+        if (!vrReply) {
+            if (audioInited[CarlifeAudio.CH_TTS] == true) stopAudio(CarlifeAudio.CH_TTS)
+            if (!link.sendAudio(CarlifeAudio.CH_VR, CarlifeAudio.VR_INIT, CarlifeAudio.initBody(16000, 1, 16))) {
+                audioDropped++
+                return
+            }
+            vrReply = true
+            ttsPackets = 0
+            log("BRIDGE CarLife VR INIT 16000Гц 1к 16бит (0x%08x): речь AA ch$chan в голосовой сессии".format(CarlifeAudio.VR_INIT), true)
+        }
+        val chunkMax = voiceChunkMax()
+        var off = 0
+        while (off < pcm.size) {
+            val n = minOf(chunkMax, pcm.size - off)
+            val chunk = if (off == 0 && n == pcm.size) pcm else pcm.copyOfRange(off, off + n)
+            if (!link.sendAudio(CarlifeAudio.CH_VR, CarlifeAudio.VR_DATA, chunk)) audioDropped++ else audioBytes += n
+            off += n
+        }
+        AaState.audioBytes = audioBytes
+        if (++ttsPackets <= TTS_DIAG_PACKETS) log("BRIDGE VR пакет #$ttsPackets: ${pcm.size} Б", false)
+    }
+
+    /**
+     * h425: VW CNS2 Delphi после ответа в канале VR оставляет кнопки громкости на голосовом канале, пока не переткнуть
+     * кабель. MODULE_STATUS VR=0 уходит при закрытии микрофона, но ответ в VR идёт уже после него: повторяем VR=0,
+     * когда и голосовая сессия AA кончилась, и поток VR закрыт.
+     */
+    private fun vrModuleOff(why: String) {
+        if (!huVwCns2Delphi || voice || vrReply) return
+        if (link.sendModuleStatus(CarlifeAudio.MODULE_VR, 0)) log("BRIDGE CarLife MODULE_STATUS VR=0 ($why)", true)
+    }
+
+    // --- голосовая сессия Ассистента: MEDIA на паузу, данные не пересылаем; выход со сглаживанием пачки 2/2/1/2/2 ---
+    @Synchronized
+    override fun onVoiceSession(status: Int) {
+        if (!VOICE_SESSION_ENABLED) return
+        when (status) {
+            1 -> {
+                val cancelled = voiceExitTimer.cancel()
+                if (!voice) {
+                    voice = true
+                    log("BRIDGE голосовая сессия: старт, MEDIA на паузу, данные MEDIA не пересылаю", true)
+                    requestMediaPause("голосовая сессия")
+                } else if (cancelled) {
+                    log("BRIDGE голосовая сессия: выход отменён (снова status=1)", true)
+                }
+            }
+            2 -> if (voice && !voiceExitTimer.pending) {
+                voiceExitTimer.start(VOICE_EXIT_DELAY_MS) {
+                    voice = false
+                    log("BRIDGE голосовая сессия: выход, MEDIA поднимется через INIT на первых данных", true)
+                    vrModuleOff("выход из голосовой сессии")
+                }
+            }
+            else -> log("BRIDGE голосовая сессия: status=$status не знаю, игнор", false)
+        }
+    }
+
+    // --- управляющие пакеты MEDIA (PAUSE) идут по очереди: не пока TTS инициализирован или до TTS_STOP+300 мс ---
+    private fun mediaBlocked() = TTS_DEBOUNCE_ENABLED && (audioInited[CarlifeAudio.CH_TTS] == true || mediaGuard)
+
+    /** Желаемое состояние MEDIA = пауза: сразу или, пока занят TTS, после TTS_STOP+300 мс. */
+    private fun requestMediaPause(why: String) {
+        if (audioInited[CarlifeAudio.CH_MEDIA] != true) {
+            pendingMediaPause = false
+            return
+        }
+        if (mediaBlocked()) {
+            pendingMediaPause = true
+            log("BRIDGE MEDIA пауза отложена ($why): TTS занят, применю после TTS_STOP+${MEDIA_AFTER_TTS_MS} мс", true)
+            return
+        }
+        pendingMediaPause = false
+        pauseMedia(why)
+    }
+
+    private fun pauseMedia(why: String) {
+        if (!MEDIA_PAUSE_ENABLED) {
+            stopAudio(CarlifeAudio.CH_MEDIA)
+            return
+        }
+        audioInited[CarlifeAudio.CH_MEDIA] = false
+        mediaPaused = true
+        link.sendAudio(CarlifeAudio.CH_MEDIA, CarlifeAudio.MEDIA_PAUSE, ByteArray(0))
+        log("BRIDGE CarLife MEDIA PAUSE (0x%08x), $why".format(CarlifeAudio.MEDIA_PAUSE), true)
+        musicStatus(0)
+    }
+
+    /** Размер пакета речи, который задан явно или выбирается по ГУ; null = как отдаёт AA (Авто на остальных ГУ). */
+    private fun voiceChunkOverride(): Int? = voiceChunkProvider().bytes ?: if (huVwCns2Delphi) VOICE_CHUNK_DELPHI else null
+
+    /** Размер пакета речи (VR-ответ и TTS) для текущей отправки; смену значения пишет в лог один раз. */
+    private fun voiceChunkMax(): Int {
+        val size = voiceChunkOverride() ?: CarlifeAudio.MAX_CHUNK
+        if (size != voiceChunkLogged) {
+            voiceChunkLogged = size
+            log("BRIDGE голос: пакеты по $size Б (${if (voiceChunkProvider().bytes != null) "настройка" else "авто ГУ"})", true)
+        }
+        return size
+    }
+
+    /**
+     * Тишина сразу после TTS_INIT (VW CNS3 20082122, h222: шипение в начале подсказки). Baidu копит фразу
+     * и шлёт её пачкой по 4096 Б быстрее реального времени (NaviTTSController.splitAndSendTTSData), у ГУ
+     * есть запас; AA отдаёт речь в реальном времени с первого пакета, запаса нет. Нули дают ГУ открыть
+     * тракт на тишине и держат буфер на [ms] впереди до конца фразы. Куски нулей режутся размером пакета
+     * голоса, если он задан (настройка или авто-1024 на Delphi), иначе TTS_PREROLL_CHUNK.
+     */
+    private fun sendTtsPreroll(ms: Int) {
+        val zeros = ByteArray((ms * TTS_BYTES_PER_SEC / 1000) and 1.inv())
+        val chunkMax = voiceChunkOverride() ?: TTS_PREROLL_CHUNK
+        var off = 0
+        while (off < zeros.size) {
+            val n = minOf(chunkMax, zeros.size - off)
+            if (!link.sendAudio(CarlifeAudio.CH_TTS, CarlifeAudio.TTS_DATA, zeros.copyOfRange(off, off + n))) {
+                log("BRIDGE TTS пре-ролл: очередь полна, отправлено ${off * 1000 / TTS_BYTES_PER_SEC} из $ms мс", true)
+                return
+            }
+            off += n
+        }
+        log("BRIDGE TTS пре-ролл $ms мс тишины (${zeros.size} Б) после INIT", true)
+    }
+
+    /** Таймер [ttsInitTimer] истёк: накопленная речь идёт обычным путём (INIT, пре-ролл, данные), затем отложенный STOP. */
+    private fun flushTtsPending() {
+        val chunks = ttsPending.toList()
+        ttsPending.clear()
+        val stop = ttsPendingStop
+        ttsPendingStop = false
+        log("BRIDGE TTS: выдаю накопленную речь ${chunks.sumOf { it.size }} Б (${chunks.size} пакетов)", true)
+        for (c in chunks) onAudioData(ttsPendingChan, c, 0)
+        if (stop) onAudioStop(ttsPendingChan)
+    }
+
+    private fun dropTtsPending() {
+        ttsInitTimer.cancel()
+        ttsPending.clear()
+        ttsPendingStop = false
+    }
+
+    /** Фактический TTS_STOP (таймер debounce); после него MEDIA-пакеты ждут ещё MEDIA_AFTER_TTS_MS. */
+    private fun ttsStopNow() {
+        stopAudio(CarlifeAudio.CH_TTS)
+        mediaGuard = true
+        mediaReleaseTimer.start(MEDIA_AFTER_TTS_MS) {
+            mediaGuard = false
+            if (pendingMediaPause) {
+                pendingMediaPause = false
+                if (audioInited[CarlifeAudio.CH_MEDIA] == true) pauseMedia("отложенная пауза после TTS")
+            }
+        }
+    }
+
+    /**
+     * VW CNS2 Delphi (h425): на входящем ГУ уходит в свой звонок и перестаёт брать MEDIA. Хвост музыки AA (~3 с до
+     * MEDIA_STOP) забивал общий USB-поток: видео и звук стояли ~20 с, иногда EIO. Если музыка на паузе заранее,
+     * проблемы нет (Дмитрий, лог 24.10 22:13). Поэтому при звонке сразу MEDIA PAUSE и хвост не пересылаем до play AA.
+     */
+    @Synchronized
+    private fun muteMediaOnCall(why: String) {
+        if (!huVwCns2Delphi || huPausedAa || !carlifeStarted) return
+        val call = currentCall()
+        if (call == PhoneCall.IDLE) return
+        muteMedia(call, why)
+    }
+
+    /** Ядро [muteMediaOnCall]: звонок уже признан; хвост MEDIA_DATA из очереди USB выбрасываем, пока он не забил ГУ. */
+    private fun muteMedia(call: PhoneCall, why: String) {
+        huPausedAa = true
+        callPausedAa = true
+        resumeOnHuMusic = false
+        val dropped = link.dropQueuedMedia()
+        log("BRIDGE звонок ${call.name} ($why): MEDIA на паузу, хвост музыки AA не пересылаю, из очереди USB выброшено MEDIA_DATA: $dropped (h425)", true)
+        requestMediaPause("звонок на телефоне")
+    }
+
+    /**
+     * Состояние звонка из TelephonyManager (CALL_STATE_*: 0 IDLE, 1 RINGING, 2 OFFHOOK), зовёт CarLifeSession раньше, чем
+     * сообщит звонок ГУ. На Delphi RINGING/OFFHOOK сразу глушит MEDIA, не дожидаясь смены плеера AA и AudioManager.mode.
+     * IDLE после нашей паузы по звонку: если плеер AA играет, паузу снимаем сами - события play может и не быть,
+     * когда звонок сбросили раньше, чем плеер встал.
+     */
+    @Synchronized
+    fun onPhoneCallState(state: Int) {
+        val call = when (state) {
+            CallStateSource.RINGING -> PhoneCall.RINGING
+            CallStateSource.OFFHOOK -> PhoneCall.ACTIVE
+            else -> PhoneCall.IDLE
+        }
+        val prev = telephonyCall
+        telephonyCall = call
+        if (prev == call) return
+        if (call != PhoneCall.IDLE) {
+            when {
+                !huVwCns2Delphi -> log("BRIDGE звонок ${call.name} (телефония): не VW CNS2 Delphi, MEDIA не трогаю", true)
+                !carlifeStarted -> log("BRIDGE звонок ${call.name} (телефония): CarLife ещё не START, гасить нечего", true)
+                huPausedAa -> log("BRIDGE звонок ${call.name} (телефония): MEDIA уже на паузе", true)
+                else -> muteMedia(call, "телефония")
+            }
+        } else if (callPausedAa) {
+            if (meta.playing) releaseHuPause("звонок закончен, плеер AA играет")
+            else log("BRIDGE звонок закончен: плеер AA стоит, MEDIA держу на паузе до play", true)
+        } else if (prev != null) {
+            log("BRIDGE звонок закончен (телефония): пауза MEDIA была не от звонка, не трогаю", false)
+        }
+    }
+
+    /** Пускать ли MEDIA_DATA дальше; нет = данные отброшены (голос / ждём INIT после TTS). */
+    private fun admitMedia(): Boolean {
+        val why = when {
+            VOICE_SESSION_ENABLED && voice -> "идёт голосовая сессия"
+            huPausedAa -> "ГУ на своём источнике, AA на паузе (хвост буфера)"
+            audioInited[CarlifeAudio.CH_MEDIA] != true && mediaBlocked() -> "TTS занят, MEDIA ждёт INIT"
+            else -> null
+        }
+        if (why != null) {
+            mediaGateDrops++
+            if (mediaGateDrops == 1L || mediaGateDrops % 500 == 0L) log("BRIDGE AA audio MEDIA данные отброшены: $why (#$mediaGateDrops)", false)
+            return false
+        }
+        if (pendingMediaPause) {
+            pendingMediaPause = false
+            log("BRIDGE отложенная пауза MEDIA отменена: данные снова идут", true)
+        }
+        return true
+    }
+
+    private fun musicStatus(status: Int) {
+        if (MODULE_MUSIC_ENABLED) link.sendModuleStatus(CarlifeAudio.MODULE_MUSIC, status)
+    }
+
+    /** Плеер AA сменил состояние (ch9). MUSIC по нему - только когда звук не по USB: иначе им владеет MEDIA INIT/PAUSE. */
+    private fun musicByState(playing: Boolean) {
+        if (playing) releaseHuPause("AA заиграл")
+        else {
+            log("BRIDGE AA плеер остановился: наш KEYCODE $KEYCODE_MEDIA_PAUSE ${ago(lastPauseKeyMs)}, ввод пользователя ${ago(lastUserInputMs)}, BT HFP ${ago(lastHfpConnectMs)}", true)
+            muteMediaOnCall("плеер AA остановился")
+        }
+        if (audioViaUsb || !MODULE_MUSIC_ENABLED || !carlifeStarted) return
+        if (link.sendModuleStatus(CarlifeAudio.MODULE_MUSIC, if (playing) 1 else 0)) {
+            log("BRIDGE CarLife MODULE_STATUS MUSIC=${if (playing) 1 else 0} (плеер AA, звук не по USB)", true)
+        }
+    }
+
+    /** Маршрут держит / отпускает NAVI. NAVI=0 уходит, только когда его не держит и TTS. */
+    private fun routeNavi(on: Boolean) {
+        if (!ROUTE_NAVI_STATUS_ENABLED) {
+            routeNaviHeld = false
+            if (on) log("BRIDGE маршрут: MODULE_STATUS NAVI=1 не шлю (только вокруг TTS)", false)
+            return
+        }
+        if (huDesayG6S) {
+            routeNaviHeld = false
+            if (on) log("BRIDGE маршрут: MODULE_STATUS NAVI=1 не шлю (Desay G6S: глушит радио)", false)
+            return
+        }
+        routeNaviHeld = on
+        if (on) naviEndPending = false
+        if (on && !naviSent) {
+            if (link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 1)) {
+                naviSent = true
+                naviRaised()
+                log("BRIDGE CarLife MODULE_STATUS NAVI=1 (маршрут)", true)
+            }
+        } else if (!on && naviSent && !ttsNaviHeld) {
+            naviSent = false
+            link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 0)
+            log("BRIDGE CarLife MODULE_STATUS NAVI=0 (маршрут закончен)", true)
+        } else if (!on && naviSent) {
+            naviEndPending = true
+            log("BRIDGE маршрут закончен, NAVI=1 держит TTS", false)
+        }
+    }
+
+    private fun stopAudio(ch: Int) {
+        if (ch == CarlifeAudio.CH_TTS) {
+            ttsStopTimer.cancel()
+            dropTtsPending()
+        }
+        val wasInited = audioInited[ch] == true
+        if (wasInited || (ch == CarlifeAudio.CH_MEDIA && mediaPaused)) {
+            audioInited[ch] = false
+            if (ch == CarlifeAudio.CH_MEDIA) {
+                mediaPaused = false
+                if (wasInited) musicStatus(0)
+            }
+            link.sendAudio(ch, CarlifeAudio.stopType(ch), ByteArray(0))
+            log("BRIDGE CarLife ${chName(ch)} STOP (0x%08x)".format(CarlifeAudio.stopType(ch)), true)
+        }
+        if (ch == CarlifeAudio.CH_TTS) releaseTtsNavi()
+    }
+
+    /**
+     * TTS закончился: NAVI больше не нужен ради него. Если маршрут уже кончился (последнее «Вы прибыли» играло
+     * после INACTIVE), NAVI=0 уходит здесь, иначе приборка остаётся в навигации до конца сессии.
+     */
+    private fun releaseTtsNavi() {
+        ttsNaviHeld = false
+        if (naviEndPending && naviSent && !routeNaviHeld) {
+            naviEndPending = false
+            naviSent = false
+            link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 0)
+            log("BRIDGE CarLife MODULE_STATUS NAVI=0 (TTS закончился, маршрута нет)", true)
+        }
+    }
+
+    /** Сброс звукового состояния CarLife-сессии (START / закрытие): ссылка уже новая или мёртвая, ничего не шлём. */
+    private fun resetAudio() {
+        audioInited.clear()
+        ttsStopTimer.cancel()
+        dropTtsPending()
+        mediaReleaseTimer.cancel()
+        naviSent = false
+        naviEndPending = false
+        ttsNaviHeld = false
+        mediaPaused = false
+        mediaGuard = false
+        pendingMediaPause = false
+        mediaGateDrops = 0
+    }
+
+    private fun stopAllAudio(why: String) {
+        ttsStopTimer.cancel()
+        mediaReleaseTimer.cancel()
+        voiceExitTimer.cancel()
+        voice = false
+        mediaGuard = false
+        pendingMediaPause = false
+        if (audioInited.values.any { it } || mediaPaused) log("BRIDGE останавливаю звук CarLife: $why", true)
+        stopAudio(CarlifeAudio.CH_MEDIA)
+        stopAudio(CarlifeAudio.CH_TTS)
+        ttsNaviHeld = false
+        if (naviSent && !routeNaviHeld) {
+            naviSent = false
+            link.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 0)
+            log("BRIDGE CarLife MODULE_STATUS NAVI=0", true)
+        }
+    }
+
+    // --- метаданные AA ---
+    @Synchronized
+    override fun onMediaStatus(s: AaMediaStatus) = meta.onMediaStatus(s)
+
+    @Synchronized
+    override fun onMediaMetadata(m: AaMediaMetadata) = meta.onMediaMetadata(m)
+
+    @Synchronized
+    override fun onNavCluster(start: Boolean) = meta.onNavCluster(start)
+
+    @Synchronized
+    override fun onNavStatus(status: Int) = meta.onNavStatus(status)
+
+    @Synchronized
+    override fun onNavTurn(t: AaNavTurn) = meta.onNavTurn(t)
+
+    @Synchronized
+    override fun onNavDistance(d: AaNavDistance) = meta.onNavDistance(d)
+
+    // --- видео AA ---
+    @Synchronized
+    override fun onCodecConfig(annexB: ByteArray) {
+        if (desktopSurfaceEnabled) return
+        aaVideoSeen = true
+        aaConfig = AnnexB.normalize(annexB)
+        log("BRIDGE AA CODEC_CONFIG ${annexB.size} Б nal=${AnnexB.nalTypes(aaConfig!!)}", true)
+        logSps("AA", aaConfig!!)
+        if (carlifeStarted) transcoder?.feedConfig(aaConfig!!)
+        splicer?.onConfig(aaConfig!!)
+        refDecoder?.feedConfig(aaConfig!!)
+    }
+
+    @Synchronized
+    override fun onFrame(annexB: ByteArray, ptsUs: Long) {
+        if (desktopSurfaceEnabled) return
+        aaVideoSeen = true
+        AaState.frames.incrementAndGet()
+        AaState.bytes += annexB.size
+        if (splicePendingSeq != 0L && spliceHold) {
+            spliceHeld.add(annexB)              // свой IDR собирается из последней картинки: новые кадры ждут его
+            return
+        }
+        aaFrame(annexB, ptsUs)
+    }
+
+    private fun aaFrame(annexB: ByteArray, ptsUs: Long) {
+        if (desktopInputEnabled && desktopVideoError != null) {
+            drop("desktop video stopped after encoder failure")
+            return
+        }
+        // свой IDR: декодер опорных картинок и разбор заголовков видят каждый кадр AA, и до START тоже
+        val spliced = if (spliceOn) spliceTrack(AnnexB.normalize(annexB)) else null
+        if (!carlifeStarted) {
+            drop("CarLife ещё не прислал START")
+            return
+        }
+        val b = spliced ?: AnnexB.normalize(annexB)
+        val types = AnnexB.nalTypes(b)
+        val frameAt = clockMs()
+        aaFrameGapMs = if (lastAaFrameAt > 0) frameAt - lastAaFrameAt else Long.MAX_VALUE
+        lastAaFrameAt = frameAt
+        aaFrames++
+        val t = transcoder
+        if (t != null) {
+            feedTranscoder(t, b, types, ptsUs)
+            return
+        }
+        if (spliceOn && spliceReplaceNow(b, types)) return
+        passthroughFrame(b, types)
+        if (spliceOn) spliceRequest(fromFrame = true)
+    }
+
+    /**
+     * Пора свой IDR и AA шлёт кадры - этот кадр не уходит, свой IDR из его картинки уйдёт вместо него.
+     * Без этого IDR идёт лишним кадром после своей картинки: ГУ, которая показывает кадры с постоянной частотой, копит его.
+     * В движении ещё [spliceDrop] кадров перед картинкой IDR не уходят ([spliceDropped]), IDR встаёт вместо
+     * всех; не вышло (статика, отказ, таймаут) - они уходят как были, раньше остальных.
+     */
+    private fun spliceReplaceNow(b: ByteArray, types: List<Int>): Boolean {
+        if (!gotIdr || 5 in types || splicePendingSeq != 0L) {
+            spliceFlushDropped()
+            return false
+        }
+        if (spliceDropped.size < spliceDrop) {
+            if (spliceDropped.isEmpty()) {
+                if (aaFrameGapMs >= SPLICE_QUIET_MS || !spliceDue(clockMs())) return false
+                spliceDroppedAt = clockMs()
+            } else if (aaFrameGapMs >= SPLICE_QUIET_MS) {
+                spliceFlushDropped()
+                return false
+            }
+            spliceDropped.add(b)
+            return true
+        }
+        spliceRequest(fromFrame = true)
+        if (splicePendingSeq == 0L || !spliceHold || splicePendingSeq != spliceLastSeq) {
+            spliceFlushDropped()
+            return false
+        }
+        spliceReplaced = b
+        return true
+    }
+
+    /** Выброшенные под свой IDR кадры AA всё-таки уходят в ГУ (IDR не будет): по порядку, они уже прошли splicer. */
+    private fun spliceFlushDropped() {
+        if (spliceDropped.isEmpty()) return
+        val frames = ArrayList(spliceDropped)
+        spliceDropped.clear()
+        latStats.dropUndone++
+        if (carlifeStarted) for (f in frames) passthroughFrame(f, AnnexB.nalTypes(f))
+    }
+
+    private fun passthroughFrame(b: ByteArray, types: List<Int>) {
+        if (!gotIdr) {
+            if (5 !in types) {
+                drop("P-кадр до IDR nal=$types")
+                return
+            }
+            val payload = spsCrop(if (AnnexB.startsWithSps(b) && 8 in types) b else {
+                val cfg = aaConfig
+                if (cfg == null) {
+                    drop("IDR без SPS/PPS и без CODEC_CONFIG")
+                    return
+                }
+                AnnexB.glue(cfg, b)
+            })
+            val takeover = active != Source.AA
+            if (!(if (takeover) link.sendVideoTakeover(payload) else link.sendVideo(payload))) {
+                drop("первый IDR не принят CarLife (очередь/закрыто)")
+                return
+            }
+            gotIdr = true
+            waitSince = 0
+            sent++
+            idrSent++
+            lastIdrSentMs = clockMs()
+            latStats.sent(lastIdrSentMs, own = false)
+            // h529 (Vezel): первый IDR AA сразу за IDR заглушки ГУ иногда теряет, и экран чёрный до следующего IDR AA (~60 с).
+            // Лог 211335: так и без кропа (R1080), поэтому повторный IDR во всех режимах passthrough и на всех ГУ,
+            // но один раз за CarLife-сессию: после PAUSE/START он дал бы лишнюю встряску (0,9 с стоп-кадра)
+            // Со своим IDR повтор не нужен, но это решается в tick: здесь декодер ещё не выдал ни одной картинки
+            if (!sessionKickDone) {
+                sessionKickDone = true
+                spsCropKickAt = lastIdrSentMs + SPS_CROP_KICK_MS
+                spsCropKickBase = lastIdrSentMs
+                spsCropKickDeferred = false
+            }
+            h295IdrSeen(b, payload)
+            if (active != Source.AA) {
+                active = Source.AA
+                log("BRIDGE источник -> AA (первый IDR ${payload.size} Б, nal=${AnnexB.nalTypes(payload)})", true)
+                link.hidePlaceholder()
+            } else {
+                log("BRIDGE IDR -> CarLife ${payload.size} Б nal=${AnnexB.nalTypes(payload)} (SPS/PPS ${if (payload.size != b.size) "склеены" else "в кадре"})", true)
+            }
+            AaState.status = "мост: AA -> CarLife"
+            return
+        }
+        val out = h295Prepare(b, types).let { if (5 in types) spsCrop(it) else it }
+        if (!link.sendVideo(out)) {
+            // кадр потерян: декодер ГУ поплывёт, ждём новый IDR
+            gotIdr = false
+            waitSince = clockMs()
+            drop("кадр не принят CarLife, жду новый IDR")
+            return
+        }
+        sent++
+        latStats.sent(clockMs(), own = false)
+        if (5 in types) {
+            idrSent++
+            lastIdrSentMs = clockMs()
+            h295IdrSeen(b, out)
+        }
+        AaState.bridgeSent = sent
+    }
+
+    private fun drop(why: String) {
+        dropped++
+        AaState.bridgeDropped = dropped
+        dropLogged++
+        if (dropLogged <= 3 || dropLogged % 100 == 0L) log("BRIDGE отброшен AA-кадр (#$dropped): $why", false)
+    }
+
+    /** Раз в 0.5 с: ключевой кадр, если после START долго нет IDR; свой IDR на статичном экране. */
+    fun tick() {
+        tickLocked()
+        spliceRun()                                    // сборка IDR вне блокировки ядра
+    }
+
+    @Synchronized
+    private fun tickLocked() {
+        logStats()
+        if (!carlifeStarted) return
+        if (desktopSurfaceEnabled) return // Direct input has no upstream compressed stream to recover.
+        val now = clockMs()
+        if (spliceOn) spliceTick(now)
+        latStats.logIfDue(now)
+        h295GiveUp(now)
+        if (spsCropKickAt != NEVER && now >= spsCropKickAt && spliceKickNeeded(now)) {
+            spsCropKickAt = NEVER
+            lastKeyframeRequest = now
+            keyframeRequests++
+            log("BRIDGE повторный ключевой кадр через ${SPS_CROP_KICK_MS} мс после первого (ГУ могла потерять его на смене заглушка -> AA)", true)
+            peer?.requestKeyFrame()
+        }
+        if (gotIdr || !aaVideoSeen) return
+        if (waitSince == 0L) waitSince = now
+        if (now - waitSince >= KEYFRAME_WAIT_MS && now - lastKeyframeRequest >= KEYFRAME_RETRY_MS) {
+            lastKeyframeRequest = now
+            keyframeRequests++
+            log("BRIDGE жду IDR от AA ${(now - waitSince) / 1000.0} с: запрашиваю ключевой кадр (VideoFocus NATIVE -> PROJECTED) #$keyframeRequests", true)
+            peer?.requestKeyFrame()
+        }
+    }
+
+    /**
+     * h529-повтор IDR от AA или свой IDR. Свой уже ушёл после первого IDR сессии - повтор не нужен. Вставка работает
+     * (декодер отдаёт картинки), но свой ещё не ушёл - ждём его ещё [SPLICE_KICK_GRACE_MS] один раз. Иначе - повтор как в h529.
+     */
+    private fun spliceKickNeeded(now: Long): Boolean {
+        if (spliceLastSentAt != NEVER && spliceLastSentAt > spsCropKickBase) {
+            log("BRIDGE повторный ключевой кадр от AA не нужен: свой IDR уже ушёл", true)
+            spsCropKickAt = NEVER
+            return false
+        }
+        if (spliceWorks && !spsCropKickDeferred) {
+            spsCropKickDeferred = true
+            spsCropKickAt = now + SPLICE_KICK_GRACE_MS
+            return false
+        }
+        return true
+    }
+
+    // --- свой IDR в passthrough (IdrSplice) ---
+    private var splicer: IdrSplicer? = null
+    private var refDecoder: RefPictureDecoder? = null
+    private var refDecoderFailed = false
+    @Volatile private var spliceLastSeq = 0L           // номер последней картинки AA, прошедшей через splicer
+    @Volatile private var refOutSeq = 0L               // последняя картинка на выходе декодера (скопирована или нет)
+    @Volatile private var refPic: IdrSplice.Picture? = null
+    @Volatile private var refPicSeq = 0L
+    @Volatile private var splicePendingSeq = 0L        // картинка для своего IDR: ждём её из декодера или собираем; 0 - нет
+    private var splicePendingAt = 0L
+    private var spliceHold = false                     // кадры AA ждут IDR (AA шлёт кадры); иначе сборка в фоне
+    private var spliceBuilding = false
+    private var spliceNotBefore = NEVER                // следующая попытка не раньше (после отказа, пропуска, таймаута)
+    private var spliceBlockLogged: String? = null
+    private val spliceHeld = ArrayList<ByteArray>()     // кадры AA, пришедшие, пока собирается свой IDR (spliceHold)
+    private var spliceReplaced: ByteArray? = null       // кадр AA, вместо которого уйдёт свой IDR, уже через splicer
+    private val spliceDropped = ArrayList<ByteArray>()  // кадры AA перед картинкой своего IDR, которые он заменит (spliceDrop), уже через splicer
+    private var spliceDroppedAt = 0L
+    private val guModel = GuQueueModel()
+    private val latStats = LatencyStats()
+    private var spliceLastSentAt = NEVER               // когда свой IDR последний раз ушёл на ГУ
+    private var spliceMisses = 0                       // картинка не пришла из декодера, подряд
+    private var spliceBackoffUntil = NEVER             // пауза после [SPLICE_MAX_MISSES] пропусков: до этого момента свой IDR не пробуем
+    private var spliceBackoffs = 0                     // сколько таких пауз за AA-сессию
+    private var refLagSince = NEVER                    // с какого момента декодер отстаёт от кадров AA больше чем на 2 и не двигается
+    private var refLagOutSeq = 0L                      // refOutSeq в начале этого отставания: сдвинулся - декодер жив
+    private var spliceDisabled: String? = null          // вставка невозможна до конца AA-сессии (причина)
+    private var aaFrameGapMs = Long.MAX_VALUE          // пауза перед последним кадром AA
+    private var builder: IdrBuilder? = null
+    private val spliceStats = SpliceStats()
+
+    /** Нить сборки своего IDR; null - своя, создаётся при первой сборке. Тесты ставят исполнитель в той же нити. */
+    var spliceExecutor: Executor? = null
+
+    /** Пул для слайсов IDR; null - свой на [SPLICE_SLICES] нитей. */
+    var spliceSlicePool: ExecutorService? = null
+
+    private val spliceOn: Boolean get() = spliceMs > 0 && !transcodeEnabled
+
+    /**
+     * Свой IDR реально возможен: декодер уже отдал картинку, поток подходит, пауза после пропусков кончилась. Тогда
+     * повторный IDR от AA (встряска) не нужен. Пока паузы или вставший декодер - false: h529 и h295 работают как страховка.
+     */
+    internal val spliceWorks: Boolean
+        get() = spliceOn && spliceDisabled == null && refDecoder != null && refPicSeq > 0 &&
+            clockMs() >= spliceBackoffUntil && splicer?.blocker() == null
+
+    /** Кадр AA через splicer (frame_num/POC после своего IDR) и в декодер опорных картинок. */
+    private fun spliceTrack(b: ByteArray): ByteArray {
+        val sp = splicer ?: IdrSplicer().also { s ->
+            splicer = s
+            aaConfig?.let { s.onConfig(it) }
+        }
+        val out = sp.process(b)
+        spliceLastSeq = sp.seq
+        var d = refDecoder
+        if (d == null && !refDecoderFailed) {
+            d = refDecoderFactory?.invoke(this)
+            if (d == null) {
+                refDecoderFailed = true
+                log("BRIDGE свой IDR: декодера опорных картинок нет, вставка выключена", true)
+            } else {
+                refDecoder = d
+                aaConfig?.let { d.feedConfig(it) }
+                log("BRIDGE свой IDR: включён, раз в ${spliceMs} мс (passthrough)", true)
+            }
+        }
+        d?.feed(b, sp.seq)
+        return out
+    }
+
+    /**
+     * Пора ли заменить последнюю картинку AA своим IDR: по периоду, а без IDR на ГУ - сразу (с паузой между попытками).
+     * IDR должен идти сразу за своей картинкой: иначе ГУ продолжит P-кадры AA от другого кадра и в движении поедет картинка.
+     * Поэтому, если AA шлёт кадры (пауза перед кадром меньше [SPLICE_QUIET_MS]), кадры ждут сборку (не дольше
+     * [SPLICE_HOLD_MAX_MS]); на статике IDR собирается в фоне, а пришедший за это время кадр делает его устаревшим.
+     */
+    private fun spliceRequest(fromFrame: Boolean) {
+        if (spliceDropped.isNotEmpty() && !fromFrame) return     // выброс начат: IDR соберётся из следующего кадра AA
+        val now = clockMs()
+        if (!spliceDue(now)) return
+        val sp = splicer ?: return
+        splicePendingSeq = sp.seq
+        splicePendingAt = now
+        spliceHold = if (fromFrame) aaFrameGapMs < SPLICE_QUIET_MS else now - lastAaFrameAt < SPLICE_QUIET_MS
+    }
+
+    /** Пора собирать свой IDR: период прошёл, декодер не отстал, поток подходит. */
+    private fun spliceDue(now: Long): Boolean {
+        if (splicePendingSeq != 0L || spliceDisabled != null || !carlifeStarted || active != Source.AA) return false
+        val sp = splicer ?: return false
+        if (refDecoder == null || sp.seq == 0L || sp.seq - refOutSeq > 2) return false     // декодер отстал или ждёт IDR
+        if (now < spliceNotBefore || now < spliceBackoffUntil) return false
+        if (gotIdr && now - lastIdrSentMs < spliceMs) return false
+        val why = sp.blocker()
+        if (why != null) {
+            if (why != spliceBlockLogged) log("BRIDGE свой IDR невозможен: $why", true)
+            spliceBlockLogged = why
+            spliceNotBefore = now + SPLICE_RETRY_MS
+            return false
+        }
+        return true
+    }
+
+    /**
+     * Раз в 0.5 с. Пропуски картинки из декодера ([SPLICE_MAX_MISSES] подряд) вставку не выключают: пауза [SPLICE_BACKOFF_MS]
+     * и новая попытка (телефон мог просто притормозить), пока пауза - [spliceWorks] false. Вставший декодер перезапускается.
+     */
+    private fun spliceTick(now: Long) {
+        spliceCheckStall(now)
+        // выброс начат, а следующего кадра AA нет (экран встал): выброшенные уходят, на статике очередь ГУ уходит и так
+        if (spliceDropped.isNotEmpty() && now - spliceDroppedAt > SPLICE_QUIET_MS) spliceFlushDropped()
+        val seq = splicePendingSeq
+        if (seq != 0L && !spliceBuilding && refPicSeq != seq && now - splicePendingAt > SPLICE_WAIT_MS) {
+            log("BRIDGE свой IDR: картинка #$seq не пришла из декодера за $SPLICE_WAIT_MS мс, пропускаю", true)
+            spliceStats.noPicture++
+            spliceNotBefore = now + SPLICE_RETRY_MS
+            spliceCancel(null)
+            if (++spliceMisses >= SPLICE_MAX_MISSES) {
+                spliceBackoffs++
+                log("BRIDGE свой IDR: картинка из декодера не пришла $spliceMisses раз подряд, пауза $SPLICE_BACKOFF_MS мс, потом снова " +
+                    "(пауз за сессию $spliceBackoffs)", true)
+                spliceMisses = 0
+                spliceBackoffUntil = now + SPLICE_BACKOFF_MS
+                spliceNotBefore = spliceBackoffUntil
+            }
+        } else if (seq != 0L && spliceHold && now - splicePendingAt > SPLICE_HOLD_MAX_MS) {
+            // сборка не успела: кадры AA уходят, IDR по готовности выбрасывается (splicePendingSeq сброшен)
+            spliceStats.holdTimeout++
+            spliceNotBefore = now + SPLICE_RETRY_MS
+            spliceCancel(null)
+        } else {
+            spliceRequest(fromFrame = false)
+        }
+        spliceStats.logIfDue(now, builder?.qp)
+    }
+
+    /**
+     * Декодер встал: кадры AA идут, а его вывод не двигается и отстаёт больше чем на 2 дольше [SPLICE_STALL_MS]. Без этого
+     * своего IDR нет, а [spliceWorks] (картинка когда-то была) глушил бы h295. Декодер останавливается, новый создаст
+     * [spliceTrack] на следующем кадре AA; ему нужен IDR от AA, до него картинок нет ([refPicSeq] 0, [spliceWorks] false).
+     * Пока вывода у нового декодера не было ([refOutSeq] 0), он просто ждёт IDR - не вставший, повторно не перезапускаем.
+     * AA молчит дольше [SPLICE_STALL_IDLE_MS] (статика, декодер держит последние кадры) - отсчёт идёт заново.
+     */
+    private fun spliceCheckStall(now: Long) {
+        val sp = splicer
+        if (sp == null || refDecoder == null || spliceDisabled != null || refOutSeq == 0L || sp.seq - refOutSeq <= 2) {
+            refLagSince = NEVER
+            return
+        }
+        if (refLagSince == NEVER || refOutSeq != refLagOutSeq || now - lastAaFrameAt > SPLICE_STALL_IDLE_MS) {
+            refLagSince = now
+            refLagOutSeq = refOutSeq
+            return
+        }
+        if (now - refLagSince < SPLICE_STALL_MS) return
+        log("BRIDGE свой IDR: декодер встал ${now - refLagSince} мс, перезапускаю", true)
+        refDecoder?.stop()
+        refDecoder = null                       // refDecoderFailed не трогаем: фабрика вернёт null - тогда он станет true, как при старте
+        refPicSeq = 0
+        refOutSeq = 0
+        refPic = null
+        refLagSince = NEVER
+        spliceCancel(null)
+    }
+
+    override fun wantsRefPicture(seq: Long): Boolean {
+        refOutSeq = seq
+        return seq == spliceLastSeq
+    }
+
+    override fun onRefUnavailable(why: String) = synchronized(this) { spliceDisable(why) }
+
+    /**
+     * Вставка невозможна до конца AA-сессии: декодер стоп, кадры AA больше не придерживаются, повтор IDR от AA (h529)
+     * и цикл h295 работают как без галки. Сдвиг frame_num после уже ушедшего своего IDR держится до IDR от AA.
+     */
+    private fun spliceDisable(why: String) {
+        if (spliceDisabled != null) return
+        spliceDisabled = why
+        log("BRIDGE свой IDR: !!!!!! выключен до конца AA-сессии: $why", true)
+        refDecoder?.stop()
+        refDecoder = null
+        refDecoderFailed = true
+        spliceCancel(null)
+    }
+
+    override fun onRefPicture(seq: Long, pic: IdrSplice.Picture) {
+        refPic = pic
+        refPicSeq = seq
+        if (seq == splicePendingSeq) spliceRun()
+    }
+
+    /** Отдать сборку своего IDR на её нить, если картинка уже есть. Зовётся вне блокировки ядра. */
+    private fun spliceRun() {
+        val task = synchronized(this) {
+            val seq = splicePendingSeq
+            val ready = refPicSeq == seq                // сначала номер, потом картинка: она не старше номера
+            val pic = refPic
+            val sp = splicer
+            if (seq == 0L || spliceBuilding || !ready || pic == null || sp == null) return
+            val job = sp.prepare()
+            if (job == null || job.seq != seq) {
+                // в фоне: AA прислал кадр раньше, чем декодер отдал картинку
+                spliceStats.stale++
+                spliceNotBefore = clockMs() + SPLICE_RETRY_MS
+                spliceCancel(null)
+                return
+            }
+            spliceBuilding = true
+            val b = builder ?: IdrBuilder(spliceSlicePool ?: newSlicePool(), SPLICE_SLICES).also { builder = it }
+            val exec = spliceExecutor ?: newBuildThread()
+            BuildTask(job, b, exec, pic)
+        }
+        val job = task.job
+        val b = task.builder
+        // копия: в фоне декодер может писать в тот же буфер следующую картинку (тогда этот IDR и так устареет)
+        val pic = task.pic.copy()
+        val exec = task.exec
+        exec.execute {
+            val t0 = clockMs()
+            val r = try {
+                b.build(job, pic)
+            } catch (e: RuntimeException) {
+                log("BRIDGE свой IDR: !!!!!! сборка упала: ${e.javaClass.simpleName}: ${e.message}", true)
+                null
+            }
+            spliceComplete(job, r, clockMs() - t0)
+        }
+    }
+
+    private class BuildTask(val job: IdrSplicer.Job, val builder: IdrBuilder, val exec: Executor, val pic: IdrSplice.Picture)
+
+    private fun newBuildThread(): Executor =
+        Executors.newSingleThreadExecutor { r -> Thread(r, "aa-idr-build").also { it.isDaemon = true } }.also { spliceExecutor = it }
+
+    private fun newSlicePool(): ExecutorService =
+        Executors.newFixedThreadPool(SPLICE_SLICES) { r -> Thread(r, "aa-idr-slice").also { it.isDaemon = true } }.also { spliceSlicePool = it }
+
+    @Synchronized
+    private fun spliceComplete(job: IdrSplicer.Job, r: IdrSplice.Result?, buildMs: Long) {
+        spliceBuilding = false
+        if (splicePendingSeq != job.seq) return        // отменён (держали дольше потолка, новая сессия): кадры уже отпущены
+        val now = clockMs()
+        spliceNotBefore = now + SPLICE_RETRY_MS
+        spliceMisses = 0
+        spliceStats.build(buildMs)
+        val sp = splicer
+        when {
+            r == null || sp == null || !carlifeStarted || active != Source.AA -> {}
+            sp.seq != job.seq -> spliceStats.stale++    // в фоне: пока собирали, AA прислал кадр
+            r.nal.size > SPLICE_MAX_BYTES -> {
+                spliceStats.big++
+                if (gotIdr) spliceNotBefore = now + spliceMs      // картинка та же или похожая: не собирать каждую секунду
+            }
+            else -> spliceSend(sp, job, r, buildMs, now)
+        }
+        spliceCancel(null)
+    }
+
+    private fun spliceSend(sp: IdrSplicer, job: IdrSplicer.Job, r: IdrSplice.Result, buildMs: Long, now: Long) {
+        // SPS/PPS через раз: Honda после сброса ждёт их в кадре (h295), Java-ГУ CarLife в сбросе берёт только голый IDR
+        val cfg = aaConfig
+        val recovered = !gotIdr
+        val glued = cfg != null && sp.spliced % 2 == 0L
+        val payload = if (glued) spsCrop(AnnexB.glue(cfg!!, r.nal)) else r.nal
+        if (!link.sendVideo(payload)) {
+            log("BRIDGE свой IDR ${payload.size} Б не принят CarLife (очередь/закрыто)", true)
+            return
+        }
+        sp.commit(job)
+        spliceStats.sent++
+        spliceLastSentAt = now
+        val replaced = spliceReplaced != null
+        spliceReplaced = null                           // кадр AA этой картинки ГУ не получит: его место занял IDR
+        val dropped = spliceDropped.size
+        spliceDropped.clear()                           // и кадры перед ней (spliceDrop)
+        latStats.sent(now, own = true, replaced = replaced, holdMs = if (spliceHold) now - splicePendingAt else -1, held = spliceHeld.size, dropped = dropped)
+        gotIdr = true
+        waitSince = 0
+        sent++
+        idrSent++
+        lastIdrSentMs = now
+        if (recovered || sp.spliced <= 5 || sp.spliced % 30 == 0L) {
+            log("BRIDGE свой IDR #${sp.spliced}${if (recovered) " (ГУ была без IDR)" else ""}: ${payload.size} Б, " +
+                (if (r.qp < 0) "без потерь (PCM ${r.pcm})" else "QP ${r.qp}") + ", сборка $buildMs мс, " +
+                (if (spliceHold) "кадры AA ждали ${now - splicePendingAt} мс" else "в фоне") + ", ${if (glued) "с SPS/PPS" else "голый"}" +
+                (if (!replaced) "" else if (dropped == 0) ", вместо кадра AA" else ", вместо ${dropped + 1} кадров AA"), true)
+        }
+    }
+
+    /** Больше не ждём картинку: придержанные кадры AA уходят своим путём (могут снова встать в очередь за новым IDR). */
+    private fun spliceCancel(why: String?) {
+        if (splicePendingSeq == 0L) {
+            spliceFlushDropped()
+            return
+        }
+        if (why != null) log("BRIDGE свой IDR отменён: $why", false)
+        splicePendingSeq = 0
+        spliceHold = false
+        spliceFlushDropped()
+        // кадр, вместо которого ждали IDR, уже прошёл через splicer: в ГУ как есть, раньше придержанных
+        spliceReplaced?.let { b ->
+            spliceReplaced = null
+            if (carlifeStarted) passthroughFrame(b, AnnexB.nalTypes(b))
+        }
+        while (spliceHeld.isNotEmpty() && splicePendingSeq == 0L) aaFrame(spliceHeld.removeAt(0), 0)
+    }
+
+    /** Новая AA-сессия: поток с нуля, декодер пересоздаётся. Придержанные кадры старого потока выбрасываются. */
+    private fun spliceReset() {
+        splicePendingSeq = 0
+        spliceHold = false
+        spliceHeld.clear()
+        spliceReplaced = null
+        spliceDropped.clear()
+        splicer = null
+        refDecoder?.stop()
+        refDecoder = null
+        refDecoderFailed = false
+        spliceDisabled = null
+        spliceMisses = 0
+        spliceBackoffUntil = NEVER
+        spliceBackoffs = 0
+        refLagSince = NEVER
+        spliceLastSentAt = NEVER
+        spliceLastSeq = 0
+        refOutSeq = 0
+        refPic = null
+        refPicSeq = 0
+        spliceBlockLogged = null
+    }
+
+    /**
+     * Поток в ГУ раз в [SPLICE_STATS_MS] (passthrough): кадры AA и свои IDR, сколько из них лишние (сверх кадров AA),
+     * придержка кадров AA и задержка модели ГУ с постоянной частотой показа ([GuQueueModel]). Для поиска накопления задержки.
+     */
+    private inner class LatencyStats {
+        private var aa = 0
+        private var own = 0
+        private var replaced = 0
+        private var holds = 0
+        private var holdSum = 0L
+        private var holdMax = 0L
+        private var heldMax = 0
+        private var extraTotal = 0L
+        private var dropped = 0
+        private var droppedTotal = 0L
+        var dropUndone = 0                          // выброс начат, но IDR не ушёл: кадры отправлены как были
+        private var since = NEVER
+
+        fun sent(now: Long, own: Boolean, replaced: Boolean = false, holdMs: Long = -1, held: Int = 0, dropped: Int = 0) {
+            if (own) {
+                this.own++
+                if (replaced) this.replaced++ else extraTotal++
+                this.dropped += dropped
+                droppedTotal += dropped
+                if (holdMs >= 0) {
+                    holds++
+                    holdSum += holdMs
+                    holdMax = maxOf(holdMax, holdMs)
+                    heldMax = maxOf(heldMax, held)
+                }
+            } else aa++
+            guModel.onFrame(now)                    // IDR вместо кадра AA занимает его место, лишний - добавляет кадр
+        }
+
+        fun logIfDue(now: Long) {
+            if (since == NEVER) since = now
+            if (now - since < SPLICE_STATS_MS) return
+            val sec = (now - since) / 1000.0
+            if (aa + own > 0 && transcoder == null) {
+                log("BRIDGE поток в ГУ за ${sec.toInt()} с: кадров AA $aa (${"%.1f".format(aa / sec)} fps), своих IDR $own " +
+                    "(вместо кадра AA $replaced, лишних ${own - replaced}, лишних за сессию $extraTotal)" +
+                    (if (spliceDrop > 0) "; выброшено кадров AA $dropped (за сессию $droppedTotal), выброс отменён $dropUndone раз" else "") +
+                    (if (holds > 0) "; кадры AA ждали IDR ср ${holdSum / holds} мс, макс $holdMax мс, в пачке до $heldMax" else "") +
+                    "; модель ГУ ${guModel.fps} fps без пропусков: задержка сейчас ${guModel.delayMs(now)} мс, макс ${guModel.maxMs} мс", true)
+            }
+            aa = 0; own = 0; replaced = 0; holds = 0; holdSum = 0; holdMax = 0; heldMax = 0; dropped = 0; dropUndone = 0
+            guModel.resetMax()
+            since = now
+        }
+
+        fun resetSession() {
+            extraTotal = 0
+            droppedTotal = 0
+            guModel.reset()
+        }
+    }
+
+    /** Сводка своего IDR раз в [SPLICE_STATS_MS]: в лог попадает всё, а не каждая N-я строка. */
+    private inner class SpliceStats {
+        var sent = 0
+        var stale = 0
+        var big = 0
+        var holdTimeout = 0
+        var noPicture = 0
+        private var builds = 0
+        private var buildSum = 0L
+        private var buildMax = 0L
+        private var since = NEVER
+
+        fun build(ms: Long) {
+            builds++
+            buildSum += ms
+            buildMax = maxOf(buildMax, ms)
+        }
+
+        fun logIfDue(now: Long, qp: Int?) {
+            if (since == NEVER) since = now
+            if (now - since < SPLICE_STATS_MS) return
+            if (sent + stale + big + holdTimeout + noPicture > 0) {
+                log("BRIDGE свой IDR за ${(now - since) / 1000} с: ушло $sent, устарел (AA прислал кадр) $stale, больше $SPLICE_MAX_BYTES Б $big, " +
+                    "держали кадры дольше $SPLICE_HOLD_MAX_MS мс $holdTimeout, без картинки $noPicture; сборка " +
+                    (if (builds > 0) "ср ${buildSum / builds} мс, макс $buildMax мс" else "-") + (if (qp != null) ", QP $qp" else ""), true)
+            }
+            sent = 0; stale = 0; big = 0; holdTimeout = 0; noPicture = 0
+            builds = 0; buildSum = 0; buildMax = 0
+            since = now
+        }
+    }
+
+    // --- перекодирование ---
+    private fun startTranscoder() {
+        if (desktopSurfaceEnabled) {
+            startDesktopSurfaceEncoder()
+            return
+        }
+        if (desktopInputEnabled && desktopVideoError != null) return
+        outGotIdr = false
+        outputEnabled = false
+        var t = transcoder
+        if (t == null) {
+            t = link.createTranscoder(this)
+            transcoder = t
+            if (t == null) {
+                if (desktopInputEnabled) {
+                    stopDesktopVideo("Не удалось создать энкодер CarLife")
+                    return
+                }
+                log("BRIDGE !!!!!! транскодер не поднялся (MediaCodec), откат на passthrough", true)
+                val g = videoMode
+                if (g is CustomVideoMode) {
+                    // TODO: откат на R720 пересозданием хоста; пока ГУ ждёт кадр out, а получит кадр подложки AA с полями
+                    log("BRIDGE !!!!!! своё разрешение ${g.outW}x${g.outH} без транскодера не получится: ГУ ждёт ${g.outW}x${g.outH}, " +
+                        "а уйдёт кадр AA ${g.aaResolution} с полями ${g.marginW}x${g.marginH}. Выключите «Своё разрешение» или задайте другой размер", true)
+                }
+                return
+            }
+        }
+        log("BRIDGE видео: режим перекодирование (AA -> декодер -> энкодер, повтор кадра 100 мс)", true)
+        aaConfig?.let { t.feedConfig(it) }
+        t.requestSyncFrame()        // энкодер: ключевой кадр на START, как только пойдут кадры
+    }
+
+    private fun stopTranscoderAsync() {
+        val t = transcoder
+        if (t == null && !desktopSurfaceCreating) return
+        transcoder = null
+        encCsd = null
+        outGotIdr = false
+        outputEnabled = false
+        if (desktopSurfaceEnabled) {
+            val generation = desktopSurfaceGeneration
+            val listener = desktopSurfaceListener
+            desktopSurfaceGeneration = 0L // Invalidate late codec callbacks before publishing a new encoder.
+            desktopSurfaceReady = false
+            desktopSurfaceFirstFrame = false
+            desktopSurfaceCsdVerified = false
+            desktopSurfaceCreating = false
+            if (t != null && generation != 0L) {
+                retiredSurfaceEncoders[generation] = RetiredSurfaceEncoder(t, listener)
+                desktopSurfaceWorker().execute {
+                    try {
+                        listener?.onSurfaceClosing(generation)
+                        synchronized(this) { closedSurfaceProducers.add(generation) }
+                    } catch (e: Exception) {
+                        val confirmed = synchronized(this) { generation in closedSurfaceProducers }
+                        if (!confirmed) synchronized(this) {
+                            stopDesktopVideo("Не подтверждено закрытие экрана DeX; Surface сохранён до завершения службы")
+                        }
+                        log("DEX surface close failed: ${e.javaClass.simpleName}; consumer retained until producer death is confirmed", true)
+                    }
+                    disposeRetiredSurfaceEncoder(generation)
+                }
+            }
+        } else Thread({ t?.stop() }, "aa-transcoder-stop").start()
+    }
+
+    /** Called once before START after the previous transport's encoder has been retired. */
+    @Synchronized fun configureDesktopVideo(owner: CarlifeLink, mode: VideoGeometry, density: Int) {
+        check(link === owner && !carlifeStarted && transcoder == null && !desktopSurfaceCreating) { "Desktop video already started or session retired" }
+        require(DesktopVideoGeometry.matchesNative(mode))
+        DesktopGeometryPolicy.requireDensity(density)
+        videoMode = mode
+        densityOverride = density
+    }
+
+    /** Caller holds the core monitor; source work is deferred to the ordered lifecycle worker. */
+    private fun startDesktopSurfaceEncoder() {
+        if (desktopSurfaceStopped || desktopVideoError != null) return
+        if (!DesktopVideoGeometry.matchesNative(videoMode)) {
+            stopDesktopVideo("Прямой экран DeX требует ${DesktopVideoGeometry.outLabel} без кропа и масштаба")
+            return
+        }
+        val listener = desktopSurfaceListener ?: return
+        outGotIdr = false
+        outputEnabled = desktopSurfaceReady && !carlifePaused
+        transcoder?.let { it.requestSyncFrame(); return }
+        if (desktopSurfaceCreating) return
+        val generation = ++desktopSurfaceSequence
+        val sourceLink = link
+        val sourceMode = videoMode
+        val sourceDensity = sourceMode.densityFor(densityOverride)
+        desktopSurfaceGeneration = generation
+        desktopSurfaceCreating = true
+        desktopSurfaceReady = false
+        desktopSurfaceFirstFrame = false
+        desktopSurfaceCsdVerified = false
+        outputEnabled = false
+        encCsd = null
+        desktopSurfaceWorker().execute {
+            val valid = synchronized(this) {
+                val current = !desktopSurfaceStopped && desktopSurfaceGeneration == generation && link === sourceLink &&
+                    desktopVideoError == null && retiredSurfaceEncoders.isEmpty()
+                if (!current && desktopSurfaceGeneration == generation) desktopSurfaceCreating = false
+                current
+            }
+            if (!valid) return@execute
+            // This runs after the previous source and encoder have both closed. Creating
+            // codecs under the core monitor would also block USB while GL initializes.
+            val t = try { sourceLink.createSurfaceEncoder(DesktopEncoderOutput(generation)) } catch (e: Exception) {
+                log("DEX surface encoder creation failed: ${e.javaClass.simpleName}", true)
+                null
+            }
+            val input = runCatching { t?.surfaceInput }.getOrNull()
+            var disposalQueued = false
+            val adopted = synchronized(this) {
+                if (desktopSurfaceStopped || desktopSurfaceGeneration != generation || link !== sourceLink || desktopVideoError != null) false
+                else {
+                    desktopSurfaceCreating = false
+                    transcoder = t
+                    if (input == null) {
+                        disposalQueued = t != null
+                        stopDesktopVideo("Не удалось создать Surface энкодера CarLife")
+                    }
+                    input != null
+                }
+            }
+            if (!adopted) {
+                // A failed/null-input codec already queued by stopDesktopVideo is disposed
+                // there; a codec created after cancellation has never been published.
+                if (!disposalQueued) t?.stop()
+                return@execute
+            }
+            log("DEX video: native ${videoMode.outW}x${videoMode.outH} Surface -> GL -> H.264 CarLife; one encode, generation=$generation", true)
+            try {
+                listener.onSurfaceAvailable(generation, object : SurfaceVideoInput {
+                    override val surface get() = input!!.surface
+                    override val width = sourceMode.outW
+                    override val height = sourceMode.outH
+                    override val density = sourceDensity
+                })
+            } catch (e: Exception) {
+                log("DEX surface source failed: ${e.javaClass.simpleName}", true)
+                desktopSurfaceFailed(generation, "Не удалось подключить экран DeX к энкодеру CarLife")
+            }
+        }
+    }
+
+    /** A retired codec may emit a final callback while the next USB session is starting. */
+    private inner class DesktopEncoderOutput(private val generation: Long) : TranscodeOutput {
+        private inline fun current(block: () -> Unit) = synchronized(this@AaBridgeCore) {
+            if (generation == desktopSurfaceGeneration && !desktopSurfaceStopped && desktopVideoError == null) block()
+        }
+        override fun onEncoderConfig(csd: ByteArray) = current { this@AaBridgeCore.onEncoderConfig(csd) }
+        override fun onEncoderFrame(data: ByteArray, key: Boolean) = current { this@AaBridgeCore.onEncoderFrame(data, key) }
+        override fun onTranscodeError(msg: String) = current { this@AaBridgeCore.onTranscodeError(msg) }
+        override fun onNeedAaKeyFrame() {} // There is no decoder in direct-surface mode.
+    }
+
+    private fun resetTranscodeForAa() {
+        outputEnabled = false
+        outGotIdr = false
+        transcoder?.resetDecoder()
+    }
+
+    /** AA-кадр -> декодер. До первого IDR после START/пересоздания кадры отбрасываются (декодеру нужен IDR). */
+    private fun feedTranscoder(t: VideoTranscoder, b: ByteArray, types: List<Int>, ptsUs: Long) {
+        if (!gotIdr) {
+            if (5 !in types) {
+                drop("P-кадр до IDR (декодер ждёт) nal=$types")
+                return
+            }
+            val payload = if (AnnexB.startsWithSps(b) && 8 in types) b else {
+                val cfg = aaConfig
+                if (cfg == null) {
+                    drop("IDR без SPS/PPS и без CODEC_CONFIG")
+                    return
+                }
+                AnnexB.glue(cfg, b)
+            }
+            gotIdr = true
+            waitSince = 0
+            outputEnabled = true
+            log("BRIDGE AA IDR -> декодер (${payload.size} Б, nal=${AnnexB.nalTypes(payload)})", true)
+            // переход с заглушки: энкодер начнёт с её кадра и растворит его в AA (до feedFrame, чтобы GL-нить взвела его раньше первого кадра)
+            if (active != Source.AA) link.placeholderSnapshot()?.let { t.startIntro(it) }
+            t.feedFrame(payload, ptsUs)
+            t.requestSyncFrame()    // первый кадр энкодера после включения выхода сразу IDR, без ожидания до ~1 с
+            return
+        }
+        t.feedFrame(b, ptsUs)
+    }
+
+    @Synchronized
+    override fun onEncoderConfig(csd: ByteArray) {
+        if (desktopSurfaceEnabled && (desktopSurfaceStopped || desktopVideoError != null)) return
+        encCsd = csd
+        log("BRIDGE энкодер: SPS+PPS ${csd.size} Б nal=${AnnexB.nalTypes(csd)}", false)
+        if (desktopSurfaceEnabled && !AnnexB.nalTypes(csd).containsAll(listOf(7, 8))) {
+            stopDesktopVideo("Энкодер CarLife не выдал SPS/PPS")
+            return
+        }
+        if (desktopInputEnabled) for (nal in IdrSplicer.nals(csd)) {
+            if (nal[0].toInt() and 0x1f != 7) continue
+            try {
+                val info = SpsCrop.parse(nal)
+                val matches = info.visibleW == videoMode.outW && info.visibleH == videoMode.outH
+                log("DEX geometry stage=carlife-encoder-sps coded=${info.codedW}x${info.codedH} visible=${info.visibleW}x${info.visibleH} " +
+                    "expected=${videoMode.outW}x${videoMode.outH} crop=${info.left},${info.right},${info.top},${info.bottom} matches=$matches", true)
+                if (!matches) {
+                    stopDesktopVideo("Энкодер CarLife выдал ${info.visibleW}×${info.visibleH} вместо ${videoMode.outW}×${videoMode.outH}")
+                    return
+                }
+                if (desktopSurfaceEnabled) desktopSurfaceCsdVerified = true
+            } catch (e: Exception) {
+                log("DEX geometry stage=carlife-encoder-sps unverified=${e.javaClass.simpleName}", true)
+                stopDesktopVideo("Не удалось проверить размер H.264 CarLife")
+                return
+            }
+        }
+    }
+
+    /** Кадр энкодера -> CarLife. Первое сообщение источника = SPS+PPS+IDR (SPS/PPS склеиваем), P до IDR выбрасываем. */
+    @Synchronized
+    override fun onEncoderFrame(data: ByteArray, key: Boolean) {
+        if (desktopSurfaceEnabled && (!desktopSurfaceReady || !desktopSurfaceCsdVerified || desktopVideoError != null)) {
+            encDropped++
+            return
+        }
+        if (!outputEnabled || !carlifeStarted) {
+            encDropped++
+            return
+        }
+        if (desktopSurfaceEnabled) {
+            lastAaFrameAt = clockMs()
+            aaFrames++
+        }
+        val types = AnnexB.nalTypes(data)
+        val idr = 5 in types
+        if (!outGotIdr) {
+            if (!idr) {
+                encDropped++
+                return
+            }
+            val payload = if (AnnexB.startsWithSps(data) && 8 in types) data else {
+                val cfg = encCsd
+                if (cfg == null) {
+                    encDropped++
+                    return
+                }
+                AnnexB.glue(cfg, data)
+            }
+            val takeover = active != Source.AA
+            if (!(if (takeover) link.sendVideoTakeover(payload) else link.sendVideo(payload))) {
+                encDropped++
+                requestIdrOnOverflow()
+                return
+            }
+            outGotIdr = true
+            sent++
+            idrSent++
+            if (active != Source.AA) {
+                active = Source.AA
+                log("BRIDGE источник -> ${if (desktopSurfaceEnabled) "DeX Surface" else "AA"} (первый IDR ${payload.size} Б, nal=${AnnexB.nalTypes(payload)})", true)
+                link.hidePlaceholder()
+            } else {
+                log("BRIDGE IDR энкодера -> CarLife ${payload.size} Б nal=${AnnexB.nalTypes(payload)}", true)
+            }
+            AaState.status = if (desktopSurfaceEnabled) "мост: DeX -> CarLife (${videoMode.outLabel}, одно кодирование)" else "мост: AA -> CarLife (перекодирование)"
+            if (desktopSurfaceEnabled && !desktopSurfaceFirstFrame) {
+                desktopSurfaceFirstFrame = true
+                val generation = desktopSurfaceGeneration
+                val listener = desktopSurfaceListener
+                desktopSurfaceWorker().execute {
+                    val valid = synchronized(this) {
+                        generation != 0L && generation == desktopSurfaceGeneration && !desktopSurfaceStopped
+                    }
+                    if (valid) listener?.onFirstFrame(generation)
+                }
+            }
+            if (huVw20082138 || huMobisNx4c) link.onEncodedKeyFrame(payload.size)
+            return
+        }
+        if (!link.sendVideo(data)) {
+            // кадр не принят (очередь CarLife переполнена): дальше P нельзя, до следующего IDR всё выбрасывается выше
+            outGotIdr = false
+            encDropped++
+            requestIdrOnOverflow()
+            return
+        }
+        sent++
+        if (idr) idrSent++
+        AaState.bridgeSent = sent
+        if (idr && (huVw20082138 || huMobisNx4c)) link.onEncodedKeyFrame(data.size)
+    }
+
+    /**
+     * IDR у энкодера после отказа очереди CarLife - не чаще раза в 1.5 с (IdrThrottle). Иначе большие IDR (30-160 КБ)
+     * сами забивают медленный канал. Отказали - ждём уже запрошенный или ближайший естественный IDR (интервал 1 с).
+     */
+    private fun requestIdrOnOverflow() {
+        val t = transcoder ?: return
+        if (!idrThrottle.tryRequest(clockMs())) return
+        overflowIdrRequests++
+        t.requestSyncFrame()
+    }
+
+    /** Битрейт энкодера на лету (адаптация под слив ГУ). false = транскодера нет (passthrough или ещё не создан). */
+    @Synchronized
+    fun setEncoderBitrate(bps: Int): Boolean {
+        val t = transcoder ?: return false
+        t.setBitrate(bps)
+        return true
+    }
+
+    /** Целевой fps транскодера на лету (FRAME_RATE_CHANGE от ГУ). false = транскодера нет (passthrough или ещё не создан). */
+    @Synchronized
+    fun setTargetFps(fps: Int): Boolean {
+        val t = transcoder ?: return false
+        t.setTargetFps(fps)
+        return true
+    }
+
+    @Synchronized
+    override fun onNeedAaKeyFrame() {
+        gotIdr = false
+        waitSince = clockMs()
+        log("BRIDGE декодер потерял кадр: жду новый IDR от AA", true)
+    }
+
+    @Synchronized
+    override fun onTranscodeError(msg: String) {
+        if (desktopInputEnabled) {
+            stopDesktopVideo("Ошибка энкодера CarLife: $msg")
+            return
+        }
+        log("BRIDGE !!!!!! ошибка транскодера: $msg. Откат на passthrough", true)
+        stopTranscoderAsync()
+        gotIdr = false
+        waitSince = clockMs()
+    }
+
+    /** Called under the core monitor; block frames before the connector observes the failure. */
+    private fun stopDesktopVideo(message: String) {
+        if (desktopVideoError != null) return
+        desktopVideoError = message
+        outputEnabled = false
+        gotIdr = false
+        stopTranscoderAsync()
+        active = Source.PLACEHOLDER
+        placeholderText = "DeX: $message"
+        link.showPlaceholder(placeholderText)
+        log("DEX video stopped: $message; passthrough disabled", true)
+    }
+
+    /** ГУ просит ключевой кадр (VIDEO_ENCODER_RESET и т.п.). */
+    @Synchronized
+    fun onCarlifeKeyFrameRequest() {
+        val t = transcoder
+        if (t != null) {
+            t.requestSyncFrame()
+        } else if (carlifeStarted) {
+            gotIdr = false
+            waitSince = clockMs() - KEYFRAME_WAIT_MS
+        }
+        log("BRIDGE ГУ просит ключевой кадр (${if (t != null) "sync frame энкодера" else "ждём IDR от AA"})", true)
+    }
+
+    /** Раз в 5 с: режим, fps на выходе, статистика транскодера; в passthrough - длительность простоя AA (keepalive не шлём). */
+    private fun logStats() {
+        if (!carlifeStarted) return
+        val now = clockMs()
+        if (lastStatsAt == 0L) {
+            lastStatsAt = now
+            lastStatsSent = sent
+            lastStatsAaFrames = aaFrames
+            return
+        }
+        if (now - lastStatsAt < 5000) return
+        val sec = (now - lastStatsAt) / 1000.0
+        val fps = (sent - lastStatsSent) / sec
+        val aaFps = (aaFrames - lastStatsAaFrames) / sec
+        val t = transcoder
+        val idle = if (lastAaFrameAt > 0 && now - lastAaFrameAt > 1000) " простой AA ${(now - lastAaFrameAt) / 1000.0} с" else ""
+        val target = if (t != null) "цель ${t.targetFps} fps" else "fps не регулируется"
+        val idrReq = overflowIdrRequests - lastStatsIdrRequests
+        val ls = link.videoStats()
+        val channel = if (ls == null) "" else
+            "; канал: ${if (t != null) "энкодер ${t.currentBitrate / 1000} кбит/с, " else ""}слив %.0f КиБ/с, бэклог ${ls.backlogMs} мс, очередь ${ls.queueFrames} кадр/${ls.queueBytes / 1024} КБ, запросов IDR из-за переполнения $idrReq за окно"
+                .format(ls.drainBytesPerSec / 1024)
+        val summary = if (desktopSurfaceEnabled)
+            "BRIDGE видео[Surface, одно кодирование]: выход в CarLife %.1f fps ($target), отброшено энкодер/гейт $encDropped/$dropped".format(fps)
+        else
+            "BRIDGE видео[${if (t != null) "перекодирование" else "passthrough"}]: AA вход %.1f fps, выход в CarLife %.1f fps ($target), отброшено энкодер/гейт $encDropped/$dropped$idle".format(aaFps, fps)
+        log(summary + channel + (if (t != null) "; ${t.statsLine()}" else ""), true)
+        lastStatsAt = now
+        lastStatsSent = sent
+        lastStatsAaFrames = aaFrames
+        lastStatsIdrRequests = overflowIdrRequests
+    }
+
+    companion object {
+        /** CarlifeThemeState.themeModes (SkinDisplayModeManager в CarLife 8.6.7). */
+        const val THEME_LIGHT = 0
+        const val THEME_DARK = 1
+        const val THEME_AUTO = 2
+
+        fun themeName(mode: Int) = when (mode) {
+            THEME_LIGHT -> "светлая"; THEME_DARK -> "тёмная"; THEME_AUTO -> "авто"; else -> "?"
+        }
+
+        /** action&255 TOUCH_ACTION, которые уходят в AA (у AA те же коды PointerAction). */
+        private val TOUCH_NAMES = mapOf(
+            AapMessages.TOUCH_DOWN to "DOWN", AapMessages.TOUCH_UP to "UP", AapMessages.TOUCH_MOVE to "MOVE",
+            AapMessages.TOUCH_POINTER_DOWN to "POINTER_DOWN", AapMessages.TOUCH_POINTER_UP to "POINTER_UP",
+        )
+
+        // Флаги нового звукового поведения (по умолчанию включены): в машине отключаются по одному.
+        /** MODULE_STATUS NAVI=1 перед первым TTS_INIT, NAVI=0 при остановке звука. */
+        @Volatile @JvmStatic var NAVI_STATUS_ENABLED = true
+
+        /** Debounce TTS_STOP (1500 мс) и очередь управляющих пакетов MEDIA до TTS_STOP+300 мс. */
+        @Volatile @JvmStatic var TTS_DEBOUNCE_ENABLED = true
+
+        /** Голосовая сессия Ассистента: MEDIA на паузу, MEDIA_DATA не пересылать, выход через 500 мс. */
+        @Volatile @JvmStatic var VOICE_SESSION_ENABLED = true
+
+        /** MODULE_STATUS MUSIC(3) вместе с MEDIA INIT/PAUSE/STOP и ответ на MODULE_CONTROL (CarLifeSession). */
+        @Volatile @JvmStatic var MODULE_MUSIC_ENABLED = true
+
+        /** onAudioStop(MEDIA) шлёт MEDIA_PAUSE (как MD) вместо MEDIA_STOP; выключено = старое поведение. */
+        @Volatile @JvmStatic var MEDIA_PAUSE_ENABLED = true
+
+        /**
+         * MODULE_STATUS NAVI=1 на весь маршрут (MetaRelay): без него приборка Honda Vezel пишет «Turn by turn waiting
+         * for your smartphone». Desay G6S (Mazda CX-5) с NAVI=1 глушит штатное радио при входе в CarLife (лог Ивана
+         * 2026-10-12), там NAVI=1 только вокруг TTS (huDesayG6S). Выключено = NAVI=1 только вокруг TTS на всех ГУ.
+         */
+        @Volatile @JvmStatic var ROUTE_NAVI_STATUS_ENABLED = true
+
+        /** ГУ ушло на свой источник (MODULE_CONTROL MUSIC=0): AA на паузу; на START play не шлём. */
+        @Volatile @JvmStatic var HU_MUSIC_FOLLOW_ENABLED = true
+
+        /** Desay G6S: MUSIC=1 после нашей паузы по MUSIC=0 - AA play (KEYCODE 126) и ответ MUSIC=1. */
+        @Volatile @JvmStatic var HU_MUSIC_RESUME_ENABLED = true
+
+        /** Сколько отвечать MUSIC=1 на пачку MUSIC=1 после нашего play, пока MEDIA INIT ещё не пришёл. */
+        const val HU_RESUME_ANSWER_MS = 3_000L
+
+        /**
+         * Mazda CX-5: AA сам запускает музыку через 5-9 с после BT_HFP_CONNECTION. Пока ГУ на своём источнике, такой play
+         * (в окне после HFP, без ввода с ГУ) паузу не снимает, а снова получает KEYCODE 127.
+         */
+        @Volatile @JvmStatic var BT_AUTOPLAY_GUARD_ENABLED = true
+
+        /** Воздух, VW BT 1420: START после PAUSE сразу с IDR энкодера (декодер жив), без ожидания IDR от AA. */
+        @Volatile @JvmStatic var AIR_WARM_RESUME_ENABLED = true
+
+        const val BT_AUTOPLAY_WINDOW_MS = 20_000L
+        const val USER_INPUT_WINDOW_MS = 3_000L
+        private const val REPAUSE_MIN_MS = 1_000L
+
+        const val TTS_STOP_DELAY_MS = 1500L
+        const val MEDIA_AFTER_TTS_MS = 300L
+        const val VOICE_EXIT_DELAY_MS = 500L
+        private const val TTS_DIAG_PACKETS = 3
+        /**
+         * Пре-ролл тишины TTS по умолчанию (Авто) на VW 20082120/20082122/20082134 (h222); 16 кГц моно 16 бит, куски как у Baidu.
+         * 400 мс взяты без измерений (шипение начала подсказки на CNS3), длительность подбирается настройкой [TtsPreroll].
+         */
+        const val TTS_PREROLL_MS = 400
+        /** h425 (лог 24.10 18:34:09): NAVI=1 и TTS_INIT в одну миллисекунду - первая подсказка сессии молчит. 300 мс без измерений. */
+        const val TTS_INIT_AFTER_NAVI_MS = 300L
+        private const val TTS_BYTES_PER_SEC = 16000 * 2
+        private const val TTS_PREROLL_CHUNK = 4096
+        /** Авто-размер пакета речи на VW CNS2 Delphi (h425): заикание ответа ассистента ушло при MAX_CHUNK/10; AA отдаёт речь по 2048 Б. */
+        private const val VOICE_CHUNK_DELPHI = 1024
+
+        /** Android KEYCODE_SEARCH: в AA запускает голосового ассистента. */
+        const val KEYCODE_SEARCH = 84
+        const val VOICE_KEY_DEBOUNCE_MS = 500L
+        const val KEYCODE_MEDIA_PLAY = 126
+        const val KEYCODE_MEDIA_PAUSE = 127
+        const val KEYCODE_MEDIA_PLAY_PAUSE = 85
+        const val KEYCODE_CALL = 5
+        const val KEYCODE_ENDCALL = 6
+        const val HARD_KEY_SEEK_SUB = 0x0F
+        const val HARD_KEY_SEEK_ADD = 0x10
+        /** VW CNS2 Delphi 20082114: удержание вперёд/назад приходит как keycode 0 (Дмитрий, 24.10). */
+        const val HARD_KEY_SEEK_HOLD = 0
+        /** MEDIA_STOP с ГУ; Delphi шлёт его сам, когда уходит на свой звонок. */
+        const val HARD_KEY_MEDIA_STOP = 0x20
+
+        /**
+         * CarLife hard key (HUJ/CommonParams) -> Android KeyEvent; все значения есть в AapMessages.KEYCODES_SUPPORTED.
+         * Громкость, HOME, MEDIA/RADIO/NAVI и цифры не мапим: их обрабатывает само ГУ либо аналога нет.
+         */
+        val HARD_KEY_TO_ANDROID: Map<Int, Int> = mapOf(
+            0x10 to 87,     // SEEK_ADD -> MEDIA_NEXT
+            0x0F to 88,     // SEEK_SUB -> MEDIA_PREVIOUS
+            0x1F to 126,    // MEDIA_START -> MEDIA_PLAY
+            0x20 to 127,    // MEDIA_STOP -> MEDIA_PAUSE
+            0x02 to 5,      // PHONE_CALL -> CALL
+            0x03 to 6,      // PHONE_END -> ENDCALL
+            0x0E to 4,      // BACK
+            0x14 to 23,     // OK -> DPAD_CENTER
+            0x15 to 21,     // MOVE_LEFT -> DPAD_LEFT
+            0x16 to 22,     // MOVE_RIGHT -> DPAD_RIGHT
+            0x17 to 19,     // MOVE_UP -> DPAD_UP
+            0x18 to 20,     // MOVE_DOWN -> DPAD_DOWN
+            0x21 to KEYCODE_SEARCH, // VR_START -> голосовой ассистент
+            0x1E to 3,      // MAIN -> HOME (панель приложений)
+            0x09 to 209,    // MEDIA -> MUSIC (медиаплеер)
+            0x0B to 65538,  // NAVI -> AA NAVIGATION (код из KEY_BINDING_REQUEST AA)
+        )
+
+        /** Поворот шайбы (Mazda Commander и т.п.) -> rotary AA: фокус по спискам, выбор — OK (DPAD_CENTER). */
+        val HARD_KEY_TO_ROTARY: Map<Int, Int> = mapOf(
+            0x06 to 1,      // SELECTOR_NEXT -> по часовой
+            0x07 to -1,     // SELECTOR_PREVIOUS -> против часовой
+        )
+
+        const val TEXT_CONNECTING = "Подключаю Android Auto..."
+        const val TEXT_START_SERVER = "Запустите сервер ГУ в Android Auto"
+        const val TEXT_WAIT_FRAME = "Android Auto: жду кадр..."
+        const val TEXT_AA_LOST = "Android Auto отключился, переподключаю..."
+        const val DESAY_MANUFACTURER = "Desay SV Automotive"
+        const val DESAY_G6S_MODEL = "G6S"
+        const val DESAY_G6S_CHANNEL = "20622116"          // STATISTIC_INFO.channel у Mazda CX-5; Vezel - 20832125, другая Mazda - 21520001
+        /** Префиксы STATISTIC_INFO.channel у Honda (CarLife 1.1.0, HU_INFO пустой, BT «Honda HFT»): 2077xxxx (Civic 11, UR-V), 2083xxxx (Vezel и др.). */
+        val HONDA_CHANNEL_PREFIXES = listOf("2077", "2083")
+        /** Honda: NAVI=1 моложе этого и без стрелок после него - переход 0->1 ещё свежий, перед первым SHOW не перевзводим. */
+        const val NAVI_REARM_FRESH_MS = 5000L    // первый TURN_EVENT от AA после старта маршрута приходит через ~2 с
+
+        fun isHondaChannel(channel: String?) =
+            channel != null && channel.length == 8 && HONDA_CHANNEL_PREFIXES.any { channel.startsWith(it) }
+        const val HONDA_20772121_CHANNEL = "20772121"     // Honda Civic 11 2023 (Китай, h295): после камеры/меню ГУ не просит IDR
+        const val HONDA_20832125_CHANNEL = "20832125"     // Honda Vezel (ГУ Егора): то же после заднего хода в passthrough, лог 26.10
+        /** Mazda Connect 2 (Китай, CarLife 1.0, HU_INFO из заглушек, h238/h359): VIDEO_DATA 16163 Б прошёл, 16518 и 19104 Б - ГУ перестала читать USB. */
+        const val MAZDA_20622111_CHANNEL = "20622111"
+        const val MAZDA_20622111_MAX_VIDEO_PACKET = 15_000
+        const val MAZDA_20622111_ART_BYTES = 12_000          // обложка в MEDIA_INFO: весь пакет должен остаться < 15000 Б
+        const val MAZDA_20622111_CEILING_BPS = 1_500_000  // IDR поменьше на случай, если ГУ не склеивает куски
+        const val VW_20082120_CHANNEL = "20082120"        // VW, protocol 1.0, versionName="RADIO" (h93)
+        const val VW_CNS3_20082122_CHANNEL = "20082122"   // VW CNS3 (Tharu и др.): рвёт USB через ~5,6 с PAUSE без heartbeat (h222)
+        const val VW_CNS3_20082134_CHANNEL = "20082134"   // VW CNS3 Tiguan L Pro: рвёт CarLife по Wi-Fi через ~5,1-5,7 с PAUSE (h224)
+        const val VW_CNS2_20082114_CHANNEL = "20082114"   // VW CNS2 Delphi (Tharu 2020): рвёт USB через 6-8 с PAUSE (h425)
+        const val SKODA_CNS3_21290002_CHANNEL = "21290002" // Skoda Octavia Pro CNS3: рвёт USB через 5-6 с PAUSE и статичного AA (h625)
+        const val VW_20082138_CHANNEL = "20082138"        // VW ID: HU_INFO manufacturer=model="VW BT 1538" (h196), "VW BT 4370" (ID. UNYX)
+        const val VW_BT_1420_MANUFACTURER = "VW BT 1420"  // VW (Павел): HU_INFO manufacturer=model, канал 20082138
+        const val VW_20082128_CHANNEL = "20082128"        // VW ID.6 Crozz (24.10.2026): HU_INFO manufacturer=model="VW BT 9491", тот же лимит IDR
+        const val VW_20082128_MANUFACTURER = "VW BT 9491"
+        /** ГУ VW ID с лимитом размера IDR: BT-имя (HU_INFO manufacturer) -> канал прошивки (STATISTIC_INFO); пара обязательна. */
+        val VW_ID_IDR_LIMIT_HUS = mapOf(VW_20082128_MANUFACTURER to VW_20082128_CHANNEL)
+        const val HYUNDAI_CN7_PRODUCT = "wp_cn7cpe_cn"    // HU_INFO.product Hyundai Elantra CN7 (h218): manufacturer QTI, model "sm6150_au for arm64"
+        /** Hyundai Tucson NX4 (Mobis CCNC, h242): HU_INFO board или model = "CCNC", запасной признак - STATISTIC_INFO channel 20022188; по одному производителю Mobis не включаем (другие ГУ Mobis). */
+        const val MOBIS_BOARD = "CCNC"
+        const val MOBIS_NX4C_CHANNEL = "20022188"
+        const val MOBIS_FPS = 20                          // Baidu MediaFormatUtils: frame-rate энкодера 20 при любом INIT_DONE
+        const val MOBIS_BITRATE = 3_840_000               // Baidu Recorder.getBitRate: ширина > 1280
+        const val PIONEER_MANUFACTURER = "Pioneer"        // HU_INFO Pioneer RM56E8B (Dongfeng DF6, h277): manufacturer="Pioneer" model="RM56E8B"
+        const val PIONEER_RM56_MODEL = "RM56E8B"
+        const val PIONEER_RM56_CEILING_BPS = 800_000      // 4-5 Мбит/с рвут USB за 25-30 с, 2 Мбит/с - 195 с, 800 кбит/с - 1301 с; test1: 1 Мбит/с + музыка 32 кГц (~1 Мбит/с PCM) рвёт за 23-140 с
+        const val PIONEER_RM56_MAX_FPS = 10
+        const val MEDIA_RATE = 48000
+        const val MEDIA_RATE_CN7 = 32000
+        const val MEDIA_RATE_PIONEER_RM56 = 22050         // h277: музыка 32 кГц добавляла на USB ~1 Мбит/с, 22,05 кГц - вдвое меньше
+        const val KEYFRAME_WAIT_MS = 1500L
+        const val SPS_CROP_KICK_MS = 2000L
+        const val KEYFRAME_RETRY_MS = 4000L
+
+        /** Свой IDR: не больше этого (буфер приёма C++-ГУ CarLife 600 КиБ, docs/carlife-protocol.md §6). */
+        const val SPLICE_MAX_BYTES = 560_000
+        const val SPLICE_WAIT_MS = 300L          // картинку из декодера ждём не дольше
+        const val SPLICE_QUIET_MS = 200L         // пауза в кадрах AA, после которой IDR собирается в фоне, без держания кадров
+        const val SPLICE_HOLD_MAX_MS = 250L      // дольше кадры AA не держим: отпускаем, IDR по готовности выбрасывается
+        const val SPLICE_SLICES = 4              // слайсов в сжатом IDR: собираются параллельно
+        const val SPLICE_STATS_MS = 30_000L
+        const val SPLICE_MAX_MISSES = 3          // таймаутов картинки подряд - пауза [SPLICE_BACKOFF_MS] и новая попытка
+        const val SPLICE_BACKOFF_MS = 5000L      // пауза своего IDR после [SPLICE_MAX_MISSES] пропусков (spliceWorks в ней false)
+        const val SPLICE_STALL_MS = 3000L        // декодер опорных картинок не двигается при идущих кадрах AA дольше - перезапуск
+        const val SPLICE_STALL_IDLE_MS = 1000L   // AA молчит дольше - кадров нет, декодер вставшим не считаем
+        const val SPLICE_KICK_GRACE_MS = 1500L   // h529-повтор IDR от AA откладывается на столько, если свой IDR вот-вот уйдёт
+        const val SPLICE_RETRY_MS = 1000L        // пауза между попытками (без IDR на ГУ, после отказа, пропуска, таймаута)
+
+        /** h295: тач на ГУ 20772121 при IDR старше этого порога в passthrough - вероятно, ГУ сбросил декодер (камера/меню). */
+        const val H295_IDR_STALE_MS = 2500L
+        const val H295_TRIGGER_MIN_MS = 3000L
+        const val H295_TOUCH_IDLE_MS = 4000L      // пауза в тачах от ГУ перед триггером (камера/меню)
+        const val H295_WAIT_GIVEUP_MS = 10_000L   // после цикла ждём IDR для лога и склейки SPS/PPS не дольше этого
+        private const val NEVER = Long.MIN_VALUE / 4
+    }
+}
+
+/**
+ * Держит AA-сессию моста: подключается к серверу ГУ, при отказе (connection refused) повторяет раз в
+ * 3 с, при завершении сессии сообщает ядру и переподключается. Сервер ГУ включает и перезапускает пользователь.
+ */
+class AaConnector(
+    private val core: AaBridgeCore,
+    private val creds: AapCredentials,
+    private val log: (String, Boolean) -> Unit,
+    private val options: () -> AapOptions = { AapOptions() },
+    private val retryMs: Long = 3000,
+    private val failures: ServerFailures = AaState.serverFailures,
+    private val sessionFactory: (AaVideoSink, AapOptions, (String, Boolean) -> Unit, (String, Boolean) -> Unit) -> AapSession =
+        { sink, o, lg, end -> AapSession(creds, sink, o, lg, onEnd = end) },
+) : AaLifecycle {
+    @Volatile private var stopping = false
+    @Volatile private var current: AapSession? = null
+    private var thread: Thread? = null
+    @Volatile var attempts = 0
+        private set
+
+    override fun start() {
+        val t = Thread({ loop() }, "aa-connector")
+        t.isDaemon = true
+        thread = t
+        t.start()
+    }
+
+    /** Корректно закрыть AA (ByeBye, EOF, close) и завершить нить; onDone вызывается из отдельной нити. */
+    fun stop() = stop {}
+
+    override fun stop(onDone: () -> Unit) {
+        stopping = true
+        current?.requestStop("мост остановлен")
+        val t = thread
+        Thread({
+            try {
+                t?.join(10_000)
+            } catch (_: InterruptedException) {
+            }
+            onDone()
+        }, "aa-connector-stop").start()
+    }
+
+    /** Подряд идущие подключения, закрытые AA до установления сессии (connect+EOF). */
+    @Volatile var bareEofs = 0
+        private set
+
+    private fun bareEofBackoffMs(n: Int): Long =
+        if (n <= 0) retryMs else minOf(retryMs shl minOf(n - 1, 4), BARE_EOF_BACKOFF_MAX_MS).coerceAtLeast(retryMs)
+
+    private fun loop() {
+        failures.reset()      // отказы прошлой поездки в эту не переносим
+        try {
+            connectLoop()
+        } finally {
+            failures.reset()
+        }
+    }
+
+    private fun connectLoop() {
+        var unavailableLogged = false
+        // решение о звуке зависит от FEATURE_CONFIG ГУ (BT-режим): ждём его до 2.5 с перед первым подключением
+        if (core.usbAudioEnabled && core.expectFeatureConfig) {
+            var waited = 0
+            while (!core.featureConfigSeen && waited < 2500 && !stopping) {
+                Thread.sleep(50)
+                waited += 50
+            }
+            log("BRIDGE FEATURE_CONFIG ${if (core.featureConfigSeen) "получен" else "не пришёл за $waited мс"}, звук по USB: ${core.audioViaUsb}", true)
+        }
+        while (!stopping) {
+            // ручная проба сервера (AaServerCheck, кнопка в «Для разработчиков») не должна держать сервер 5277, когда подключаемся мы
+            AaServerCheck.beforeBridgeConnect()
+            if (stopping) break      // Стоп мог прийти за время ожидания: подключаться уже нельзя, сессию на handshake не оборвать штатно
+            val ended = CountDownLatch(1)
+            var endReason = ""
+            core.onAaConnecting()
+            attempts++
+            val s = sessionFactory(core, options(), log) { reason, _ ->
+                endReason = reason
+                ended.countDown()
+            }
+            current = s
+            core.peer = s
+            s.start()
+            var establishedNoted = false
+            while (!ended.await(500, TimeUnit.MILLISECONDS)) {
+                if (stopping) s.requestStop("мост остановлен")
+                core.tick()
+                // пассивная диагностика для главного экрана: сессия установилась - сервер жив, прежние отказы не в счёт
+                if (s.established) {
+                    if (!establishedNoted) failures.onEstablished()
+                    establishedNoted = true
+                } else if (s.connected) {
+                    failures.onTcpAccepted()
+                }
+            }
+            core.peer = null
+            current = null
+            when {
+                s.established -> {
+                    if (!establishedNoted) failures.onEstablished()
+                    // сессия закончилась: ближайшие секунды отказ порта - норма, AA его снова поднимает
+                    failures.onSessionEnded()
+                }
+                !s.connected && endReason.startsWith(REFUSED_REASON) -> failures.onRefused()
+                s.connected && endReason.startsWith(AapSession.NO_VERSION_RESPONSE_REASON) -> failures.onNoVersionResponse()
+                else -> failures.reset()
+            }
+            // на ГУ «Запустите сервер ГУ» только когда он правда не отвечает; короткий отказ после ByeBye - «Подключаю»
+            if (failures.needsStart()) core.showStatus(AaBridgeCore.TEXT_START_SERVER)
+            if (!s.connected) {
+                if (!unavailableLogged) {
+                    log("BRIDGE сервер ГУ Android Auto недоступен (connection refused), повторяю каждые ${retryMs / 1000.0} с", true)
+                    unavailableLogged = true
+                }
+                AaState.status = "мост: жду сервер ГУ AA"
+            } else {
+                unavailableLogged = false
+                log("BRIDGE AA-сессия завершена (established=${s.established}, video=${s.videoStarted})", true)
+                AaState.status = "мост: AA отключился"
+                core.onAaEnded(s.established)
+                if (s.established) {
+                    bareEofs = 0
+                } else {
+                    // сервер принял TCP и сразу закрыл (h224): он жив, частые повторы лишь выкидывают AA на экран. Ждём дольше.
+                    bareEofs++
+                }
+            }
+            var left = if (s.connected && !s.established) bareEofBackoffMs(bareEofs) else retryMs
+            while (left > 0 && !stopping) {
+                Thread.sleep(minOf(left, 100))
+                left -= 100
+            }
+        }
+    }
+
+    companion object {
+        /** Потолок паузы между подключениями после голых EOF: 3, 6, 12, 24, 30 с. */
+        const val BARE_EOF_BACKOFF_MAX_MS = 30_000L
+
+        /** Причина конца сессии при ECONNREFUSED (другие сбои connect - таймаут, EPERM - отказом сервера не считаем). */
+        private const val REFUSED_REASON = AapSession.UNAVAILABLE_REASON + "ConnectException"
+    }
+}

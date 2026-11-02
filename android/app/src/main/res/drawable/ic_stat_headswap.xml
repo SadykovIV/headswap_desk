@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Значок статус-бара (IconAmber.dc.html, «статус-бар»): экран сплошной плашкой -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:pathData="M9.51 20.12A15 15 0 0 1 35.15 13.96"
+        android:strokeWidth="4.4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M38.49 27.88A15 15 0 0 1 12.85 34.04"
+        android:strokeWidth="4.4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M39.24 10.28 40.5 19.9 31.06 17.64z"
+        android:fillColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M8.76 37.72 7.5 28.1 16.94 30.36z"
+        android:fillColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M18.4 19h11.2A2.4 2.4 0 0 1 32 21.4v5.2a2.4 2.4 0 0 1-2.4 2.4H18.4A2.4 2.4 0 0 1 16 26.6v-5.2A2.4 2.4 0 0 1 18.4 19z"
+        android:fillColor="#FFFFFFFF" />
+</vector>

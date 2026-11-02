@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dev_title">For developers</string>
+
+    <string name="dev_section_mic">Head unit microphone</string>
+    <string name="dev_mic_vr_title" translatable="false">MODULE_STATUS VR</string>
+    <string name="dev_mic_vr_sub">Send VR 1/0 together with MIC_RECORD_* (like Baidu)</string>
+
+    <string name="dev_section_meta">Metadata on the head unit (applies after USB reconnect)</string>
+    <string name="dev_meta_music_title">Music</string>
+    <string name="dev_meta_music_sub">Track, cover and progress: MEDIA_INFO / MEDIA_PROGRESS_BAR</string>
+    <string name="dev_meta_navi_title">Navigation</string>
+    <string name="dev_meta_navi_sub">Turns and distance: NAVI_NEXT_TURN_INFO when the head unit subscribes</string>
+    <string name="dev_meta_icon_title">Field 6: icon</string>
+    <string name="dev_meta_icon_sub">bytes turnIconData, PNG arrow (like Baidu 8.6.7)</string>
+    <string name="dev_meta_time_title">Field 6: time</string>
+    <string name="dev_meta_time_sub">int32 time to the maneuver, s (like apollo-DuerOS)</string>
+    <string name="dev_meta_progress_title">Progress in seconds</string>
+    <string name="dev_meta_progress_sub">MEDIA_PROGRESS_BAR in s instead of ms (if the head unit shows 1000× too much)</string>
+
+    <string name="dev_section_music_chunk">Music packet size (experimental)</string>
+    <string name="dev_music_chunk_note">Smaller means a smaller buffer on the head unit but more packets over USB. If the sound stutters, switch back to “As Android Auto sends it”</string>
+    <string name="dev_section_voice_chunk">Voice packet size (experimental)</string>
+    <string name="dev_voice_chunk_note">Assistant replies and navigation prompts. Auto: 1024 B on VW CNS2 Delphi, otherwise as AA sends it</string>
+    <string name="dev_section_tts_preroll">Silence before prompt (experimental)</string>
+    <string name="dev_tts_preroll_note">Zeros after the prompt starts, so the head unit can open the audio path. Auto: 400 ms on VW</string>
+    <string name="dev_section_touch_decimation">Touch decimation (experimental)</string>
+    <string name="dev_touch_decimation_note">Skip every second MOVE: the head unit sends up to ~70 events per second, video runs at up to 30 fps. The last point before the finger lifts is never lost.</string>
+
+
+    <string name="dev_section_video">Video (applies on reconnect)</string>
+    <string name="dev_custom_res_title">Custom resolution</string>
+    <string name="dev_custom_res_sub">Instead of the mode from video settings</string>
+    <string name="dev_custom_w">Width</string>
+    <string name="dev_custom_h">Height</string>
+    <string name="dev_custom_hint">Width 640–2240, height 640–1080, even numbers</string>
+    <string name="dev_custom_from_hu">As the head unit asks · %1$d×%2$d</string>
+    <string name="dev_custom_k_plate">AA canvas</string>
+    <string name="dev_custom_k_margins">Margins</string>
+    <string name="dev_custom_k_scale">Scale</string>
+    <string name="dev_custom_k_bitrate">Bitrate</string>
+    <string name="dev_custom_v_size">%1$d×%2$d</string>
+    <string name="dev_custom_v_scale_one">1:1</string>
+    <string name="dev_custom_v_scale">×%1$.2f</string>
+    <string name="dev_custom_v_bitrate">up to %1$.1f Mbit/s</string>
+    <string name="dev_custom_err_width">Width is outside 640–2240</string>
+    <string name="dev_custom_err_height">Height is outside 640–1080</string>
+    <string name="dev_custom_err_odd">Values must be even</string>
+    <string name="dev_custom_err_portrait">Portrait screens are not supported</string>
+    <string name="dev_custom_err_encoder">The phone cannot encode this size</string>
+    <string name="dev_custom_err_fmt">%1$s. Not saved</string>
+    <string name="dev_custom_warn_16">Not a multiple of 16: the encoder on some phones may refuse this size</string>
+    <string name="dev_custom_warn_scale">Stretch above 1.3: the picture will be blurry</string>
+    <string name="dev_custom_warn_transcode">Re-encoding is off: it will be 1280×720</string>
+    <string name="dev_custom_note">Works only with re-encoding.</string>
+
+    <string name="dev_section_actions">Actions</string>
+    <string name="dev_action_scan">Scan</string>
+    <string name="dev_action_stop_bridge">Stop bridge</string>
+    <string name="dev_action_aa_settings">Android Auto settings</string>
+    <string name="dev_action_check_server">Check head unit server</string>
+    <string name="dev_check_server_alive">Head unit server is responding</string>
+    <string name="dev_check_server_refused">Head unit server refuses the connection</string>
+    <string name="dev_check_server_hung">Head unit server does not answer the handshake</string>
+    <string name="dev_check_server_error">Error: %1$s</string>
+    <string name="dev_check_server_bridge">The bridge is running: the check would break the current session. Stop the bridge first.</string>
+    <string name="dev_check_server_usb">A USB accessory (the car) is connected: the check would break the connection. Unplug the cable.</string>
+    <string name="dev_check_server_running">A check is already running</string>
+    <string name="dev_action_aa_selftest" translatable="false">AA selftest</string>
+    <string name="dev_action_mic_test" translatable="false">Mic test</string>
+
+    <string name="dev_section_status">Status</string>
+    <string name="dev_section_log">Log</string>
+    <plurals name="dev_log_lines">
+        <item quantity="one">%d line</item>
+        <item quantity="other">%d lines</item>
+    </plurals>
+    <string name="dev_log_meta">%1$s · %2$s</string>
+
+    <string name="dev_log_share">Share log</string>
+    <string name="dev_log_save_zip">Save .zip</string>
+    <string name="dev_log_clear">Clear</string>
+    <string name="dev_log_archive_note">The archive has: log, phone model and Android version, bridge settings, head unit data. No contacts or location.</string>
+
+    <string name="dev_section_notes">Notes</string>
+    <string name="dev_notes_adb">For adb on HyperOS, turn on “Install via USB” and “USB debugging (Security settings)” in developer options. The bridge does not need them.</string>
+    <string name="dev_open_dev_settings">Open developer options</string>
+    <string name="dev_open_failed">Can\'t open: %1$s</string>
+
+    <string name="dev_clear_title">Clear log?</string>
+    <string name="dev_clear_message">Lines on the screen will be erased and old headswap-*.log files will be deleted. The current file stays.</string>
+    <string name="dev_clear_confirm">Clear</string>
+    <string name="dev_clear_cancel">Cancel</string>
+    <plurals name="dev_deleted_old_files">
+        <item quantity="one">Deleted %d old file</item>
+        <item quantity="other">Deleted %d old files</item>
+    </plurals>
+</resources>

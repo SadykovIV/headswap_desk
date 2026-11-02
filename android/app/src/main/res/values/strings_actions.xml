@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ui/Actions.kt -->
+    <string name="act_open_aa_failed">Can\'t open Android Auto settings: %1$s</string>
+    <string name="act_open">Open</string>
+    <string name="act_cancel">Cancel</string>
+
+    <!-- ui/LogShare.kt -->
+    <string name="share_failed">Can\'t open Share: %1$s</string>
+    <string name="share_no_log">No log file yet</string>
+    <string name="share_subject_log">Headswap: log %1$s</string>
+    <string name="share_report_failed">Can\'t build the report: %1$s</string>
+    <string name="share_subject_report">Headswap: problem report</string>
+    <string name="share_zip_failed">Can\'t build the archive: %1$s</string>
+    <string name="share_saved">Saved to Downloads: %1$s</string>
+    <string name="share_subject_archive">Headswap: log archive</string>
+    <string name="share_size_mib">%1$s MiB</string>
+    <string name="share_size_kib">%1$d KiB</string>
+
+    <!-- BridgeService.kt -->
+    <string name="svc_bridge_failed">Bridge failed to start: %1$s</string>
+</resources>

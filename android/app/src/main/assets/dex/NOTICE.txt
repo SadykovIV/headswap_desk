@@ -1,0 +1,22 @@
+HeadSwap DeX bundles the unmodified official scrcpy-server 4.1.
+Project: https://github.com/Genymobile/scrcpy
+Release: https://github.com/Genymobile/scrcpy/releases/tag/v4.1
+Source commit: 2926c06c5dc3064ae6d8db706f1a98a37cfcf3f0
+Binary: https://github.com/Genymobile/scrcpy/releases/download/v4.1/scrcpy-server-v4.1
+SHA-256: deacb991ed2509715160ffdc7907e47b4160eb30d1566217e9047fd5b8850cae
+Copyright (C) 2018-2026 Genymobile and scrcpy contributors.
+License: Apache-2.0; see SCRCPY-LICENSE.txt.
+
+The ADB client dependency is Kadb 2.1.5, copyright Flyfish Studio and contributors.
+Project: https://github.com/flyfishxu/Kadb/tree/2.1.5
+License: Apache-2.0; see KADB-LICENSE.txt.
+Kadb includes work derived from Dadb, libadb-android and spake2-java.
+
+Shizuku API and Provider 13.1.5, copyright (c) 2021 RikkaW.
+Project: https://github.com/RikkaApps/Shizuku-API
+License: MIT; see SHIZUKU-API-LICENSE.txt.
+
+The HeadSwap DeX protocol client is a new implementation against the scrcpy 4.1
+protocol. No LocalDex application code was copied. Its public technical report
+informed the per-display freeform workaround for One UI 8.5/9:
+https://github.com/sam1am/localdex/blob/main/docs/TECHNICAL.md

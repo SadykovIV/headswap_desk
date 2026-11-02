@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="dev_title">Для разработчиков</string>
+
+    <string name="dev_section_mic">Микрофон ГУ</string>
+    <string name="dev_mic_vr_sub">Слать VR 1/0 вместе с MIC_RECORD_* (как Baidu)</string>
+
+    <string name="dev_section_meta">Метаданные на ГУ (с переподключения USB)</string>
+    <string name="dev_meta_music_title">Музыка</string>
+    <string name="dev_meta_music_sub">Трек, обложка и прогресс: MEDIA_INFO / MEDIA_PROGRESS_BAR</string>
+    <string name="dev_meta_navi_title">Навигация</string>
+    <string name="dev_meta_navi_sub">Повороты и дистанция: NAVI_NEXT_TURN_INFO по подписке ГУ</string>
+    <string name="dev_meta_icon_title">Поле 6: иконка</string>
+    <string name="dev_meta_icon_sub">bytes turnIconData, стрелка PNG (как Baidu 8.6.7)</string>
+    <string name="dev_meta_time_title">Поле 6: time</string>
+    <string name="dev_meta_time_sub">int32 time до манёвра, с (как apollo-DuerOS)</string>
+    <string name="dev_meta_progress_title">Прогресс в секундах</string>
+    <string name="dev_meta_progress_sub">MEDIA_PROGRESS_BAR в с вместо мс (если на ГУ в 1000 раз больше)</string>
+
+    <string name="dev_section_music_chunk">Размер пакета музыки (эксперимент)</string>
+    <string name="dev_music_chunk_note">Мельче — меньше буфер на ГУ, но больше пакетов по USB. Если звук заикается, верните «Как отдаёт Android Auto»</string>
+    <string name="dev_section_voice_chunk">Размер пакета голоса (эксперимент)</string>
+    <string name="dev_voice_chunk_note">Речь ассистента и подсказки навигатора. Авто: 1024 Б на VW CNS2 Delphi, иначе как отдаёт AA</string>
+    <string name="dev_section_tts_preroll">Тишина перед подсказкой (эксперимент)</string>
+    <string name="dev_tts_preroll_note">Нули после начала подсказки, ГУ успевает открыть звук. Авто: 400 мс на VW</string>
+    <string name="dev_section_touch_decimation">Прореживание тача (эксперимент)</string>
+    <string name="dev_touch_decimation_note">Пропускать каждый второй MOVE: ГУ шлёт до ~70 событий в секунду, видео до 30 к/с. Последняя точка перед отпусканием пальца не теряется.</string>
+
+
+    <string name="dev_section_video">Видео (с переподключения)</string>
+    <string name="dev_custom_res_title">Своё разрешение</string>
+    <string name="dev_custom_res_sub">Вместо режима из настроек видео</string>
+    <string name="dev_custom_w">Ширина</string>
+    <string name="dev_custom_h">Высота</string>
+    <string name="dev_custom_hint">Ширина 640–2240, высота 640–1080, чётные</string>
+    <string name="dev_custom_from_hu">Как просит ГУ · %1$d×%2$d</string>
+    <string name="dev_custom_k_plate">Подложка AA</string>
+    <string name="dev_custom_k_margins">Поля</string>
+    <string name="dev_custom_k_scale">Масштаб</string>
+    <string name="dev_custom_k_bitrate">Битрейт</string>
+    <string name="dev_custom_v_size">%1$d×%2$d</string>
+    <string name="dev_custom_v_scale_one">1:1</string>
+    <string name="dev_custom_v_scale">×%1$.2f</string>
+    <string name="dev_custom_v_bitrate">до %1$.1f Мбит/с</string>
+    <string name="dev_custom_err_width">Ширина вне 640–2240</string>
+    <string name="dev_custom_err_height">Высота вне 640–1080</string>
+    <string name="dev_custom_err_odd">Нужны чётные значения</string>
+    <string name="dev_custom_err_portrait">Вертикальные экраны не поддерживаются</string>
+    <string name="dev_custom_err_encoder">Телефон не кодирует такой размер</string>
+    <string name="dev_custom_err_fmt">%1$s. Не сохранено</string>
+    <string name="dev_custom_warn_16">Не кратно 16: на части телефонов кодировщик может не взять такой размер</string>
+    <string name="dev_custom_warn_scale">Растяжение больше 1,3: картинка будет мыльной</string>
+    <string name="dev_custom_warn_transcode">Перекодирование выключено — будет 1280×720</string>
+    <string name="dev_custom_note">Работает только с перекодированием.</string>
+
+    <string name="dev_section_actions">Действия</string>
+    <string name="dev_action_scan">Сканировать</string>
+    <string name="dev_action_stop_bridge">Стоп моста</string>
+    <string name="dev_action_aa_settings">Настройки AA</string>
+    <string name="dev_action_check_server">Проверить сервер ГУ</string>
+    <string name="dev_check_server_alive">Сервер ГУ отвечает</string>
+    <string name="dev_check_server_refused">Сервер ГУ отказывает в подключении</string>
+    <string name="dev_check_server_hung">Сервер ГУ не отвечает на рукопожатие</string>
+    <string name="dev_check_server_error">Ошибка: %1$s</string>
+    <string name="dev_check_server_bridge">Мост работает: проверка сбила бы текущую сессию. Сначала остановите мост.</string>
+    <string name="dev_check_server_usb">Подключён USB-аксессуар (машина): проверка сбила бы подключение. Отключите кабель.</string>
+    <string name="dev_check_server_running">Проверка уже идёт</string>
+
+    <string name="dev_section_status">Статус</string>
+    <string name="dev_section_log">Лог</string>
+    <plurals name="dev_log_lines">
+        <item quantity="one">%d строка</item>
+        <item quantity="few">%d строки</item>
+        <item quantity="many">%d строк</item>
+        <item quantity="other">%d строк</item>
+    </plurals>
+    <string name="dev_log_meta">%1$s · %2$s</string>
+
+    <string name="dev_log_share">Поделиться логом</string>
+    <string name="dev_log_save_zip">Сохранить .zip</string>
+    <string name="dev_log_clear">Очистить</string>
+    <string name="dev_log_archive_note">В архив: лог, модель и версия Android, настройки моста, данные ГУ. Без контактов и геопозиции.</string>
+
+    <string name="dev_section_notes">Заметки</string>
+    <string name="dev_notes_adb">Для adb на HyperOS включите в параметрах разработчика «Установка через USB» и «Отладка по USB (настройки безопасности)». Для работы моста они не нужны.</string>
+    <string name="dev_open_dev_settings">Открыть параметры разработчика</string>
+    <string name="dev_open_failed">Не открыть: %1$s</string>
+
+    <string name="dev_clear_title">Очистить лог?</string>
+    <string name="dev_clear_message">Строки на экране сотрутся, старые файлы headswap-*.log удалятся. Текущий файл останется.</string>
+    <string name="dev_clear_confirm">Очистить</string>
+    <string name="dev_clear_cancel">Отмена</string>
+    <plurals name="dev_deleted_old_files">
+        <item quantity="one">Удалено старых файлов: %d</item>
+        <item quantity="few">Удалено старых файлов: %d</item>
+        <item quantity="many">Удалено старых файлов: %d</item>
+        <item quantity="other">Удалено старых файлов: %d</item>
+    </plurals>
+</resources>

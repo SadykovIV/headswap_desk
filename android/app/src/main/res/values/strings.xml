@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Default language is English; Russian lives in values-ru. Area-specific strings: strings_<area>.xml. -->
+<resources>
+    <string name="app_name" translatable="false">Headswap</string>
+    <string name="notif_channel_bridge" translatable="false">Headswap</string>
+    <string name="action_stop">Stop</string>
+    <string name="action_open_aa">Open Android Auto</string>
+
+    <string name="lang_title">Language</string>
+    <string name="lang_system">System</string>
+    <!-- Language names are written in their own language and are not translated. -->
+    <string name="lang_en" translatable="false">English</string>
+    <string name="lang_ru" translatable="false">Русский</string>
+</resources>

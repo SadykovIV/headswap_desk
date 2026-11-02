@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 6-11: пароль Wi-Fi машины (car_wifi.xml) не уходит в облачный бэкап; остальное как по умолчанию -->
+<full-backup-content>
+    <exclude domain="sharedpref" path="car_wifi.xml" />
+</full-backup-content>

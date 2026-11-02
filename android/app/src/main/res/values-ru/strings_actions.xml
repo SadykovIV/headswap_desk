@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ui/Actions.kt -->
+    <string name="act_open_aa_failed">Не открыть настройки AA: %1$s</string>
+    <string name="act_open">Открыть</string>
+    <string name="act_cancel">Отмена</string>
+
+    <!-- ui/LogShare.kt -->
+    <string name="share_failed">Не открыть «Поделиться»: %1$s</string>
+    <string name="share_no_log">Файла лога пока нет</string>
+    <string name="share_subject_log">Headswap: лог %1$s</string>
+    <string name="share_report_failed">Не собрать отчёт: %1$s</string>
+    <string name="share_subject_report">Headswap: отчёт о проблеме</string>
+    <string name="share_zip_failed">Не собрать архив: %1$s</string>
+    <string name="share_saved">Сохранено в Загрузки: %1$s</string>
+    <string name="share_subject_archive">Headswap: архив логов</string>
+    <string name="share_size_mib">%1$s МиБ</string>
+    <string name="share_size_kib">%1$d КиБ</string>
+
+    <!-- BridgeService.kt -->
+    <string name="svc_bridge_failed">Мост не стартовал: %1$s</string>
+</resources>

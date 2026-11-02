@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Settings screen -->
+    <string name="set_title">Настройки</string>
+    <string name="set_back">Назад</string>
+
+    <string name="theme_title">Тема</string>
+    <string name="theme_system">Как в системе</string>
+    <string name="theme_light">Светлая</string>
+    <string name="theme_medium">Средняя</string>
+    <string name="theme_dark">Тёмная</string>
+
+    <string name="set_sound">Звук</string>
+    <string name="set_usb_audio_title">Звук через Headswap</string>
+    <string name="set_usb_audio_sub">В динамики машины по кабелю или Wi-Fi. Выключено — по Bluetooth</string>
+    <string name="set_calls_title">Сообщать ГУ о звонках</string>
+    <string name="set_calls_sub">Нужно разрешение «Телефон»: Headswap узнаёт о входящем и сообщает машине, музыка на время звонка глушится</string>
+
+    <string name="eq_title">Эквалайзер</string>
+    <string name="eq_presets">Пресет</string>
+    <string name="eq_preset_flat">Без обработки</string>
+    <string name="eq_preset_bass">Бас</string>
+    <string name="eq_preset_vocal">Вокал</string>
+    <string name="eq_preset_rock">Рок</string>
+    <string name="eq_preset_electronic">Электроника</string>
+    <string name="eq_preset_custom">Свой</string>
+    <string name="eq_bands">Полосы</string>
+    <string name="eq_preamp">Предусиление</string>
+    <string name="eq_reset">Сбросить</string>
+    <string name="eq_db">%1$s дБ</string>
+    <string name="eq_hz">%1$s Гц</string>
+    <string name="eq_khz">%1$s кГц</string>
+    <string name="eq_note">Только музыка: навигационные подсказки и голос не обрабатываются. Работает по кабелю и по Wi-Fi, применяется сразу.</string>
+    <string name="eq_usb_only">Работает только при звуке через Headswap, сейчас звук идёт по Bluetooth</string>
+    <string name="eq_sum_usb_only">Работает только при звуке через Headswap</string>
+    <string name="eq_sum">эквалайзер: %1$s</string>
+
+    <string name="set_video">Видео</string>
+    <string name="set_transcode_title">Перекодирование</string>
+    <string name="set_transcode_desc">Смартфон сам перекодирует видео под экран ГУ: любое разрешение и частота кадров.</string>
+    <string name="set_transcode_plus">+ Стабильнее, подходит любой ГУ</string>
+    <string name="set_transcode_minus">− Нагрузка на телефон, расход батареи, задержка +60 мс</string>
+    <string name="set_direct_title">Прямой проброс</string>
+    <string name="set_direct_desc">Видео АА уходит в ГУ как есть. Широкие экраны ГУ обрезает сама, без телефона.</string>
+    <string name="set_direct_plus">+ Меньше задержка, нагрев и расход батареи</string>
+    <string name="set_direct_minus">− Частота кадров не регулируется</string>
+
+    <string name="set_resolution">Разрешение видео</string>
+    <string name="set_res_pick">Выбрать разрешение</string>
+    <string name="set_res_group_standard">Обычные экраны</string>
+    <string name="set_res_group_wide">Широкие экраны</string>
+    <string name="set_res_ratio_wide_976">2,3:1</string>
+    <string name="set_apply_next">Применится при следующем подключении.</string>
+    <string name="set_needs_transcode">Нужно перекодирование</string>
+    <string name="set_custom_res_active">Действует своё разрешение %1$s (%2$s)</string>
+
+    <string name="set_music_rate">Частота музыки</string>
+    <string name="set_music_rate_note">Ниже частота — меньше нагрузка на USB и слабое ГУ, но хуже качество. Авто: 48 кГц, для ГУ Hyundai CN7 — 32 кГц. Применится при следующем подключении.</string>
+    <string name="set_fps">Частота кадров</string>
+    <string name="set_fps_note">Применится при следующем подключении. В прямом пробросе частота не регулируется.</string>
+    <string name="set_fps_direct">В прямом пробросе частоту задаёт Android Auto</string>
+    <string name="set_aa_density">Масштаб интерфейса AA</string>
+    <string name="set_aa_density_auto">Авто · %1$d dpi</string>
+    <string name="set_aa_density_manual">%1$d dpi</string>
+    <string name="set_aa_density_auto_sub">как задано для разрешения</string>
+    <string name="set_aa_density_manual_sub">вручную, авто для разрешения: %1$d</string>
+    <string name="set_aa_density_reset">Авто</string>
+    <string name="set_aa_density_smaller">Мельче</string>
+    <string name="set_aa_density_larger">Крупнее</string>
+    <string name="set_aa_density_note">Больше dpi — крупнее. Применится при следующем подключении. При высоком dpi Android Auto может переключить раскладку: одна колонка вместо разделённого экрана.</string>
+    <string name="set_sum_density">%1$d dpi</string>
+
+    <string name="set_cert">Сертификат ГУ</string>
+    <string name="set_cert_hint">Смените, если Android Auto не подключается</string>
+
+    <string name="set_car_make">Марка автомобиля</string>
+    <string name="set_car_make_default">Без марки (видео и YouTube через Fermata работают)</string>
+    <string name="set_car_make_default_short">Без марки</string>
+    <string name="set_car_make_note">Логотип марки на кнопке выхода из Android Auto. С выбранной маркой Android Auto скрывает сторонние видеоприложения (Fermata Auto). Применится при следующем подключении.</string>
+
+    <string name="set_mic">Микрофон</string>
+    <string name="mic_car_title">Машина</string>
+    <string name="mic_car_sub">Микрофон магнитолы</string>
+    <string name="mic_phone_title">Телефон</string>
+    <string name="mic_phone_sub">Микрофон телефона, нужен доступ к записи звука</string>
+    <string name="mic_auto_title">Авто</string>
+    <string name="mic_auto_sub">Сначала машина, при молчании 2 с — телефон</string>
+    <string name="mic_no_permission">Нет доступа к записи звука: микрофон телефона не заработает.</string>
+
+    <string name="set_report_title">Сообщить о проблеме</string>
+    <string name="set_report_note">лог + отчёт</string>
+    <string name="set_rerun_setup">Пройти настройку заново</string>
+    <string name="set_check_ready">Проверить готовность</string>
+    <string name="set_for_devs">Для разработчиков</string>
+    <string name="set_support">Поддержать Егора</string>
+    <string name="set_support_url">https://yegorkapomidorka.com/headswap/support/</string>
+    <string name="set_sec_appearance">Внешний вид</string>
+    <string name="set_sec_sound">Звук и микрофон</string>
+    <string name="set_sec_headunit">Головное устройство</string>
+    <string name="set_sec_apps">Приложения для магнитолы</string>
+    <string name="set_sum_apps">Найдено: %1$d</string>
+    <string name="apps_warn_banner">Видео — только на стоянке. На ходу смотрите на дорогу: используете на свой страх и риск.</string>
+    <string name="apps_warn_title">Видео и движение</string>
+    <string name="apps_warn_text">Headswap не блокирует видео в движении. Водитель отвечает за безопасность сам: не смотрите видео за рулём, включайте его только на стоянке.</string>
+    <string name="apps_warn_ok">Понятно</string>
+    <string name="apps_installed_title">Установлено на телефоне</string>
+    <string name="apps_installed_note">Не из Google Play — видно в Android Auto только с «Неизвестными источниками»</string>
+    <string name="apps_installed_empty">Пока ничего не найдено. Поставьте приложение из списка ниже или любое другое приложение для Android Auto.</string>
+    <string name="apps_recommended_title">Рекомендуем</string>
+    <string name="apps_download">Скачать</string>
+    <string name="apps_open">Открыть</string>
+    <string name="apps_fermata_desc">Видео с телефона, YouTube, зеркало экрана</string>
+    <string name="apps_parkedtube_desc">YouTube на весь экран магнитолы, русская клавиатура</string>
+    <string name="apps_aabrowser_desc">Браузер на весь экран магнитолы</string>
+    <string name="apps_aabrowser_req">Нужен Android 15+</string>
+    <string name="apps_unsupported">На этом телефоне не пойдёт: нужен Android 15 или новее.</string>
+    <string name="apps_hint_title">Не вижу приложение в Android Auto</string>
+    <string name="apps_hint_text">Проверьте галку «Неизвестные источники» в Android Auto и что в настройке «Марка автомобиля» выбрано «Без марки» — с выбранной маркой Android Auto скрывает видеоприложения. Затем перезапустите сервер ГУ. После обновления Android Auto приложения иногда пропадают — это на стороне Google.</string>
+    <string name="set_mode">Режим</string>
+    <string name="set_help">Помощь</string>
+    <string name="set_sum_appearance">Язык: %1$s · тема: %2$s</string>
+    <string name="set_sum_mic">микрофон: %1$s</string>
+    <string name="set_sum_headunit">Сертификат %1$s</string>
+    <string name="set_footer">Headswap %1$s</string>
+
+    <!-- Video modes (VideoMode) -->
+    <string name="video_r800_title">800×480</string>
+    <string name="video_r800_sub">Для небольших экранов</string>
+    <string name="video_r1024_title">1024×600</string>
+    <string name="video_r1024_sub">Для ГУ с экраном 1024×600, без растяжения</string>
+    <string name="video_r720_title">1280×720 (стандарт)</string>
+    <string name="video_r720_sub">Подходит большинству ГУ</string>
+    <string name="video_r1080_title">1920×1080</string>
+    <string name="video_r1080_sub">Чётче, но тяжелее для телефона и ГУ</string>
+    <string name="video_wide_title">Широкий 8:3 (обрезка)</string>
+    <string name="video_wide_sub">Для вытянутых экранов: 1280×480, крупно</string>
+    <string name="video_wide_mid_title">Широкий 8:3 средний (Mazda CX-5)</string>
+    <string name="video_wide_mid_sub">1728×648: родное разрешение экрана Мазды</string>
+    <string name="video_wide_hd_title">Широкий 8:3 HD (обрезка)</string>
+    <string name="video_wide_hd_sub">1920×720: чётче и мельче, больше влезает на экран</string>
+    <string name="video_wide_640_title">Широкий 3:1 (Citroen C5 X)</string>
+    <string name="video_wide_640_sub">1920×640: родное разрешение экрана Citroen C5 X, без полей по бокам</string>
+    <string name="video_wide_2_1_title">Широкий 2:1 (Skoda Octavia Pro)</string>
+    <string name="video_wide_2_1_sub">1280×640: родное разрешение экрана Octavia, без растяжения</string>
+    <string name="video_wide_976_title">Широкий 2240×976 (VW Tiguan L Pro)</string>
+    <string name="video_wide_976_sub">Широкая обрезка под окно CarLife на ГУ VW CNS3</string>
+    <string name="video_wide_836_title">Широкий 1920×836 (VW Tiguan L Pro, проброс)</string>
+    <string name="video_wide_836_sub">Пропорция окна 2240×976 без растяжения на телефоне: растягивает ГУ. Для кропа без перекодирования</string>
+
+    <!-- Частота музыки (MusicRate) -->
+    <string name="mrate_auto">Авто</string>
+    <string name="mrate_48">48 кГц</string>
+    <string name="mrate_44">44,1 кГц</string>
+    <string name="mrate_32">32 кГц</string>
+    <string name="mrate_24">24 кГц</string>
+    <string name="mrate_22">22 кГц</string>
+
+    <!-- Размер пакета музыки (MediaChunk) -->
+    <string name="mchunk_auto">Как отдаёт Android Auto</string>
+    <string name="mchunk_4096">4096 Б</string>
+    <string name="mchunk_2560">2560 Б (как Baidu)</string>
+    <string name="mchunk_2048">2048 Б</string>
+    <string name="mchunk_1024">1024 Б</string>
+
+    <!-- Размер пакета голоса (VoiceChunk) -->
+    <string name="vchunk_auto">Авто</string>
+    <string name="vchunk_2048">2048 Б</string>
+    <string name="vchunk_1024">1024 Б</string>
+    <string name="vchunk_512">512 Б</string>
+
+    <!-- Тишина перед подсказкой (TtsPreroll) -->
+    <string name="tpreroll_auto">Авто</string>
+    <string name="tpreroll_0">Нет</string>
+    <string name="tpreroll_100">100 мс</string>
+    <string name="tpreroll_200">200 мс</string>
+    <string name="tpreroll_400">400 мс</string>
+
+    <!-- Прореживание тача (TouchDecimation) -->
+    <string name="tdec_off">Выкл</string>
+    <string name="tdec_x2">×2</string>
+
+    <!-- Frame rate (FpsSetting) -->
+    <string name="fps_auto_title">Авто</string>
+    <string name="fps_auto_sub">Как просит ГУ</string>
+    <string name="fps_15_title">15 кадров/с</string>
+    <string name="fps_15_sub">Легче для слабых ГУ и канала</string>
+    <string name="fps_30_title">30 кадров/с</string>
+    <string name="fps_30_sub">Плавнее, но тяжелее</string>
+
+    <!-- Беспровод (ветка B) -->
+    <string name="wl_title">По воздуху</string>
+    <string name="wl_note">Для машин с беспроводным CarLife. Включите точку доступа на телефоне, подключите к ней ГУ (в меню ГУ: Wi-Fi), откройте CarLife на ГУ и нажмите кнопку ниже. Кабель не нужен; если вставить кабель, побеждает USB.</string>
+    <string name="wl_start">Ждать машину по Wi-Fi</string>
+    <string name="wl_status_line">Состояние: %1$s</string>
+    <string name="wl_off">выключено</string>
+    <string name="wl_no_permission">Без разрешения “Устройства поблизости” машина не сможет подключиться по Wi-Fi</string>
+    <string name="wl_report">Отправить отчёт о связи по воздуху</string>
+    <string name="wl_car_line">Машина: %1$s</string>
+    <string name="wl_car_none">не выбрана</string>
+    <string name="wl_car_note">Когда телефон подключится к этой машине по Bluetooth, Headswap сам начнёт ждать её по Wi-Fi</string>
+    <string name="wl_car_pick">Выбрать машину</string>
+    <string name="wl_car_forget">Забыть машину</string>
+    <string name="wl_car_no_permission">Без разрешения “Устройства поблизости” события Bluetooth от машины не доходят</string>
+    <string name="wl_car_unavailable">Этот телефон не умеет привязывать машину (нет companion device setup)</string>
+    <string name="wl_cw_note">Если телефон держится за другую сеть Wi-Fi (например, домашнюю), Headswap сам войдёт в точку доступа машины: интернет остаётся на основной сети. Введите имя и пароль, которые показывает ГУ.</string>
+    <string name="wl_cw_line">Wi-Fi машины: %1$s</string>
+    <string name="wl_cw_none">не задан</string>
+    <string name="wl_cw_set">задан: %1$s</string>
+    <string name="wl_cw_ssid_hint">Имя сети (SSID)</string>
+    <string name="wl_cw_pass_hint">Пароль (пусто — открытая сеть)</string>
+    <string name="wl_cw_save">Сохранить и проверить</string>
+    <string name="wl_cw_forget">Удалить</string>
+    <string name="wl_cw_need_ssid">Введите имя сети</string>
+    <string name="wl_cw_checking">Подключаюсь к Wi-Fi машины… подтвердите системный запрос</string>
+    <string name="wl_cw_ok">Подключилась к Wi-Fi машины</string>
+    <string name="wl_cw_fail">Не подключилась: машина вне зоны, неверный пароль или отказ в запросе</string>
+
+    <!-- Мой автомобиль (CarPreset) -->
+    <string name="car_title">Мой автомобиль</string>
+    <string name="car_other_title">Моей машины нет в списке</string>
+    <string name="car_citroen_c5_x">Citroen C5 X</string>
+    <string name="car_dongfeng_df6_2023">Dongfeng DF6 2023</string>
+    <string name="car_peugeot_5008_2024">Dongfeng Peugeot 5008 2024</string>
+    <string name="car_honda_breeze_2">Honda Breeze, 2 поколение</string>
+    <string name="car_honda_crv_6">Honda CR-V, 6 поколение, дорестайл</string>
+    <string name="car_honda_crv_2026">Honda CR-V 2026 1.5T</string>
+    <string name="car_honda_crv_2026_hybrid">Honda CR-V 2026 гибрид</string>
+    <string name="car_honda_vezel_2022">Honda Vezel 2022–2024 (GAC Honda)</string>
+    <string name="car_hyundai_elantra_7">Hyundai Elantra, 7 поколение, дорестайл</string>
+    <string name="car_hyundai_ix35_2021">Hyundai ix35 2021</string>
+    <string name="car_jetta_vs">Jetta VS5/VS7 (только с Baidu CarLife, не J-Link)</string>
+    <string name="car_kia_k3_2023">Kia K3 2023</string>
+    <string name="car_kia_sportage_ace">Kia Sportage Ace</string>
+    <string name="car_mazda_3_cn_2025">Mazda 3 2025 (Китай)</string>
+    <string name="car_mazda_cx5_2025">Mazda CX-5 2025–2026</string>
+    <string name="car_mazda_cx50">Mazda CX-50</string>
+    <string name="car_mitsubishi_outlander_4">Mitsubishi Outlander 4 2022</string>
+    <string name="car_skoda_kamiq_gt_2021">Skoda Kamiq GT 2021</string>
+    <string name="car_skoda_octavia_pro">Skoda Octavia Pro</string>
+    <string name="car_toyota_corolla_cross_2024">Toyota Corolla Cross 2024–2025</string>
+    <string name="car_toyota_levin">Toyota Levin</string>
+    <string name="car_vw_bora_2021">Volkswagen Bora 2021</string>
+    <string name="car_vw_golf_8_pro">Volkswagen Golf 8 Pro 2021</string>
+    <string name="car_vw_id_unyx">Volkswagen ID.Unyx</string>
+    <string name="car_vw_lamando_l">Volkswagen Lamando L</string>
+    <string name="car_vw_sagitar_2021">Volkswagen Sagitar 2021–2022, дорестайл</string>
+    <string name="car_vw_troc_2026">Volkswagen T-Roc рестайлинг 2026</string>
+    <string name="car_vw_tharu_xr">Volkswagen Tharu XR 2025–2026</string>
+    <string name="car_vw_tiguan_l_pro">Volkswagen Tiguan L Pro / Teramont Pro</string>
+    <string name="car_field">Автомобиль</string>
+    <string name="car_pick_hint">Выберите машину</string>
+    <string name="car_will_apply">Будет применено</string>
+    <string name="car_label_mode">Режим видео</string>
+    <string name="car_auto">Авто</string>
+    <string name="car_value_keep">Без изменений</string>
+    <string name="car_apply">Применить</string>
+    <string name="fps_60_title">60 кадров/с</string>
+    <string name="fps_60_sub">Повышенная частота; нужна поддержка телефона и магнитолы</string>
+</resources>

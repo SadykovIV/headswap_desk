@@ -1,0 +1,15 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+captures/
+
+# ключи и сертификат head unit AA не публикуем: кладутся локально (см. README)
+app/src/main/assets/aa/

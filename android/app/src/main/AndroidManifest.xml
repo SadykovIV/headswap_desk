@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <permission android:name="${applicationId}.permission.EMBED_DISPLAY" android:protectionLevel="signature" />
+
+    <uses-feature
+        android:name="android.hardware.usb.accessory"
+        android:required="true" />
+    <!-- выбор машины (автостарт беспровода по Bluetooth); без CDM приложение работает, только без привязки -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <!-- Local wireless ADB pairing/connect and the CarLife transport. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- одно из условий для foreground-сервиса connectedDevice; обычное разрешение, выдаётся при установке -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- Wi-Fi машины (WifiNetworkSpecifier) и признак STA+STA; обычные разрешения, выдаются при установке -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- какие интерфейсы Wi-Fi заняты телефоном-клиентом, а какие хотспотом (h420); обычное разрешение -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- Android 17 (targetSdk 37): локальная сеть (входящий TCP беспроводного CarLife, UDP-маяк 7999/8999). Loopback (AA 5277, debug) не требует. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <!-- беспровод, ветка A (диагностика): RFCOMM-сервер carlife, ГУ подключается сама; старые разрешения до Android 11 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <!-- беспровод, ветка A: вход в Wi-Fi Direct-группу ГУ (WifiP2pManager.connect); до Android 13 вместо него геолокация -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <!-- Android 12: запрос одной FINE без COARSE система молча отклоняет -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="32" />
+    <!-- привязка машины через CompanionDeviceManager: исключения на запуск foreground-сервиса и работу в фоне; обычные разрешения -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <!-- онбординг: запрос исключения из оптимизации батареи (HyperOS убивает фон) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- без queries на API 30+ пакет Android Auto не виден (проверка установки, запуск настроек) -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="ru.drivedeck.headswap" />
+        <package android:name="com.sec.android.app.launcher" />
+        <package android:name="com.google.android.projection.gearhead" />
+        <!-- раздел «Приложения для магнитолы»: статус установки и запуск каталога (Fermata Auto, ParkedTube, AABrowser) -->
+        <package android:name="me.aap.fermata.auto.dear.google.why" />
+        <package android:name="dev.codex.aaparkedyoutube" />
+        <package android:name="com.kododake.aabrowser" />
+        <!-- поиск любых приложений для Android Auto: плееры (сервис) и полноэкранные (activity) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="com.google.android.gms.car.category.CATEGORY_PROJECTION" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.CAR_LAUNCHER" />
+        </intent>
+    </queries>
+
+    <!-- Explicit computer activation only. Default target process is the main app, not :delegated. -->
+    <instrumentation
+        android:name="com.headswap.desk.dex.DelegatedDesktopInstrumentation"
+        android:targetPackage="${applicationId}"
+        android:functionalTest="true"
+        android:handleProfiling="false" />
+
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="HeadSwap Desktop"
+        android:localeConfig="@xml/locales_config"
+        android:enableOnBackInvokedCallback="false"
+        android:theme="@style/Theme.Headswap.Dex">
+
+        <activity android:name=".dex.PhonePanelWakeActivity" android:exported="false"
+            android:excludeFromRecents="true" android:taskAffinity="${applicationId}.phonepanel"
+            android:resizeableActivity="false" android:hardwareAccelerated="true"
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen" />
+
+        <activity
+            android:name=".dex.DexSetupActivity"
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
+        </activity>
+
+        <activity android:name=".MainActivity" android:exported="false" />
+
+        <!-- Explicitly launched by the shell service on its own display only; never a phone HOME. -->
+        <activity
+            android:name=".desktop.AndroidDesktopActivity"
+            android:exported="true"
+            android:resizeableActivity="true"
+            android:excludeFromRecents="true"
+            android:taskAffinity="${applicationId}.desktop"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.Headswap.Dex" />
+
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <!-- раздача логов и отчётов через «Поделиться» (только чтение, без AndroidX FileProvider) -->
+        <provider
+            android:name=".ui.LogProvider"
+            android:authorities="${applicationId}.logs"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <!-- кнопка «Стоп» в уведомлении -->
+        <receiver
+            android:name=".ui.StopReceiver"
+            android:exported="false" />
+
+        <!-- автостарт беспровода: ACL выбранной машины; выключен, пока машина не выбрана (CarProfile.enableTrigger) -->
+        <receiver
+            android:name=".link.car.CarAclReceiver"
+            android:enabled="false"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.device.action.ACL_DISCONNECTED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- статус установки обновления (PackageInstaller) -->
+        <receiver
+            android:name=".update.InstallReceiver"
+            android:exported="false" />
+
+        <!-- CarLife USB connection; this fork does not capture microphone audio. -->
+        <service
+            android:name=".BridgeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+        <service
+            android:name=".embed.EmbeddedDisplayService"
+            android:exported="true"
+            android:permission="${applicationId}.permission.EMBED_DISPLAY" />
+        <service
+            android:name=".dex.DelegatedDesktopService"
+            android:exported="false"
+            android:process=":delegated" />
+    </application>
+</manifest>

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- update/Updater.kt: settings, home banner, dialogs -->
+    <string name="upd_title">Updates</string>
+    <string name="upd_check_title">Check for updates</string>
+    <string name="upd_check_sub">Look for a new version on GitHub when the app opens</string>
+    <string name="upd_status_never">Not checked yet</string>
+    <string name="upd_status_latest">You have the latest version</string>
+    <string name="upd_status_checking">Checking…</string>
+    <string name="upd_status_available">Version %1$s is available</string>
+    <string name="upd_status_downloading">Downloading %1$s… %2$d%%</string>
+    <string name="upd_status_installing">Opening the installer…</string>
+    <string name="upd_btn_check">Check</string>
+    <string name="upd_btn_update">Update</string>
+    <string name="upd_btn_update_now">Update now</string>
+    <string name="upd_banner_sub">Tap to update, settings stay</string>
+    <string name="upd_later">Later</string>
+
+    <string name="upd_dialog_title">Headswap %1$s</string>
+    <string name="upd_dialog_size">Download: %1$s. The update installs over the current version, settings stay.</string>
+    <string name="upd_dialog_no_size">The update installs over the current version, settings stay.</string>
+    <string name="upd_dialog_bridge">The car is connected now: the update will drop the connection.</string>
+    <string name="upd_unknown_title">Allow installing updates</string>
+    <string name="upd_unknown_message">Android settings will open: turn on “Allow from this source” for Headswap, then come back and tap “Update” again.</string>
+
+    <string name="upd_err_check">Couldn\'t check: %1$s</string>
+    <string name="upd_err_download">Couldn\'t download the update: %1$s</string>
+    <string name="upd_err_install">Couldn\'t install the update: %1$s</string>
+    <string name="upd_err_no_release">no releases on GitHub yet</string>
+    <string name="upd_err_no_apk">release %1$s has no APK</string>
+    <string name="upd_err_incomplete">the file was not downloaded completely</string>
+    <string name="upd_err_checksum">checksum mismatch</string>
+    <string name="upd_err_not_apk">the file is not a Headswap APK</string>
+    <string name="upd_err_not_newer">version on GitHub (%1$s) is not newer than the installed one (%2$s)</string>
+    <string name="upd_err_conflict">it conflicts with the installed app (signed with a different key?)</string>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- version намеренно не указана: не зависеть от строки версии ГУ -->
+    <usb-accessory
+        manufacturer="Baidu"
+        model="CarLife" />
+    <usb-accessory
+        manufacturer="Mac HU Lab"
+        model="CarLife HU" />
+</resources>

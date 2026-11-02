@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Логотип Headswap для шапки (Main.dc.html); цвет задаётся tint -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:pathData="M9.51 20.12A15 15 0 0 1 35.49 14.36"
+        android:strokeWidth="4.4"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M38.49 27.88A15 15 0 0 1 12.51 33.64"
+        android:strokeWidth="4.4"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M39.32 11.15 39.99 19.72 31.66 17.58z"
+        android:fillColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M8.68 36.86 8.01 28.28 16.34 30.43z"
+        android:fillColor="#FF000000"
+        android:strokeWidth="1.5"
+        android:strokeColor="#FF000000"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <path
+        android:pathData="M18.4 20h11.2A2.4 2.4 0 0 1 32 22.4v4.7a2.4 2.4 0 0 1-2.4 2.4H18.4A2.4 2.4 0 0 1 16 27.1v-4.7A2.4 2.4 0 0 1 18.4 20z"
+        android:fillColor="#FF000000" />
+</vector>

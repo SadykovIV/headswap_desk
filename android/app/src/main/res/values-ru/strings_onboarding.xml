@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Шаг: заголовок, пронумерованный список (string-array), подсказка, кнопки; short - название в чеклисте -->
+    <string name="step_aa_dev_title">Включите режим разработчика Android Auto</string>
+    <string-array name="step_aa_dev_list">
+        <item>Нажмите кнопку «Открыть Android Auto»</item>
+        <item>Пролистайте в самый низ</item>
+        <item>10 раз нажмите на строку «Версия» и подтвердите</item>
+    </string-array>
+    <string name="step_aa_dev_primary">Открыть Android Auto</string>
+    <string name="step_aa_dev_short">Режим разработчика AA</string>
+
+    <string name="step_aa_unknown_title">Включите установку из неизвестных источников</string>
+    <string-array name="step_aa_unknown_list">
+        <item>Нажмите кнопку «Открыть Android Auto»</item>
+        <item>Нажмите ⋮ и выберите «Для разработчиков»</item>
+        <item>Пролистайте вниз до пункта «Неизвестные источники»</item>
+        <item>Поставьте галочку</item>
+    </string-array>
+    <string name="step_aa_unknown_hint">Без этого пункта Android Auto не покажет приложения, установленные в обход Google Play.</string>
+    <string name="step_aa_unknown_primary">Открыть Android Auto</string>
+    <string name="step_aa_unknown_short">Неизвестные источники</string>
+
+    <string name="step_autostart_title">Запустите сервер ГУ</string>
+    <string-array name="step_autostart_list">
+        <item>Нажмите кнопку «Открыть Android Auto»</item>
+        <item>Нажмите ⋮ вверху справа</item>
+        <item>Выберите «Вкл. сервер головного устр-ва»</item>
+    </string-array>
+    <string name="step_autostart_hint">Достаточно включить один раз: сервер ГУ остаётся работать в фоне, Headswap его не выключает. Если Android всё же закроет его сам, включите снова, открыв настройки AA. Автозапуска через спецвозможности больше нет, теперь нужно включать сервер ГУ вручную.</string>
+    <string name="step_autostart_primary">Открыть Android Auto</string>
+    <string name="step_autostart_short">Сервер ГУ</string>
+
+    <string name="step_notif_title">Включите уведомления</string>
+    <string-array name="step_notif_list">
+        <item>Нажмите кнопку «Разрешить» внизу экрана</item>
+        <item>Нажмите «Разрешить» в окне Android «Разрешить приложению Headswap отправлять уведомления?»</item>
+    </string-array>
+    <string name="step_notif_hint">В шторке будет видно, как идёт подключение, а Android не выгрузит Headswap, пока экран погашен.</string>
+    <string name="step_notif_short">Уведомления</string>
+
+    <!-- Пункты 3-4 (автозапуск) показываются только на Xiaomi -->
+    <string name="step_background_title">Снимите ограничение батареи</string>
+    <string-array name="step_background_list">
+        <item>Нажмите кнопку «Снять ограничение батареи»</item>
+        <item>Выберите «Нет ограничений»</item>
+        <item>Вернитесь и нажмите кнопку «Автозапуск»</item>
+        <item>Пролистайте до Headswap и включите переключатель</item>
+    </string-array>
+    <string name="step_background_primary">Снять ограничение батареи</string>
+    <string name="step_background_extra">Автозапуск</string>
+    <string name="step_background_short">Работа в фоне</string>
+
+    <string name="step_mic_title">Разрешите доступ к микрофону</string>
+    <string-array name="step_mic_list">
+        <item>Нажмите кнопку «Разрешить» внизу экрана</item>
+        <item>Нажмите «При использовании приложения»</item>
+    </string-array>
+    <string name="step_mic_hint">Нужен, чтобы вызывать голосового ассистента.</string>
+    <string name="step_mic_short">Микрофон</string>
+
+    <string name="step_bluetooth_title">Включите Bluetooth</string>
+    <string-array name="step_bluetooth_list">
+        <item>Нажмите кнопку «Открыть Bluetooth»</item>
+        <item>Включите Bluetooth</item>
+        <item>Подключитесь к магнитоле</item>
+    </string-array>
+    <string name="step_bluetooth_hint">Нужно для звонков: в Android Auto они идут только через Bluetooth.</string>
+    <string name="step_bluetooth_primary">Открыть Bluetooth</string>
+    <string name="step_bluetooth_short">Bluetooth для звонков</string>
+
+    <string name="step_location_title">Включите геолокацию</string>
+    <string-array name="step_location_list">
+        <item>Нажмите кнопку «Открыть геолокацию»</item>
+        <item>Включите переключатель «Включить геолокацию»</item>
+    </string-array>
+    <string name="step_location_hint">Без неё Google Карты и 2ГИС в Android Auto пишут «требуется доступ к геоданным».</string>
+    <string name="step_location_primary">Открыть геолокацию</string>
+    <string name="step_location_short">Геопозиция для Карт</string>
+
+    <string name="step_first_title">При первом подключении</string>
+    <string-array name="step_first_list">
+        <item>Разблокируйте телефон и подключите кабель к магнитоле</item>
+        <item>Отметьте «Использовать по умолчанию»</item>
+        <item>Нажмите «ОК»</item>
+    </string-array>
+    <string name="step_first_hint">Если на магнитоле экран «启动CarLife», нажмите эту кнопку.</string>
+    <string name="step_first_primary">Понятно</string>
+    <string name="step_first_short">Первое подключение</string>
+
+    <string name="onb_already_done">Уже сделано</string>
+    <string name="onb_skip">Пропустить</string>
+    <string name="onb_allow">Разрешить</string>
+    <string name="onb_later">Позже</string>
+    <string name="onb_back">Назад</string>
+    <string name="onb_next">Дальше</string>
+    <string name="onb_got_it">Понятно</string>
+    <string name="onb_step_progress">Шаг %1$d из %2$d</string>
+    <string name="onb_done_chip">Уже выполнено</string>
+
+    <string name="onb_checklist_title">Проверка готовности</string>
+    <string name="onb_all_ready">Всё готово к поездке</string>
+    <string name="onb_ready_count">Готово %1$d из %2$d</string>
+    <string name="onb_checklist_hint">Нажмите на пункт, чтобы открыть его шаг.</string>
+    <string name="onb_done">Готово</string>
+    <string name="onb_status_marked">отмечено</string>
+    <string name="onb_status_ready">готово</string>
+    <string name="onb_status_unmarked">не отмечено</string>
+    <string name="onb_status_off">не включено</string>
+    <string name="step_car_title">Какой у вас автомобиль?</string>
+    <string name="step_car_short">Автомобиль</string>
+    <string name="step_car_body">Подставим настройки, проверенные сообществом на этой машине. Опытные пользователи могут пропустить шаг.</string>
+</resources>

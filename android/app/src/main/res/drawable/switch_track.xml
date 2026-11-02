@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Дорожка переключателя Material 3: 52x32 -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <shape android:shape="rectangle">
+            <size android:width="52dp" android:height="32dp" />
+            <solid android:color="@color/pri" />
+            <stroke android:width="2dp" android:color="@color/pri" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <size android:width="52dp" android:height="32dp" />
+            <solid android:color="@color/surf2" />
+            <stroke android:width="2dp" android:color="@color/line" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+</selector>

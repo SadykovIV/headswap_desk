@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Setup uses a dark canvas; native fields and system icons must match it in light mode too. -->
+    <style name="Theme.Headswap.Dex" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#10151E</item>
+        <item name="android:colorBackground">#10151E</item>
+        <item name="android:colorAccent">#F2B33D</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:fontFamily">@font/golos</item>
+    </style>
+    <!-- Тема следует системной (DayNight); цвета берутся из values/colors.xml и values-night/colors.xml -->
+    <style name="Theme.Headswap" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:colorBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:colorAccent">@color/acc</item>
+        <item name="android:colorControlActivated">@color/acc</item>
+        <item name="android:colorControlHighlight">@color/ripple</item>
+        <item name="android:textColorPrimary">@color/on</item>
+        <item name="android:textColorSecondary">@color/on2</item>
+        <item name="android:textColor">@color/on</item>
+        <item name="android:fontFamily">@font/golos</item>
+        <item name="android:alertDialogTheme">@style/Theme.Headswap.Dialog</item>
+    </style>
+
+    <!-- «Средняя» тема: MainActivity форсирует uiMode night (AppTheme.wrap), цвета подменяются на *_mid -->
+    <style name="Theme.Headswap.Medium" parent="Theme.Headswap">
+        <item name="android:windowBackground">@color/bg_mid</item>
+        <item name="android:colorBackground">@color/bg_mid</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:colorAccent">@color/acc_mid</item>
+        <item name="android:colorControlActivated">@color/acc_mid</item>
+        <item name="android:colorControlHighlight">@color/ripple_mid</item>
+        <item name="android:textColorPrimary">@color/on_mid</item>
+        <item name="android:textColorSecondary">@color/on2_mid</item>
+        <item name="android:textColor">@color/on_mid</item>
+    </style>
+
+    <!-- Диалог всегда тёмный: акцент и цвет текста свои, иначе из светлой темы приложения протекают тёмные @color/acc и @color/on (заголовок и кнопки сливаются с фоном) -->
+    <style name="Theme.Headswap.Dialog" parent="android:Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:colorAccent">@color/acc_dlg</item>
+        <item name="android:textColor">?android:attr/textColorPrimary</item>
+        <item name="android:fontFamily">@font/golos</item>
+    </style>
+</resources>

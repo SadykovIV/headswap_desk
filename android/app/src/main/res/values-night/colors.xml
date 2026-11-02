@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Палитра DARK из design/project/*.dc.html -->
+<resources>
+    <color name="bg">#0E141A</color>
+    <color name="surf">#172026</color>
+    <color name="surf2">#212B31</color>
+    <color name="on">#E0E8EB</color>
+    <color name="on2">#A6B6BC</color>
+    <color name="line">#3A484E</color>
+    <color name="pri">#F2B33D</color>
+    <color name="onpri">#261A00</color>
+    <color name="acc">#F2B33D</color>
+    <color name="pric">#4D3800</color>
+    <color name="onpric">#FFDEA6</color>
+    <color name="ok">#82D6A6</color>
+    <color name="okc">#133D29</color>
+    <color name="onok">#00391F</color>
+    <color name="warn">#FFB68C</color>
+    <color name="warnc">#5A2500</color>
+    <color name="err">#FFB4A9</color>
+    <color name="errc">#6E1912</color>
+    <color name="onerr">#690003</color>
+    <color name="ripple">#33FFFFFF</color>
+</resources>

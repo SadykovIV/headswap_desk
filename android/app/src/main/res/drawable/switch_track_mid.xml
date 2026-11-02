@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Вариант switch_track.xml для темы «Средняя» -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_checked="true">
+        <shape android:shape="rectangle">
+            <size android:width="52dp" android:height="32dp" />
+            <solid android:color="@color/pri_mid" />
+            <stroke android:width="2dp" android:color="@color/pri_mid" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <size android:width="52dp" android:height="32dp" />
+            <solid android:color="@color/surf2_mid" />
+            <stroke android:width="2dp" android:color="@color/line_mid" />
+            <corners android:radius="16dp" />
+        </shape>
+    </item>
+</selector>

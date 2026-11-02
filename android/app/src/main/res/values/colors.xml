@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Палитра LIGHT из design/project/*.dc.html -->
+<resources>
+    <color name="bg">#F4F7F8</color>
+    <color name="surf">#FFFFFF</color>
+    <color name="surf2">#E4EBEE</color>
+    <color name="on">#151C1F</color>
+    <color name="on2">#46555C</color>
+    <color name="line">#C0CCD1</color>
+    <color name="pri">#F2B33D</color>
+    <color name="onpri">#241A00</color>
+    <color name="acc">#8A5A00</color>
+    <color name="acc_dlg">#F2B33D</color>
+    <color name="pric">#FFE7B8</color>
+    <color name="onpric">#2B1E00</color>
+    <color name="ok">#1B6A45</color>
+    <color name="okc">#CFEEDB</color>
+    <color name="onok">#FFFFFF</color>
+    <color name="warn">#A34700</color>
+    <color name="warnc">#FFDCC6</color>
+    <color name="err">#A4261E</color>
+    <color name="errc">#FFDAD4</color>
+    <color name="onerr">#FFFFFF</color>
+    <color name="ripple">#1F000000</color>
+</resources>
