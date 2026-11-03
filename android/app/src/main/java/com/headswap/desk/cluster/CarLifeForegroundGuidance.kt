@@ -4,9 +4,13 @@ import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Process
 import com.headswap.desk.AppLog
 import com.headswap.desk.aa.AaPrefs
 import com.headswap.desk.dex.DexPrefs
+import com.headswap.desk.dex.DelegatedDesktopAccess
 import com.headswap.desk.dex.ShellPanelClient
 import com.headswap.desk.embed.EmbeddedSessionRegistry
 import java.util.concurrent.Executors
@@ -22,6 +26,19 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
     private val worker = Executors.newSingleThreadExecutor { Thread(it, "headswap-hud-window").apply { isDaemon = true } }
     @Volatile private var closed = false
     private var lastState = ""
+    private var lastBackend = ""
+
+    companion object {
+        const val TASK_ASSIST_PERMISSION = "android.permission.GET_TOP_ACTIVITY_INFO"
+
+        // Only the existing, explicitly activated process can borrow the task read, and
+        // only if the user enabled both HUD and notification access. Do not persist a grant.
+        fun requestedForActivation(context: Context): Boolean =
+            Build.VERSION.SDK_INT >= 36 && AaPrefs(context).metaNavi && runCatching {
+                context.getSystemService(NotificationManager::class.java).isNotificationListenerAccessGranted(
+                    ComponentName(context, ClusterNavigationListener::class.java))
+            }.getOrDefault(false)
+    }
 
     fun request(callback: (ForegroundGuidance) -> Unit) {
         val token = interest()
@@ -55,7 +72,7 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
         for (id in EmbeddedSessionRegistry.guidanceDisplayIds()) {
             if (id <= 0 || !enabled(token)) continue
             val sample = when {
-                prefs.useDelegated -> ShellPanelClient.readGuidance(id)
+                prefs.useDelegated -> readActivated(id, token)
                 prefs.useShizuku -> EmbeddedSessionRegistry.readShizukuGuidance(id)
                 else -> return ForegroundGuidance.Unavailable
             }
@@ -72,6 +89,29 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
             }
         }
         return if (emptyRoute) ForegroundGuidance.VisibleWithoutManeuver else ForegroundGuidance.Unavailable
+    }
+
+    private fun readActivated(id: Int, token: GuidanceInterest): ShellManeuverSample {
+        if (ShellPanelClient.isConnected) {
+            reportBackend("helper")
+            return ShellPanelClient.readGuidance(id)
+        }
+        // Switching USB from the activation computer to the car can retire the entire
+        // ADB shell process group while the authorized HeadSwap process is still alive.
+        if (!DelegatedDesktopAccess.isReady(app) ||
+            app.checkSelfPermission(TASK_ASSIST_PERMISSION) != PackageManager.PERMISSION_GRANTED) {
+            reportBackend("unavailable")
+            return ShellManeuverSample.Unavailable
+        }
+        reportBackend("activation")
+        return EmbeddedSessionRegistry.readDelegatedGuidance(id) {
+            if (!enabled(token)) ShellManeuverSample.Unavailable
+            else ShellYandexGuidance.read(id, Process.myUid(), Process.myUid() / 100000)
+        }
+    }
+
+    private fun reportBackend(name: String) {
+        if (lastBackend != name) { lastBackend = name; AppLog.i("CLUSTER navigation reader=$name", false) }
     }
 
     override fun close() {

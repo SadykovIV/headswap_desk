@@ -5,6 +5,29 @@ internal class GuidanceInterest(val mode: Mode) {
     enum class Mode { NONE, REQUESTED, ACTIVE }
 }
 
+/** On some Honda units the first real maneuver must raise NAVI=1 before the HU sends START.
+ * Probe more slowly while waiting. A superseded subscription cannot initiate a read. */
+internal class ForegroundGuidancePoller(
+    private val schedule: (Long, () -> Unit) -> (() -> Unit),
+    private val canRead: (GuidanceInterest) -> Boolean,
+    private val poll: () -> Unit,
+) {
+    private var current: GuidanceInterest? = null
+    private var cancel: (() -> Unit)? = null
+
+    fun update(interest: GuidanceInterest?) {
+        val next = interest?.takeUnless { it.mode == GuidanceInterest.Mode.NONE }
+        if (next === current) return
+        cancel?.invoke()
+        cancel = null
+        current = next
+        if (next != null) {
+            val interval = if (next.mode == GuidanceInterest.Mode.REQUESTED) 5_000L else 2_000L
+            cancel = schedule(interval) { if (current === next && canRead(next)) poll() }
+        }
+    }
+}
+
 internal sealed interface ForegroundGuidance {
     data class Maneuver(val hint: ClusterNavigationHint) : ForegroundGuidance
     /** A recognised Yandex route screen explicitly shows that guidance has ended. */

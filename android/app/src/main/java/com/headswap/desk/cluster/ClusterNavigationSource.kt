@@ -1,15 +1,14 @@
 package com.headswap.desk.cluster
 
 import android.content.Context
-import android.app.Notification
 import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import com.headswap.desk.AppLog
+import com.headswap.desk.embed.EmbeddedSessionRegistry
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 
 /** The system binds the listener only after a user's explicit notification-access grant. */
@@ -56,12 +55,12 @@ internal class ClusterNavigationSource(
     @Volatile private var closed = false
     private val foregroundEnabled = requestForeground != null
     private var appliedInterest: GuidanceInterest? = null
-    private var periodic: ScheduledFuture<*>? = null
     private var lastStatus = ""
     private val checkedForeground = requestForeground?.let { request -> { callback: (ForegroundGuidance) -> Unit ->
         val listener = ClusterNavigationListener.connected
         val token = interest()
-        if (closed || listener == null || token.mode == GuidanceInterest.Mode.NONE) callback(ForegroundGuidance.Unavailable)
+        if (closed || listener == null || token.mode == GuidanceInterest.Mode.NONE ||
+            EmbeddedSessionRegistry.guidanceDisplayIds().isEmpty()) callback(ForegroundGuidance.Unavailable)
         else request { result ->
             if (!closed && ClusterNavigationListener.connected === listener && interest() === token) callback(result)
         }
@@ -79,6 +78,15 @@ internal class ClusterNavigationSource(
                 (hint == null || (listener != null && ClusterNavigationListener.connected === listener))) emit(hint)
         }
     }
+    private val polling = ForegroundGuidancePoller(
+        schedule = { interval, tick ->
+            val future = worker.scheduleWithFixedDelay(tick, interval, interval, TimeUnit.MILLISECONDS)
+            val cancel: () -> Unit = { future.cancel(false) }
+            cancel
+        },
+        canRead = { token -> !closed && interest() === token && ClusterNavigationListener.connected != null },
+        poll = coordinator::poll,
+    )
 
     fun start() {
         check(!closed)
@@ -96,8 +104,7 @@ internal class ClusterNavigationSource(
         known.clear()
         snapshot.sortedBy { it.postTime }.forEach(::read)
     }
-    internal fun posted(sbn: StatusBarNotification) =
-        update(bootstrap = sbn.notification.category == Notification.CATEGORY_NAVIGATION) { read(sbn) }
+    internal fun posted(sbn: StatusBarNotification) = update { read(sbn) }
     internal fun removed(key: String) = update { known.remove(key) }
     internal fun disconnected() = onWorker {
         known.clear()
@@ -110,16 +117,16 @@ internal class ClusterNavigationSource(
         val hint = runCatching { cards.parse(sbn.packageName, sbn.notification) }.getOrNull()
         if (hint != null) known[sbn.key] = hint
     }
-    private fun update(bootstrap: Boolean = false, action: () -> Unit) {
+    private fun update(action: () -> Unit) {
         val listener = ClusterNavigationListener.connected
         onWorker {
             if (listener !== ClusterNavigationListener.connected) return@onWorker
             if (listener == null) known.clear() else action()
-            reconcile(bootstrap)
+            reconcile()
         }
     }
 
-    private fun reconcile(bootstrap: Boolean = false) {
+    private fun reconcile() {
         val token = interest()
         val changed = appliedInterest !== token
         if (changed) {
@@ -132,18 +139,7 @@ internal class ClusterNavigationSource(
         val status = "listener=${if (connected) "connected" else "unavailable"} notification=${if (hint != null) "maneuver" else "no maneuver"}"
         if (status != lastStatus) { lastStatus = status; AppLog.i("CLUSTER navigation $status", false) }
         coordinator.notifications(hint, canSample)
-        if (canSample && token.mode == GuidanceInterest.Mode.ACTIVE) {
-            if (periodic == null) periodic = worker.scheduleWithFixedDelay({
-                if (!closed && ClusterNavigationListener.connected != null && interest().mode == GuidanceInterest.Mode.ACTIVE)
-                    coordinator.poll()
-            }, 2, 2, TimeUnit.SECONDS)
-        } else {
-            periodic?.cancel(false)
-            periodic = null
-            // Some HUs send START only after a maneuver raises NAVI=1. Bootstrap from a real
-            // subscribe request or guidance notification; there is no timer before START.
-            if (canSample && token.mode == GuidanceInterest.Mode.REQUESTED && bootstrap && !changed) coordinator.poll()
-        }
+        polling.update(if (canSample) token else null)
     }
     private fun onWorker(action: () -> Unit) {
         if (closed) return

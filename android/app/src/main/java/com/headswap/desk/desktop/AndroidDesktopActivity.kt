@@ -50,6 +50,7 @@ import com.headswap.desk.dex.PhoneScreenIdleController
 import com.headswap.desk.R
 import com.headswap.desk.dex.DexState
 import com.headswap.desk.embed.EmbeddedSessionRegistry
+import com.headswap.desk.embed.GuidancePaneVisibility
 import java.util.concurrent.Executors
 
 /** Own launcher for the session's second display. It never becomes the phone's HOME app. */
@@ -67,6 +68,7 @@ class AndroidDesktopActivity : Activity() {
     private var musicOnRight = false
     @Volatile private var profileExposed = false
     private var targetVisible = false
+    private val targetGuidance = GuidancePaneVisibility()
     private var dockHeightPx: Int? = null
     private var phoneConfirmation: AlertDialog? = null
     private var confirmMove: AlertDialog? = null
@@ -107,7 +109,14 @@ class AndroidDesktopActivity : Activity() {
         override fun run() {
             if (!visible || isDestroyed) return
             when {
-                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); musicPane.refreshBuffer(); refreshPanelChoice(); loadApps() }
+                ownsDisplay() -> {
+                    layout.visibility = View.VISIBLE
+                    if (dashboard) updateTargetGuidance()
+                    pane.refreshBuffer()
+                    musicPane.refreshBuffer()
+                    refreshPanelChoice()
+                    loadApps()
+                }
                 currentDisplayId() <= 0 || SystemClock.elapsedRealtime() >= ownershipDeadline -> finish()
                 else -> main.postDelayed(this, 100)
             }
@@ -141,6 +150,7 @@ class AndroidDesktopActivity : Activity() {
         if (!::grid.isInitialized) return
         if (currentDisplayId() <= 0) { finish(); return }
         visible = true
+        if (dashboard) updateTargetGuidance()
         if (!ownsDisplay()) {
             layout.visibility = View.INVISIBLE
             status.text = "Подключение рабочего стола…"
@@ -156,6 +166,7 @@ class AndroidDesktopActivity : Activity() {
 
     override fun onPause() {
         visible = false
+        if (dashboard) targetGuidance.show(false)
         if (::railDrag.isInitialized) railDrag.cancel()
         pinMenu?.dismiss()
         main.removeCallbacks(awaitOwnership)
@@ -163,6 +174,7 @@ class AndroidDesktopActivity : Activity() {
     }
 
     override fun onDestroy() {
+        targetGuidance.close()
         if (stopObserving != null) {
             stopObserving?.invoke()
             unregisterReceiver(packageChanges)
@@ -254,11 +266,13 @@ class AndroidDesktopActivity : Activity() {
             if (!dashboard) panelPlaced = panelSession != null
             setChildInputFocus(true)
             menu.visibility = View.GONE
+            if (dashboard) updateTargetGuidance() else targetGuidance.show(true)
         }, onHome = {
             autoOpenPanel = false
             if (!dashboard) revokePanel()
             setChildInputFocus(dashboard && panelPlaced)
             menu.visibility = View.VISIBLE
+            if (dashboard) targetGuidance.show(false)
             status.setTextColor(Color.rgb(180, 190, 203))
             status.text = when {
                 entries.isNotEmpty() -> catalogHint()
@@ -266,7 +280,7 @@ class AndroidDesktopActivity : Activity() {
                 else -> "Приложения не найдены"
             }
             grid.smoothScrollToPosition(0)
-        }, onError = ::showError)
+        }, onError = ::showError, guidanceVisibility = targetGuidance)
         // Keep the app display alive behind the opaque catalog, preserving tasks across Home.
         appsWindow.addView(pane.view, FrameLayout.LayoutParams(-1, -1))
         val body = LinearLayout(this).apply {
@@ -555,6 +569,7 @@ class AndroidDesktopActivity : Activity() {
     }
 
     private fun enterDashboard() {
+        targetGuidance.show(false)
         dashboard = true
         musicVisible = true
         sidebar.visibility = View.GONE
@@ -569,6 +584,7 @@ class AndroidDesktopActivity : Activity() {
     }
 
     private fun leaveDashboard() {
+        targetGuidance.show(false)
         dashboard = false
         profileExposed = false
         confirmMove?.dismiss()
@@ -585,6 +601,7 @@ class AndroidDesktopActivity : Activity() {
     // second real task over just the map rectangle. Changing Z order keeps both leases alive.
     private fun layoutDashboard() {
         if (!dashboard) return
+        if (!targetVisible) targetGuidance.show(false)
         val width = workspace.width
         val height = workspace.height
         if (width <= 0 || height <= 0) return
@@ -598,6 +615,12 @@ class AndroidDesktopActivity : Activity() {
         if (workspace.getChildAt(workspace.childCount - 1) !== front) front.bringToFront()
         appsWindow.importantForAccessibility = if (targetVisible) View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
             else View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+        updateTargetGuidance()
+    }
+
+    private fun updateTargetGuidance() {
+        targetGuidance.show(visible && targetVisible && menu.visibility == View.GONE && appsWindow.isShown &&
+            workspace.getChildAt(workspace.childCount - 1) === appsWindow)
     }
 
     private fun showTarget() { targetVisible = true; layoutDashboard() }

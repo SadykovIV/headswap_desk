@@ -17,6 +17,7 @@ import android.view.Surface
 import android.view.TextureView
 import com.headswap.desk.embed.EmbeddedSessionRegistry
 import com.headswap.desk.embed.FullscreenSlotBusyException
+import com.headswap.desk.embed.GuidancePaneVisibility
 import com.headswap.desk.shared.DesktopRenderPolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -28,6 +29,7 @@ internal class DesktopAppPane(
     private val onHome: () -> Unit,
     private val onError: (String) -> Unit,
     private val fullscreenDriveDeck: Boolean = false,
+    private val guidanceVisibility: GuidancePaneVisibility? = null,
 ) : TextureView.SurfaceTextureListener {
     val view = TextureView(activity).apply {
         surfaceTextureListener = this@DesktopAppPane
@@ -178,7 +180,8 @@ internal class DesktopAppPane(
             if (output.handle == 0) {
                 EmbeddedSessionRegistry.releaseOwnSurface(uid, output.token)
                 output.handle = EmbeddedSessionRegistry.create(uid, output.surface, output.token,
-                    parent, next.width, next.height, next.density, ownDesktop = !fullscreenDriveDeck, fullscreen = fullscreenDriveDeck)
+                    parent, next.width, next.height, next.density, ownDesktop = !fullscreenDriveDeck,
+                    fullscreen = fullscreenDriveDeck, guidanceVisibility = guidanceVisibility)
             } else if (previous != next) {
                 EmbeddedSessionRegistry.resize(uid, output.handle, next.width, next.height, next.density)
             }

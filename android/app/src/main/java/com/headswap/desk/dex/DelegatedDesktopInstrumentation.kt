@@ -13,6 +13,7 @@ import android.util.AtomicFile
 import android.util.Log
 import androidx.annotation.Keep
 import com.headswap.desk.AppLog
+import com.headswap.desk.cluster.CarLifeForegroundGuidance
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.CountDownLatch
@@ -84,6 +85,9 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             val permissions = mutableListOf(DelegatedDesktopAccess.ADD_TRUSTED_DISPLAY,
                 DelegatedDesktopAccess.INJECT_EVENTS, DelegatedDesktopAccess.REAL_GET_TASKS,
                 DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL)
+            if (CarLifeForegroundGuidance.requestedForActivation(context)) {
+                permissions.add(CarLifeForegroundGuidance.TASK_ASSIST_PERMISSION)
+            }
             if (requestAudio) {
                 permissions.add(DesktopAudioPolicy.PERMISSION)
                 permissions.add(DesktopAudioPolicy.ROUTING_PERMISSION)

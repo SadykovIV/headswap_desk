@@ -33,13 +33,30 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+/** Written by the host UI. Each reveal invalidates samples started before the pane was covered. */
+internal class GuidancePaneVisibility {
+    @Volatile var visibleEpoch: Any? = Any()
+        private set
+    private var closed = false
+
+    fun show(shown: Boolean) {
+        if (!closed && shown != (visibleEpoch != null)) visibleEpoch = if (shown) Any() else null
+    }
+
+    fun close() {
+        closed = true
+        visibleEpoch = null
+    }
+}
+
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
         val mode: Int, val density: Int, val correctedPackages: Set<String>, val shizuku: Boolean) {
         fun bufferDensity(requested: Int): Int = if (correctedPackages.isNotEmpty()) requested else density
     }
-    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean) {
+    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean,
+        val guidanceVisibility: GuidancePaneVisibility?) {
         lateinit var death: IBinder.DeathRecipient
         @Volatile var displayId = -1
         @Volatile var linked = false
@@ -80,7 +97,8 @@ internal object EmbeddedSessionRegistry {
         id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
     }
 
-    private data class GuidanceTarget(val parent: Parent, val displayId: Int, val child: Lease?, val pkg: String?)
+    private data class GuidanceTarget(val parent: Parent, val displayId: Int, val child: Lease?, val pkg: String?,
+        val visibleEpoch: Any? = null)
 
     /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
     private fun guidanceTargets(): List<GuidanceTarget> {
@@ -91,8 +109,9 @@ internal object EmbeddedSessionRegistry {
         val foreground = current.filter { it.fullscreen }.ifEmpty { current }
         return foreground.mapNotNull { lease ->
             val pkg = lease.packageName
+            val visibleEpoch = lease.guidanceVisibility?.let { it.visibleEpoch ?: return@mapNotNull null }
             if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in YandexGuidanceCard.PACKAGES) null
-            else GuidanceTarget(active, lease.displayId, lease, pkg)
+            else GuidanceTarget(active, lease.displayId, lease, pkg, visibleEpoch)
         }.sortedBy { it.child?.handle }
     }
 
@@ -134,7 +153,8 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun create(uid: Int, surface: Surface, token: IBinder, requestedParent: Int,
-        width: Int, height: Int, density: Int, ownDesktop: Boolean = false, fullscreen: Boolean = false): Int {
+        width: Int, height: Int, density: Int, ownDesktop: Boolean = false, fullscreen: Boolean = false,
+        guidanceVisibility: GuidancePaneVisibility? = null): Int {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         require(surface.isValid && token.isBinderAlive) { "Поверхность встроенного приложения недоступна" }
         val lease = synchronized(lock) {
@@ -146,7 +166,7 @@ internal object EmbeddedSessionRegistry {
                 EmbeddedGatewayPolicy.requireFullscreenCaller(active.mode, uid, android.os.Process.myUid())
                 if (leases.values.any { it.fullscreen }) throw FullscreenSlotBusyException()
             } else EmbeddedGatewayPolicy.requireCanAllocate(leases.values.count { !it.fullscreen })
-            Lease(nextHandle.incrementAndGet(), uid, active, token, fullscreen).also { leases[it.handle] = it }
+            Lease(nextHandle.incrementAndGet(), uid, active, token, fullscreen, guidanceVisibility).also { leases[it.handle] = it }
         }
         lease.death = IBinder.DeathRecipient {
             cleanup.execute { runCatching { close(lease) }.onFailure { Log.w("HeadSwapEmbed", "Companion cleanup pending", it) } }

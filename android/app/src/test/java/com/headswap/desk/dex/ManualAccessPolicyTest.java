@@ -43,6 +43,13 @@ public final class ManualAccessPolicyTest {
         assertEquals(ManualAccessPolicy.COMPONENT, args.get(args.size() - 1));
     }
 
+    @Test public void approvedHudAloneEnablesFrameworkApiDuringThisActivation() {
+        List<String> args = ManualAccessPolicy.arguments(TOKEN, options().withHudApi());
+        assertTrue(args.contains("--no-hidden-api-checks"));
+        assertFalse(args.contains("headswap_audio"));
+        assertFalse(args.contains("headswap_screen"));
+    }
+
     @Test public void audioOnlyCanRegisterSystemMixWithoutRequestingPanel() {
         List<String> args = ManualAccessPolicy.arguments(TOKEN, options("--audio"));
         assertTrue(args.contains("--no-hidden-api-checks"));

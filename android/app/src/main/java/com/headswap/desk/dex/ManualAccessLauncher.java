@@ -99,6 +99,7 @@ public final class ManualAccessLauncher {
         }
         // A known live instrumentation with a delayed heartbeat must not be replaced under an active projection.
         check(liveRecovery(uid) == null, "Действующий сеанс пока не подтвердил состояние. Повторите активацию после его ответа.");
+        if (!options.audio && !options.screen && hudApiRequested(uid)) options = options.withHudApi();
         if (options.audio) System.out.println("Запрошен временный маршрут USB-звука: музыка и подсказки в CarLife, без микрофона.");
         if (options.screen) System.out.println("Запрошен временный доступ к панели и системной диагностике (DUMP) для чтения времени активности экрана телефона. Перед выключением панели HeadSwap откроет свой экран для двойного касания.");
         String token = DisplayHelperRendezvous.newToken();
@@ -174,6 +175,24 @@ public final class ManualAccessLauncher {
         helper.environment().put("CLASSPATH", apk);
         File devNull = new File("/dev/null");
         helper.redirectInput(devNull).redirectOutput(devNull).redirectError(devNull).start();
+    }
+
+    private static boolean hudApiRequested(int uid) {
+        if (Build.VERSION.SDK_INT < 36) return false;
+        String user = Integer.toString(uid / 100000);
+        try {
+            String enabled = run(3000, "settings", "--user", user, "get", "secure", "enabled_notification_listeners").trim();
+            String component = ManualAccessPolicy.PACKAGE + "/";
+            boolean approved = java.util.Arrays.stream(enabled.split(":")).anyMatch(s ->
+                s.equals(component + ".cluster.ClusterNavigationListener") ||
+                s.equals(component + ManualAccessPolicy.PACKAGE + ".cluster.ClusterNavigationListener"));
+            if (!approved) return false;
+            // Read only AaPrefs.metaNavi. Like SharedPreferences.getBoolean, use its
+            // enabled default for a missing entry. An unreadable preference fails closed.
+            String flag = run(3000, "run-as", ManualAccessPolicy.PACKAGE, "--user", user, "sh", "-c",
+                "f=shared_prefs/aa.xml; if [ -f \"$f\" ]; then grep -F 'name=\"metaNavi\"' \"$f\" || [ $? -eq 1 ]; fi").trim();
+            return flag.isEmpty() || flag.matches("<boolean\\s+name=\"metaNavi\"\\s+value=\"true\"\\s*/>");
+        } catch (Exception unavailable) { return false; }
     }
 
     private static DisplayHelperRendezvous liveRecovery(int uid) {

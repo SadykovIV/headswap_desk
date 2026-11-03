@@ -1,6 +1,8 @@
 package com.headswap.desk.embed
 
 import android.os.IBinder
+import android.graphics.SurfaceTexture
+import android.view.Surface
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.cluster.ShellManeuverSample
 import com.headswap.desk.dex.DesktopModePolicy
@@ -16,6 +18,62 @@ class EmbeddedGuidanceTest {
         assertEquals(false, YandexGuidanceScope.allows("other.app", "ru.yandex.yandexnavi"))
         assertEquals(false, YandexGuidanceScope.allows("ru.yandex.yandexnavi", "ru.yandex.yandexmaps"))
         assertEquals(false, YandexGuidanceScope.allows(null, "other.app"))
+    }
+
+    @Test fun aCoveredDashboardTargetCannotSupplyANewOrInFlightManeuver() {
+        val owner = Any()
+        val calls = Executors.newSingleThreadExecutor()
+        val visibility = GuidancePaneVisibility()
+        val prior = CarLifeState.running
+        var releases = 0
+        val binder = Proxy.newProxyInstance(IBinder::class.java.classLoader, arrayOf(IBinder::class.java)) { proxy, m, args ->
+            when (m.name) {
+                "isBinderAlive", "unlinkToDeath" -> true
+                "linkToDeath" -> null
+                "equals" -> proxy === args.single()
+                else -> error(m.name)
+            }
+        } as IBinder
+        val remote = Proxy.newProxyInstance(IDexUserService::class.java.classLoader, arrayOf(IDexUserService::class.java)) { _, m, _ ->
+            when (m.name) {
+                "asBinder" -> binder
+                "createChildDisplay" -> 42
+                "launchChildApp" -> null
+                "closeChildDisplay" -> { releases++; null }
+                else -> error(m.name)
+            }
+        } as IDexUserService
+        val surface = object : Surface(SurfaceTexture(false)) { override fun isValid() = true }
+        val maneuver = ShellManeuverSample.Card("ru.yandex.yandexnavi", "Right", "100", "m", "en")
+        try {
+            CarLifeState.running = true
+            EmbeddedSessionRegistry.activate(owner, remote, 32, calls, DesktopModePolicy.ANDROID_DESKTOP, 160, false)
+            val handle = EmbeddedSessionRegistry.create(111, surface, binder, 32, 800, 480, 160,
+                ownDesktop = true, guidanceVisibility = visibility)
+            EmbeddedSessionRegistry.launch(111, handle, maneuver.packageName, "ru.yandex.yandexnavi.MapActivity")
+            assertEquals(listOf(42), EmbeddedSessionRegistry.guidanceDisplayIds())
+            visibility.show(false)
+            assertEquals(emptyList<Int>(), EmbeddedSessionRegistry.guidanceDisplayIds())
+            assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidance(42) { error("covered pane") })
+            visibility.show(true)
+            assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidance(42) {
+                visibility.show(false)
+                visibility.show(true)
+                maneuver
+            })
+            assertEquals(maneuver, EmbeddedSessionRegistry.readDelegatedGuidance(42) { maneuver })
+            visibility.close()
+            visibility.show(true) // late callback after the Activity was destroyed
+            assertEquals(emptyList<Int>(), EmbeddedSessionRegistry.guidanceDisplayIds())
+            EmbeddedSessionRegistry.release(111, handle)
+            EmbeddedSessionRegistry.release(111, handle)
+            assertEquals(1, releases)
+            assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidance(42) { error("retired pane") })
+        } finally {
+            EmbeddedSessionRegistry.deactivate(owner)
+            CarLifeState.running = prior
+            calls.shutdownNow()
+        }
     }
 
     @Test fun aShizukuReadRequiresCarLifeAndTheSameLiveDisplayBeforeAndAfterBinder() {

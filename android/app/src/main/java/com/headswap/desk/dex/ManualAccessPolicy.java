@@ -23,8 +23,15 @@ public final class ManualAccessPolicy {
 
     public static final class Options {
         public final boolean audio, screen, help;
+        private final boolean hudApi;
         public Options(boolean audio, boolean screen, boolean help) {
-            this.audio = audio; this.screen = screen; this.help = help;
+            this(audio, screen, help, false);
+        }
+        private Options(boolean audio, boolean screen, boolean help, boolean hudApi) {
+            this.audio = audio; this.screen = screen; this.help = help; this.hudApi = hudApi;
+        }
+        Options withHudApi() {
+            return new Options(audio, screen, help, true);
         }
         public static Options parse(String[] args) {
             boolean audio = false, screen = false, help = false;
@@ -44,9 +51,9 @@ public final class ManualAccessPolicy {
     public static List<String> arguments(String token, Options options) {
         requireToken(token);
         List<String> args = new ArrayList<>(Arrays.asList("instrument", "-w", "-r", "-e", "headswap_activation_token", token));
-        // Both the playback mix and the physical panel use system APIs. Scope access to
-        // this instrumentation invocation; base desktop activation needs neither.
-        if (options.audio || options.screen) args.add("--no-hidden-api-checks");
+        // Only in this instrumentation. The HUD task reader also needs framework APIs
+        // when audio and panel controls are both disabled.
+        if (options.audio || options.screen || options.hudApi) args.add("--no-hidden-api-checks");
         if (options.audio) args.addAll(Arrays.asList("-e", "headswap_audio", "true"));
         if (options.screen) args.addAll(Arrays.asList("-e", "headswap_screen", "true"));
         args.add(COMPONENT);

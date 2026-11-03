@@ -7,9 +7,11 @@ import android.os.Binder
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Parcel
+import android.os.Process
 import android.os.SystemClock
 import android.view.View
 import com.headswap.desk.dex.ShellDisplayIme
+import com.headswap.desk.BuildConfig
 import java.lang.reflect.Proxy
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
@@ -42,7 +44,7 @@ internal sealed interface ShellManeuverSample {
     }
 }
 
-/** Task-specific Assist in the existing shell helper. No global assistant, accessibility or screenshot. */
+/** Task-specific Assist for an owned HU window. No global assistant, accessibility or screenshot. */
 @SuppressLint("PrivateApi", "BlockedPrivateApi")
 internal object ShellYandexGuidance {
     private const val RECEIVER = "android.app.IAssistDataReceiver"
@@ -107,7 +109,12 @@ internal object ShellYandexGuidance {
             val receiver = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(receiverType)) { _, m, _ ->
                 if (m.name == "asBinder") callback else null
             }
-            if (method.invoke(manager, receiver, target.task, "com.android.shell", null, true) != true)
+            val caller = when (Process.myUid()) {
+                0, 2000 -> "com.android.shell"
+                displayOwnerUid -> BuildConfig.APPLICATION_ID
+                else -> return ShellManeuverSample.Unavailable
+            }
+            if (method.invoke(manager, receiver, target.task, caller, null, true) != true)
                 return ShellManeuverSample.Unavailable
             val wait = (until - SystemClock.elapsedRealtime()).coerceAtLeast(0)
             val result = answers.poll(wait, TimeUnit.MILLISECONDS) ?: return ShellManeuverSample.Unavailable
