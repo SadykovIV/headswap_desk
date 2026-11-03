@@ -1,6 +1,6 @@
 package com.headswap.desk.dex
 
-/** Keeps a confirmed desktop link eligible through the service's short USB reconnect grace. */
+/** Pause once on loss of a proven desktop output, whichever USB signal arrives first. */
 internal class DesktopMusicUsbLink(private val graceMs: Long) {
     var serviceOwner: Any? = null
         private set
@@ -8,8 +8,9 @@ internal class DesktopMusicUsbLink(private val graceMs: Long) {
         private set
     var sawReady = false
         private set
-    var physicallyDetached = false
+    var lossId: Any? = null
         private set
+    val outputLost: Boolean get() = lossId != null
     private var readyLinkClosedAt: Long? = null
 
     fun attach(service: Any, link: Any, now: Long) {
@@ -19,34 +20,47 @@ internal class DesktopMusicUsbLink(private val graceMs: Long) {
         serviceOwner = service
         owner = link
         sawReady = false
-        physicallyDetached = false
+        lossId = null
     }
 
-    fun markReady() { if (owner != null && !physicallyDetached) sawReady = true }
+    fun markReady() { if (owner != null && !outputLost) sawReady = true }
 
     fun close(link: Any, now: Long): Boolean {
         if (owner !== link) return false
-        if (sawReady && !physicallyDetached) readyLinkClosedAt = now
+        if (sawReady && !outputLost) readyLinkClosedAt = now
         owner = null
         sawReady = false
         return true
     }
 
+    /** The failed fd must itself have delivered a desktop; a failed retry has no such claim. */
+    fun consumeTransportLoss(service: Any, link: Any, hadPicture: Boolean): Boolean {
+        if (serviceOwner !== service || owner !== link || outputLost || !(sawReady || hadPicture)) return false
+        consumeLoss()
+        return true
+    }
+
     fun consumePhysicalDetach(service: Any, now: Long): Boolean {
-        if (serviceOwner !== service || physicallyDetached) return false
+        if (serviceOwner !== service || outputLost) return false
         val closedAt = readyLinkClosedAt
-        val eligible = sawReady || (closedAt != null && now >= closedAt && now - closedAt <= graceMs)
-        physicallyDetached = true
+        // The matching fd may already have posted stronger first-frame proof to the main
+        // queue. An unproven broadcast must not consume that later event's claim.
+        if (!sawReady && (closedAt == null || now < closedAt || now - closedAt > graceMs)) return false
+        consumeLoss()
+        return true
+    }
+
+    private fun consumeLoss() {
+        lossId = Any()
         sawReady = false
         readyLinkClosedAt = null
-        return eligible
     }
 
     fun clear() {
         serviceOwner = null
         owner = null
         sawReady = false
-        physicallyDetached = false
+        lossId = null
         readyLinkClosedAt = null
     }
 }

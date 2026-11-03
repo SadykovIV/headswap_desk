@@ -15,6 +15,7 @@ public final class ManualAccessPolicy {
     public static final String COMPONENT = PACKAGE + "/" + DEX_CLASS_PACKAGE + ".DelegatedDesktopInstrumentation";
     public static final String ACTIVITY = PACKAGE + "/" + DEX_CLASS_PACKAGE + ".DexSetupActivity";
     public static final String AM_CLASS = "com.android.commands.am.Am";
+    static final String HUD_ARGUMENT = "headswap_hud_api";
     public static final long MAX_HEARTBEAT_AGE_MS = 15_000;
     private static final Pattern TOKEN = Pattern.compile("[0-9a-f]{32}");
     private static final Pattern UID = Pattern.compile("^Uid:\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s+(\\d+)\\s*$", Pattern.MULTILINE);
@@ -51,9 +52,11 @@ public final class ManualAccessPolicy {
     public static List<String> arguments(String token, Options options) {
         requireToken(token);
         List<String> args = new ArrayList<>(Arrays.asList("instrument", "-w", "-r", "-e", "headswap_activation_token", token));
-        // Only in this instrumentation. The HUD task reader also needs framework APIs
-        // when audio and panel controls are both disabled.
-        if (options.audio || options.screen || options.hudApi) args.add("--no-hidden-api-checks");
+        // The base desktop configures IME routing on each new HU display. Framework
+        // API access is scoped to this activated process; optional grants remain separate.
+        args.add("--no-hidden-api-checks");
+        if (!options.audio && !options.screen)
+            args.addAll(Arrays.asList("-e", HUD_ARGUMENT, Boolean.toString(options.hudApi)));
         if (options.audio) args.addAll(Arrays.asList("-e", "headswap_audio", "true"));
         if (options.screen) args.addAll(Arrays.asList("-e", "headswap_screen", "true"));
         args.add(COMPONENT);

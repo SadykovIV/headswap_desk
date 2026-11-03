@@ -11,7 +11,9 @@ import com.headswap.desk.Wire
 import com.headswap.desk.aa.DrainMeter
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
+import java.io.InterruptedIOException
 import java.io.OutputStream
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -46,6 +48,8 @@ class StreamTransport(
     private var writer: Thread? = null
     @Volatile private var desync = false
     @Volatile private var wholeWrites = false
+    @Volatile override var usbEndpointLost = false
+        private set
 
     override fun setWholeWrites(on: Boolean) {
         wholeWrites = on
@@ -112,8 +116,9 @@ class StreamTransport(
         val buf = ByteArray(Wire.CHUNK)
         try {
             while (!closed.get()) {
-                val n = input.read(buf)
+                val n = endpointIo { input.read(buf) }
                 if (n < 0) {
+                    usbEndpointLost = caps.nativeDetach
                     if (!closed.get()) onClosed("EOF чтения (ГУ отключилось)")
                     return
                 }
@@ -149,8 +154,10 @@ class StreamTransport(
                 // заголовок отдельным write, тело следом кусками <= 16384 (спека §1.4); Mobis CCNC - тело одним write, как Baidu
                 val t0 = System.nanoTime()
                 val parts = if (wholeWrites) Wire.writeWhole(o.chan, o.inner) else Wire.writeSequence(o.chan, o.inner)
-                for (part in parts) output.write(part)
-                output.flush()
+                endpointIo {
+                    for (part in parts) output.write(part)
+                    output.flush()
+                }
                 drain.onWrite(clock(), video, o.inner.size, System.nanoTime() - t0)
                 onWritten(o.chan, o.inner)
             }
@@ -161,6 +168,15 @@ class StreamTransport(
                 onClosed("ошибка записи: ${e.message}")
             }
         }
+    }
+
+    // Parser, sink and logging exceptions can also end a session. Only fd I/O is
+    // evidence for an early USB unplug; a cancelled/timed-out operation is ambiguous.
+    private inline fun <T> endpointIo(action: () -> T): T = try {
+        action()
+    } catch (error: IOException) {
+        if (caps.nativeDetach && error !is InterruptedIOException) usbEndpointLost = true
+        throw error
     }
 
     companion object {

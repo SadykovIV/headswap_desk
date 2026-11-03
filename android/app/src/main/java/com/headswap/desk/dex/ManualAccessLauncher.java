@@ -43,7 +43,7 @@ public final class ManualAccessLauncher {
             ManualAccessPolicy.Options options = ManualAccessPolicy.Options.parse(args);
             if (options.help) {
                 System.out.println("HeadSwap ADB activation: [--audio] [--screen]\n"
-                    + "Основной доступ включает управление текущей музыкой: пауза при отключении USB и продолжение той же сессии после готовности CarLife.\n"
+                    + "Основной доступ включает клавиатуру на экранах HeadSwap и управление текущей музыкой: пауза при отключении USB и продолжение той же сессии после готовности CarLife.\n"
                     + "На новой установке обе опции отмечены. Для USB-звука передайте --audio, для управления панелью и чтения времени активности экрана — --screen.\n"
                     + "Служебные API доступны только в активированном процессе HeadSwap.");
                 return 0;
@@ -92,8 +92,7 @@ public final class ManualAccessLauncher {
     private static boolean activate(int uid, ManualAccessPolicy.Options options) throws Exception {
         JSONObject active = heartbeat(uid, null);
         if (active != null) {
-            requireCapabilities(active, options);
-            ensureKeyboard(uid, active);
+            requireCapabilities(ensureKeyboard(uid, active), options);
             System.out.println("Доступ работает в текущем сеансе.");
             return false;
         }
@@ -136,8 +135,7 @@ public final class ManualAccessLauncher {
             while (SystemClock.elapsedRealtime() < heartbeatDeadline) {
                 JSONObject status = heartbeat(uid, beforeKill);
                 if (status != null) {
-                    requireCapabilities(status, options);
-                    ensureKeyboard(uid, status);
+                    requireCapabilities(ensureKeyboard(uid, status), options);
                     return true;
                 }
                 Thread.sleep(500);
@@ -209,29 +207,36 @@ public final class ManualAccessLauncher {
         } catch (Exception unavailable) { return null; } // Never echo the private record.
     }
 
-    private static void ensureKeyboard(int uid, JSONObject status) throws Exception {
-        if (Boolean.TRUE.equals(status.opt("keyboardRouting"))) return;
+    private static JSONObject ensureKeyboard(int uid, JSONObject status) throws Exception {
+        if (displayAccessReady(status)) return status;
         DisplayHelperRendezvous record = liveRecovery(uid);
         check(record != null && record.matchesHeartbeat(number(status.opt("pid")), number(status.opt("elapsedRealtimeMs")),
                 status.optString("helperSession")), "Не удалось подтвердить активный сеанс клавиатуры. Обновите или заново активируйте HeadSwap.");
         System.out.println("Восстанавливаю клавиатуру текущего сеанса…");
         long launched = SystemClock.elapsedRealtime();
-        launchDisplayHelper(uid, record.token, record.panel, record);
+        // A live helper may be waiting for the next retry on a newly registered display.
+        // Only launch a replacement if its authenticated connection has actually gone.
+        if (!Boolean.TRUE.equals(status.opt("displayHelper"))) launchDisplayHelper(uid, record.token, record.panel, record);
         long deadline = launched + 18_000;
         while (SystemClock.elapsedRealtime() < deadline) {
             JSONObject current = heartbeat(uid, launched);
             if (current != null) {
                 check(record.matchesHeartbeat(number(current.opt("pid")), number(current.opt("elapsedRealtimeMs")),
                         current.optString("helperSession")), "Активный сеанс изменился во время восстановления клавиатуры.");
-                if (Boolean.TRUE.equals(current.opt("keyboardRouting"))) {
+                if (displayAccessReady(current)) {
                     DisplayHelperRendezvous live = liveRecovery(uid);
                     check(live != null && record.fingerprint().equals(live.fingerprint()), "Сеанс клавиатуры уже завершён.");
-                    return;
+                    return current;
                 }
             }
             Thread.sleep(400);
         }
         throw new IOException("Действующий сеанс не подтвердил восстановление клавиатуры. Повторите активацию.");
+    }
+
+    private static boolean displayAccessReady(JSONObject status) {
+        return Boolean.TRUE.equals(status.opt("keyboardRouting")) &&
+            (!Boolean.TRUE.equals(status.opt("panelNeedsHelper")) || Boolean.TRUE.equals(status.opt("displayHelper")));
     }
 
     private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {

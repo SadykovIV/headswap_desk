@@ -935,7 +935,11 @@ class BridgeService : Service() {
         val sref = arrayOfNulls<CarLifeSession>(1)
         val s = CarLifeSession(transport, cfg, h.core, PhoneThermal(this), CallStateSource.NONE,
             onHuSize = { w, hh -> aaPrefs.saveHuSize(w, hh) },
-            onNavigationInterestChanged = { main.post { if (!stopRequested && session === sref[0]) clusterNavigation?.subscriptionChanged() } }
+            onNavigationInterestChanged = { main.post { if (!stopRequested && session === sref[0]) clusterNavigation?.subscriptionChanged() } },
+            onUsbOutputLost = { owner, hadPicture -> main.post {
+                if (!stopRequested && session === owner)
+                    com.headswap.desk.dex.DesktopMusicPlayback.usbOutputLost(this, owner, hadPicture && DexState.running)
+            } }
         ) { reason -> main.post { onSessionClosed(sref[0]!!, reason) } }
         sref[0] = s
         session = s

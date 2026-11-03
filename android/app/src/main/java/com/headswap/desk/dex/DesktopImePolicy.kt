@@ -1,6 +1,8 @@
 package com.headswap.desk.dex
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
 import android.view.WindowInsets
@@ -31,9 +33,11 @@ internal object DesktopImePolicy {
     }
 }
 
-/** Runs exclusively as shell. No method accepts a policy, an arbitrary command, or display 0. */
+/** Shared by the shell and the activated input gateway. Only LOCAL is writable, and only on
+ * named, trusted virtual displays owned by the expected UID. Never accepts display 0. */
 @SuppressLint("PrivateApi", "BlockedPrivateApi")
 internal object ShellDisplayIme {
+    const val PERMISSION = "android.permission.INTERNAL_SYSTEM_WINDOW"
     private const val LOCAL = 0 // WindowManager.DISPLAY_IME_POLICY_LOCAL
     private val displayManager by lazy { systemDisplayManager() }
     private val displayInfo by lazy {
@@ -46,6 +50,18 @@ internal object ShellDisplayIme {
     }
     private val getPolicy by lazy { wmType.getMethod("getDisplayImePolicy", Int::class.javaPrimitiveType) }
     private val setPolicy by lazy { wmType.getMethod("setDisplayImePolicy", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType) }
+
+    // Resolve the private APIs inside the activated process without reading or touching any display.
+    private val activationApi by lazy {
+        try {
+            displayManager; displayInfo; windowManager; getPolicy; setPolicy
+            true
+        } catch (_: Exception) { false }
+        catch (_: LinkageError) { false }
+    }
+
+    fun availableInActivation(context: Context): Boolean =
+        context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED && activationApi
 
     fun requireOwned(id: Int, ownerUid: Int) {
         require(id > 0)

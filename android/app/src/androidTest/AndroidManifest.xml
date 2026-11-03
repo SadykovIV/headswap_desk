@@ -3,5 +3,7 @@
         <!-- This component lives in the separate test APK, with a different playback UID. -->
         <activity android:name="com.headswap.desk.qa.MixToneActivity" android:exported="true"
             android:permission="android.permission.DUMP"/>
+        <activity android:name="com.headswap.desk.qa.SilentPlayerActivity" android:exported="true"
+            android:permission="android.permission.DUMP"/>
     </application>
 </manifest>

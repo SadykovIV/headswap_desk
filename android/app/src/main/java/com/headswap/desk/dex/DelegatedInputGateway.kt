@@ -82,27 +82,44 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
 
     private fun registerIme(entry: DelegatedInputRegistry.Entry) {
         imeRoutes.register(entry)
-        val connection = ShellPanelClient.imeConnection
-        if (connection == null) {
+        if (imeBackend() == null) {
             AppLog.i("DESKTOP IME: дисплей ${entry.id} ожидает связи со службой клавиатуры", false)
-        } else refreshIme(connection, entry)
+        } else refreshIme(entry)
     }
 
-    private fun refreshIme(connection: Any?, only: DelegatedInputRegistry.Entry? = null) {
-        if (activeGateway.get() !== this || ShellPanelClient.imeConnection !== connection) return
-        imeRoutes.refresh(connection, SystemClock.elapsedRealtime(), only) { entry ->
+    // USB handoff can retire the whole ADB process group. The active app still has its
+    // desktop lease and can set LOCAL itself before the first app is launched on a new display.
+    private fun imeBackend(): Any? =
+        ShellPanelClient.imeConnection ?: ShellDisplayIme.takeIf { it.availableInActivation(context) }
+
+    private fun refreshIme(only: DelegatedInputRegistry.Entry? = null) {
+        if (activeGateway.get() !== this) return
+        val backend = imeBackend()
+        imeRoutes.refresh(backend, SystemClock.elapsedRealtime(), only) { entry ->
             val parent = panelParent ?: return@refresh false
             val token = entry.token as IBinder
-            if (activeGateway.get() !== this || ShellPanelClient.imeConnection !== connection ||
+            if (activeGateway.get() !== this || imeBackend() !== backend ||
                 !(parent.token as IBinder).isBinderAlive || !token.isBinderAlive ||
                 !DelegatedDesktopAccess.isReady(context)) return@refresh false
-            val ok = try {
+            val source = try {
                 requireTrustedDisplay(entry.id)
-                ShellPanelClient.enableLocalIme(entry.id) && ShellPanelClient.imeConnection === connection
-            } catch (_: Exception) { false }
-            val state = if (ok) "LOCAL подтверждён" else "LOCAL недоступен, запланирован повтор"
+                val fromHelper = backend !== ShellDisplayIme &&
+                    ShellPanelClient.enableLocalIme(entry.id) && ShellPanelClient.imeConnection === backend
+                when {
+                    fromHelper -> "helper"
+                    ShellDisplayIme.availableInActivation(context) -> {
+                        ShellDisplayIme.enable(entry.id, Process.myUid())
+                        "activation"
+                    }
+                    else -> null
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("HeadSwapDesk", "IME policy unavailable on display ${entry.id}", e)
+                null
+            } catch (_: LinkageError) { null }
+            val state = if (source != null) "LOCAL подтверждён ($source)" else "LOCAL недоступен, запланирован повтор"
             AppLog.i("DESKTOP IME: дисплей ${entry.id} — $state", false)
-            ok
+            source != null
         }
     }
 
@@ -112,7 +129,11 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
             requireTrustedDisplay(displayId)
             registry.requireDisplay(displayId, token).also { check(it.parent != null) }
         }
-        val visible = ShellPanelClient.imeVisible(displayId)
+        val visible = ShellPanelClient.imeVisible(displayId) ?: if (ShellDisplayIme.availableInActivation(context)) {
+            try { ShellDisplayIme.isVisible(displayId, Process.myUid()) }
+            catch (_: Exception) { null }
+            catch (_: LinkageError) { null }
+        } else null
         return synchronized(this) {
             requireActive()
             check(registry.requireDisplay(displayId, token) === child)
@@ -232,7 +253,8 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         const val EXTRA_BINDER = "headswap_delegated_input_gateway"
         private val activeGateway = java.util.concurrent.atomic.AtomicReference<DelegatedInputGateway?>()
         /** Instrumentation heartbeat, after attempting to reconnect the authenticated helper. */
-        fun refreshImeRoutes(connection: Any?) { activeGateway.get()?.refreshIme(connection) }
+        fun refreshImeRoutes() { activeGateway.get()?.refreshIme() }
+        fun imeRoutesReady(): Boolean = activeGateway.get()?.imeRoutes?.allApplied() != false
         fun ownsFocusedDisplay(id: Int): Boolean = id > 0 && activeGateway.get()?.liveDisplayIds?.contains(id) == true
     }
 }

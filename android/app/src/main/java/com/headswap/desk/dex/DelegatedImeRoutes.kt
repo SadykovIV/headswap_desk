@@ -28,6 +28,8 @@ internal class DelegatedImeRoutes {
         channel = null
     }
 
+    @Synchronized fun allApplied(): Boolean = routes.values.all { it.applied }
+
     @Synchronized fun refresh(connection: Any?, now: Long, only: DelegatedInputRegistry.Entry? = null,
         apply: (DelegatedInputRegistry.Entry) -> Boolean) {
         if (channel !== connection) {

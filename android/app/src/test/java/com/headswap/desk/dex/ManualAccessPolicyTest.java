@@ -37,7 +37,8 @@ public final class ManualAccessPolicyTest {
 
     @Test public void baseActivationDoesNotRequestPlaybackApisOrPanel() {
         List<String> args = ManualAccessPolicy.arguments(TOKEN, options());
-        assertFalse(args.contains("--no-hidden-api-checks"));
+        assertTrue(args.contains("--no-hidden-api-checks")); // WindowManager IME policy is a framework API.
+        assertEquals("false", args.get(args.indexOf(ManualAccessPolicy.HUD_ARGUMENT) + 1));
         assertFalse(args.contains("headswap_audio"));
         assertFalse(args.contains("headswap_screen"));
         assertEquals(ManualAccessPolicy.COMPONENT, args.get(args.size() - 1));
@@ -46,6 +47,7 @@ public final class ManualAccessPolicyTest {
     @Test public void approvedHudAloneEnablesFrameworkApiDuringThisActivation() {
         List<String> args = ManualAccessPolicy.arguments(TOKEN, options().withHudApi());
         assertTrue(args.contains("--no-hidden-api-checks"));
+        assertEquals("true", args.get(args.indexOf(ManualAccessPolicy.HUD_ARGUMENT) + 1));
         assertFalse(args.contains("headswap_audio"));
         assertFalse(args.contains("headswap_screen"));
     }

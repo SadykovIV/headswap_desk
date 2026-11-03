@@ -27,6 +27,8 @@ class TransportCaps(
  */
 interface CarTransport {
     val caps: TransportCaps
+    /** True only after the USB fd itself returned EOF or a terminal read/write error. */
+    val usbEndpointLost: Boolean get() = false
 
     /** Для лога и экрана: описание аксессуара или адреса ГУ. */
     val label: String

@@ -24,12 +24,16 @@ import java.util.concurrent.TimeUnit
 class DelegatedDesktopInstrumentation : Instrumentation() {
     private var requestAudio = false
     private var requestScreen = false
+    private var requestHudApi = false
     private var activationToken: String? = null
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         requestAudio = DesktopAudioPolicy.requestFromArgument(arguments?.getString(DesktopAudioPolicy.ACTIVATION_ARGUMENT))
         requestScreen = DelegatedPanelAccess.requestFromArgument(arguments?.getString(DelegatedPanelAccess.ACTIVATION_ARGUMENT))
         activationToken = arguments?.getString("headswap_activation_token")
+        // Base-only manual activation verifies the saved HUD preference and listener access
+        // in the launcher. Full activation and direct instrumentation check them here as before.
+        requestHudApi = arguments?.getString(ManualAccessPolicy.HUD_ARGUMENT) != "false"
         start()
     }
 
@@ -55,7 +59,10 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                 .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
                 .put("permissionsChecked", permissions)
                 .put("helperSession", if (active) recovery?.fingerprint() else null)
-                .put("keyboardRouting", active && ShellPanelClient.isConnected)
+                .put("keyboardRouting", active && DelegatedInputGateway.imeRoutesReady() &&
+                    (ShellPanelClient.isConnected || ShellDisplayIme.availableInActivation(context)))
+                .put("displayHelper", active && ShellPanelClient.isConnected)
+                .put("panelNeedsHelper", active && panelReady && DelegatedPanelAccess.usesShellBackend())
                 .put("mediaControl", active && context.checkSelfPermission(DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL) == android.content.pm.PackageManager.PERMISSION_GRANTED)
                 .put("playbackAudio", active && requestAudio && DesktopAudioAccess.hasPermission(context))
                 .put("panelControl", active && panelReady && DelegatedPanelAccess.hasPermission(context))
@@ -84,8 +91,8 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             }
             val permissions = mutableListOf(DelegatedDesktopAccess.ADD_TRUSTED_DISPLAY,
                 DelegatedDesktopAccess.INJECT_EVENTS, DelegatedDesktopAccess.REAL_GET_TASKS,
-                DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL)
-            if (CarLifeForegroundGuidance.requestedForActivation(context)) {
+                DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL, ShellDisplayIme.PERMISSION)
+            if (requestHudApi && CarLifeForegroundGuidance.requestedForActivation(context)) {
                 permissions.add(CarLifeForegroundGuidance.TASK_ASSIST_PERMISSION)
             }
             if (requestAudio) {
@@ -100,8 +107,8 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             adoptedHere = true
             check(DelegatedDesktopAccess.hasPermissions(context)) { "Android не предоставил все права рабочего стола и управления музыкой. Повторите явную активацию HeadSwap." }
             check(!requestAudio || DesktopAudioAccess.hasPermission(context)) { "Android не разрешил захват звука приложений" }
-            // The am process (and its UiAutomation Binder) is retired after activation. This
-            // authenticated helper stays available offline, without delegating INTERNAL_SYSTEM_WINDOW.
+            // Some ROMs retire the helper together with the ADB process group on USB handoff.
+            // The gateway can still set LOCAL using the live activation and its own display leases.
             activationToken?.let { token ->
                 try { ShellPanelClient.connect(token) }
                 catch (error: Exception) { AppLog.e("DESKTOP IME: служба клавиатуры недоступна", error) }
@@ -166,7 +173,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             while (!stop.await(5, TimeUnit.SECONDS)) {
                 check(DelegatedDesktopAccess.hasPermissions(context)) { "Desktop permissions were revoked" }
                 activationToken?.let(ShellPanelClient::reconnect)
-                DelegatedInputGateway.refreshImeRoutes(ShellPanelClient.imeConnection)
+                DelegatedInputGateway.refreshImeRoutes()
                 writeHeartbeat(true)
             }
         } catch (error: Throwable) {

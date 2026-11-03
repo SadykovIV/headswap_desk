@@ -10,6 +10,27 @@ class DelegatedImeRoutesTest {
     private fun entry(id: Int, parent: Int? = null) =
         DelegatedInputRegistry.Entry(id, Any(), parent, 800, 600)
 
+    @Test fun readinessReflectsUnconfirmedWindowsAndRecoversOnReplacementBackend() {
+        val routes = DelegatedImeRoutes()
+        assertTrue(routes.allApplied())
+        val parent = entry(7)
+        val child = entry(11, 7)
+        val offlineActivation = Any()
+        routes.register(parent)
+        routes.refresh(offlineActivation, 0) { true }
+        routes.register(child)
+        routes.refresh(offlineActivation, 1) { false }
+        // Framework methods can resolve and the grant can be present while WM refuses this display.
+        assertFalse(routes.allApplied())
+        routes.refresh(Any(), 2) { true } // Explicit ADB repair established a new authenticated backend.
+        assertTrue(routes.allApplied())
+        routes.unregister(child)
+        routes.register(entry(12, 7))
+        assertFalse(routes.allApplied())
+        routes.unregister(parent)
+        assertTrue(routes.allApplied())
+    }
+
     @Test fun newHelperReappliesAllLiveRoutesOnceEvenAfterFastReconnect() {
         val routes = DelegatedImeRoutes()
         val parent = entry(7)

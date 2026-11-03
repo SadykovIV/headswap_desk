@@ -26,6 +26,8 @@ public final class CompatibilityProbe extends Instrumentation {
         if ("density".equals(probe)) { ProjectionDensityProbe.run(this); return; }
         if ("panel".equals(probe)) { PanelProbe.run(this, panelToken); return; }
         if ("panel-reconnect".equals(probe)) { PanelReconnectProbe.run(this, panelToken); return; }
+        if ("offline-ime".equals(probe)) { OfflineImeProbe.run(this); return; }
+        if ("usb-music-loss".equals(probe)) { UsbMusicLossProbe.run(this); return; }
         if ("components".equals(probe)) { ComponentProbe.run(this); return; }
         if ("settings".equals(probe)) { DesktopSettingsProbe.run(this); return; }
         if ("phone-curtain".equals(probe)) { PhoneCurtainProbe.run(this); return; }

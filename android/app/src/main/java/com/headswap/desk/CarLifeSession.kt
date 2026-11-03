@@ -80,6 +80,7 @@ class CarLifeSession(
     /** Размер кадра из VIDEO_ENCODER_INIT ГУ (для подсказки «Как просит ГУ» в разделе для разработчиков). */
     private val onHuSize: (Int, Int) -> Unit = { _, _ -> },
     private val onNavigationInterestChanged: () -> Unit = {},
+    private val onUsbOutputLost: (owner: CarLifeSession, hadPicture: Boolean) -> Unit = { _, _ -> },
     private val onClosed: (String) -> Unit,
 ) : VideoSource.Listener, CarlifeLink {
 
@@ -225,7 +226,7 @@ class CarLifeSession(
                 "ceilingKbps" to bitratePolicy.ceilingBps / 1000, "mode" to mode.label, "transcode" to bridge.transcodeEnabled)
         }
         CarLifeState.status = "соединено, жду HU_PROTOCOL_VERSION"
-        transport.start(::dispatch, ::logTx, ::close)
+        transport.start(::dispatch, ::logTx) { reason -> close(reason, transportLost = transport.usbEndpointLost) }
         sched.scheduleWithFixedDelay({ tick() }, 1, 1, TimeUnit.SECONDS)
         sched.scheduleWithFixedDelay({ pauseHeartbeat() }, PAUSE_HEARTBEAT_MS, PAUSE_HEARTBEAT_MS, TimeUnit.MILLISECONDS)
         sched.scheduleWithFixedDelay({ adaptBitrate() }, 1000, BITRATE_POLL_MS, TimeUnit.MILLISECONDS)
@@ -358,8 +359,13 @@ class CarLifeSession(
         }
     }
 
-    fun close(reason: String) {
+    fun close(reason: String) = close(reason, transportLost = false)
+
+    private fun close(reason: String, transportLost: Boolean) {
         if (!closed.compareAndSet(false, true)) return
+        // The USB fd can fail seconds before Android reports accessory removal. Notify before
+        // stopping the encoder and releasing the audio route back to the handset speaker.
+        if (transportLost) onUsbOutputLost(this, desktopVideoDelivery.hasPicture())
         synchronized(bridge) { updateGuidanceInterest() }
         desktopVideoDelivery.close()
         DesktopConnectionState.detach(desktopVideoDelivery)

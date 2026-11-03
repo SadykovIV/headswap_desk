@@ -59,68 +59,88 @@ internal object DesktopMusicPlayback {
         scheduleNext()
     }
 
+    fun usbOutputLost(serviceOwner: Any, owner: Any, hadPicture: Boolean) = onMain {
+        val app = context ?: return@onMain
+        if (link.consumeTransportLoss(serviceOwner, owner, hadPicture)) pauseCurrentPlayer(app, "USB transport loss")
+    }
+
     fun physicalDetach(serviceOwner: Any) = onMain {
         val app = context ?: return@onMain
         // A failed retry may replace the working session before USB reports physical detach.
-        // Consume the service's proof before any Binder call so the old link cannot resume or pause twice.
-        if (link.serviceOwner !== serviceOwner || !allowed(app)) return@onMain
+        if (link.serviceOwner !== serviceOwner) return@onMain
         if (receivingVideo()) link.markReady() // The first frame may arrive between readiness polls.
-        if (!link.consumePhysicalDetach(serviceOwner, SystemClock.elapsedRealtime())) return@onMain
-        if (policy.hasPending) return@onMain
+        if (link.consumePhysicalDetach(serviceOwner, SystemClock.elapsedRealtime())) pauseCurrentPlayer(app, "physical USB detach")
+    }
+
+    private fun pauseCurrentPlayer(app: Context, cause: String, retryToken: MediaSession.Token? = null) {
+        if (policy.hasPending || !allowed(app)) return
+        var selected: MediaSession.Token? = null
+        var commandAttempted = false
         try {
-            if (app.checkSelfPermission(android.Manifest.permission.MEDIA_CONTENT_CONTROL) != PackageManager.PERMISSION_GRANTED) return@onMain
             val manager = app.getSystemService(MediaSessionManager::class.java)
-            val selected = manager.mediaKeyEventSession ?: return@onMain
-            val active = manager.getActiveSessions(null)
-            val playing = active.filter { it.playbackState?.state == PlaybackState.STATE_PLAYING }
-            val target = playing.singleOrNull()?.takeIf { it.sessionToken == selected } ?: return@onMain
+            selected = manager.mediaKeyEventSession ?: return
+            if (retryToken != null && selected != retryToken) return
+            val playing = manager.getActiveSessions(null).filter { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+            val target = playing.singleOrNull()?.takeIf { it.sessionToken == selected } ?: return
             val info = target.playbackInfo
             if (info.playbackType != MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL ||
-                info.audioAttributes.usage != AudioAttributes.USAGE_MEDIA) return@onMain
-            val before = snapshot(target) ?: return@onMain
+                info.audioAttributes.usage != AudioAttributes.USAGE_MEDIA) return
+            val before = snapshot(target) ?: return
             releaseObserver()
-            if (!policy.pause(before, SystemClock.elapsedRealtime())) return@onMain
-            if (!policy.hasPending) {
-                target.transportControls.pause()
-                AppLog.i("DESKTOP MUSIC: paused current session; item cannot be safely resumed", false)
-                return@onMain
+            if (!policy.pause(before, SystemClock.elapsedRealtime())) return
+            if (policy.hasPending) {
+                // Observers protect a possible later PLAY. Their setup is optional for PAUSE.
+                try { watchForResume(app, manager, target) }
+                catch (_: Exception) { cancelPending("unable to observe this player") }
             }
-            watched = target
-            val listener = object : MediaController.Callback() {
-                override fun onPlaybackStateChanged(state: PlaybackState?) {
-                    if (watched !== target || !policy.hasPending) return
-                    checkPending(false, playbackCallback = true, event = state)
-                }
-                override fun onMetadataChanged(metadata: MediaMetadata?) {
-                    if (watched === target && policy.hasPending) checkPending(false)
-                }
-                override fun onSessionDestroyed() {
-                    if (watched === target) cancelPending("session destroyed")
-                }
-            }
-            callback = listener
-            target.registerCallback(listener, main)
-            mediaManager = manager
-            sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener {
-                if (watched === target && policy.hasPending) checkPending(false)
-            }.also { manager.addOnActiveSessionsChangedListener(it, null, main) }
-            selectedListener = MediaSessionManager.OnMediaKeyEventSessionChangedListener { _, token ->
-                if (watched === target && policy.hasPending && !runCatching {
-                    policy.acceptsSelectionEvent(token) { manager.mediaKeyEventSession }
-                }.getOrDefault(false)) cancelPending("selected player changed")
-            }.also { manager.addOnMediaKeyEventSessionChangedListener(app.mainExecutor, it) }
+            commandAttempted = true // a Binder failure does not prove the player missed PAUSE
             target.transportControls.pause()
-            AppLog.i("DESKTOP MUSIC: paused current session on physical USB detach", false)
-            main.removeCallbacks(tick)
-            tick.run()
-        } catch (_: Exception) { cancelPending("pause unavailable") }
+            AppLog.i("DESKTOP MUSIC: paused current session on $cause", false)
+            if (policy.hasPending) tick.run()
+        } catch (error: Exception) {
+            cancelPending("pause unavailable")
+            val token = selected
+            if (!commandAttempted && error !is SecurityException && token != null && retryToken == null) {
+                val loss = link.lossId ?: return
+                // Retry a transient query once, only for the same selected player and loss.
+                main.postDelayed({
+                    if (link.lossId === loss) pauseCurrentPlayer(app, cause, retryToken = token)
+                }, 100L)
+            }
+        }
+    }
+
+    private fun watchForResume(app: Context, manager: MediaSessionManager, target: MediaController) {
+        watched = target
+        val listener = object : MediaController.Callback() {
+            override fun onPlaybackStateChanged(state: PlaybackState?) {
+                if (watched === target && policy.hasPending)
+                    checkPending(false, playbackCallback = true, event = state)
+            }
+            override fun onMetadataChanged(metadata: MediaMetadata?) {
+                if (watched === target && policy.hasPending) checkPending(false)
+            }
+            override fun onSessionDestroyed() {
+                if (watched === target) cancelPending("session destroyed")
+            }
+        }
+        callback = listener
+        target.registerCallback(listener, main)
+        mediaManager = manager
+        sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener {
+            if (watched === target && policy.hasPending) checkPending(false)
+        }.also { manager.addOnActiveSessionsChangedListener(it, null, main) }
+        selectedListener = MediaSessionManager.OnMediaKeyEventSessionChangedListener { _, token ->
+            if (watched === target && policy.hasPending && !runCatching {
+                policy.acceptsSelectionEvent(token) { manager.mediaKeyEventSession }
+            }.getOrDefault(false)) cancelPending("selected player changed")
+        }.also { manager.addOnMediaKeyEventSessionChangedListener(app.mainExecutor, it) }
     }
 
     fun serviceDestroyed(serviceOwner: Any, physicallyDetached: Boolean) = onMain {
         if (link.serviceOwner !== serviceOwner) return@onMain
         link.owner?.let(::linkClosed)
-        // Only physicalDetach() can create this intention. A failed reconnect may end its own
-        // service before any new frames arrive; that lifecycle event is not a player decision.
+        // A failed reconnect may end its own service before new frames arrive.
         if (policy.hasPending) {
             link.clear()
             AppLog.i("DESKTOP MUSIC: retaining paused session after USB service ended", false)
@@ -160,23 +180,27 @@ internal object DesktopMusicPlayback {
 
     private fun scheduleNext() {
         main.removeCallbacks(tick)
-        val delay = if (link.owner != null && !link.physicallyDetached && (!link.sawReady || policy.hasPending)) 250L
+        val delay = if (link.owner != null && !link.outputLost && (!link.sawReady || policy.hasPending)) 250L
             else policy.nextDeadlineDelay(SystemClock.elapsedRealtime())
         if (delay != null) main.postDelayed(tick, delay)
     }
 
-    private fun receivingVideo(): Boolean = !link.physicallyDetached && link.owner != null &&
+    private fun receivingVideo(): Boolean = !link.outputLost && link.owner != null &&
         runCatching { ready?.invoke() == true }.getOrDefault(false)
 
     private fun snapshot(controller: MediaController, state: PlaybackState? = controller.playbackState): DesktopMusicResumePolicy.Playback? {
         state ?: return null
-        val metadata = controller.metadata
-        val item = metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.takeIf { it.isNotEmpty() }
-            ?: metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)?.takeIf { it.isNotEmpty() }
-            ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)?.takeIf { it.isNotEmpty() }?.let {
-                listOf(it, metadata.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
-                    metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).toString()).joinToString("\u0000")
-            } ?: state.activeQueueItemId.takeIf { it != MediaSession.QueueItem.UNKNOWN_ID.toLong() }?.let { "queue:$it" }
+        val item = try {
+            val metadata = controller.metadata
+            metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_ID)?.takeIf { it.isNotEmpty() }
+                ?: metadata?.getString(MediaMetadata.METADATA_KEY_MEDIA_URI)?.takeIf { it.isNotEmpty() }
+                ?: metadata?.getString(MediaMetadata.METADATA_KEY_TITLE)?.takeIf { it.isNotEmpty() }?.let {
+                    listOf(it, metadata.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty(),
+                        metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).toString()).joinToString("\u0000")
+                } ?: state.activeQueueItemId.takeIf { it != MediaSession.QueueItem.UNKNOWN_ID.toLong() }?.let { "queue:$it" }
+        } catch (_: RuntimeException) {
+            null // Unreadable track metadata precludes automatic PLAY, not PAUSE of the verified player.
+        }
         return DesktopMusicResumePolicy.Playback(controller.sessionToken, item, when (state.state) {
             PlaybackState.STATE_PLAYING -> DesktopMusicResumePolicy.State.PLAYING
             PlaybackState.STATE_PAUSED -> DesktopMusicResumePolicy.State.PAUSED

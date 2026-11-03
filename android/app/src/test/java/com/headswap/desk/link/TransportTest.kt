@@ -1,8 +1,11 @@
 package com.headswap.desk.link
 
 import com.headswap.desk.Ch
+import com.headswap.desk.CarLifeSession
 import com.headswap.desk.Msg
+import com.headswap.desk.SessionConfig
 import com.headswap.desk.Wire
+import com.headswap.desk.aa.AaBridgeCore
 import com.headswap.desk.link.diag.WLog
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -110,6 +113,53 @@ class TransportTest {
         assertEquals(3, t.queueSize(Ch.MEDIA))
         assertEquals(1, t.queuedVideoFrames)
         t.close()
+    }
+
+    @Test
+    fun usbReaderEofSignalsPlayerBeforeTeardownButManualAndTcpCloseDoNot() {
+        for ((caps, peerDisconnect) in listOf(TransportCaps.USB_AOA to true, TransportCaps.USB_AOA to false,
+                TransportCaps.TCP_DEBUG to true)) {
+            val events = Collections.synchronizedList(mutableListOf<String>())
+            val closed = CountDownLatch(1)
+            val input = PipedInputStream()
+            val peer = PipedOutputStream(input)
+            val transport = StreamTransport(input, ByteArrayOutputStream(), caps, "test", closeFd = { events += "fd closed" }, clock = clock)
+            val session = CarLifeSession(transport, SessionConfig(), AaBridgeCore(log = { _, _ -> }),
+                onUsbOutputLost = { _, hadPicture -> events += "lost (picture=$hadPicture)" },
+                onClosed = { closed.countDown() })
+            try {
+                session.start()
+                if (peerDisconnect) peer.close() else session.close("Stop")
+                assertTrue(closed.await(3, TimeUnit.SECONDS))
+                val expected = if (peerDisconnect && caps == TransportCaps.USB_AOA) listOf("lost (picture=false)", "fd closed")
+                    else listOf("fd closed")
+                assertEquals(expected, events)
+            } finally {
+                peer.close()
+                session.close("test finished")
+            }
+        }
+    }
+
+    @Test
+    fun onlyEndpointIoCanSignalEarlyUsbLoss() {
+        val frame = Wire.cmdInner(Msg.MD_INFO, byteArrayOf())
+        val protocolInput = ByteArrayInputStream(Wire.outerHeader(Ch.CMD, frame.size) + frame)
+        for ((input, expected) in listOf(
+            object : InputStream() { override fun read(): Int = throw java.io.IOException("ENODEV") } to true,
+            object : InputStream() { override fun read(): Int = throw java.net.SocketTimeoutException("timeout") } to false,
+            protocolInput to false,
+        )) {
+            val transport = StreamTransport(input, ByteArrayOutputStream(), TransportCaps.USB_AOA, "test", clock = clock)
+            val ended = CountDownLatch(1)
+            try {
+                transport.start({ _, _ -> throw java.io.IOException("frame consumer failed") }, { _, _ -> }, { ended.countDown() })
+                assertTrue(ended.await(3, TimeUnit.SECONDS))
+                assertEquals(expected, transport.usbEndpointLost)
+            } finally {
+                transport.close()
+            }
+        }
     }
 
     @Test
