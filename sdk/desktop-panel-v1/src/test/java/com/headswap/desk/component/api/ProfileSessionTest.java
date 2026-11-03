@@ -45,4 +45,62 @@ public class ProfileSessionTest {
         };
         assertFalse(ProfileSession.fromWire(1, ProfileContract.CAP_OPEN_CATALOG, closed).openCatalog());
     }
+
+    @Test public void mediaRequiresItsOwnBitAndOnlyForwardsKnownCommands() {
+        int[] calls = {0};
+        IDesktopPanelSession music = new IDesktopPanelSession.Default() {
+            @Override public boolean sendMediaCommand(int command) {
+                calls[0]++;
+                return command == ProfileContract.MEDIA_NEXT;
+            }
+        };
+        ProfileSession plain = ProfileSession.fromWire(1, 3, music);
+        assertFalse(plain.canUseMedia());
+        assertNull(plain.getNowPlaying());
+        assertFalse(plain.sendMediaCommand(ProfileContract.MEDIA_NEXT));
+        ProfileSession allowed = ProfileSession.fromWire(1, 3 | ProfileContract.CAP_MEDIA, music);
+        assertTrue(allowed.canUseMedia());
+        assertFalse(allowed.canUseMicrophone());
+        assertFalse(allowed.canUseVoiceChannel());
+        assertFalse(allowed.sendMediaCommand(87));
+        assertEquals(0, calls[0]);
+        assertTrue(allowed.sendMediaCommand(ProfileContract.MEDIA_NEXT));
+        assertEquals(1, calls[0]);
+        assertNull(allowed.getNowPlaying());
+    }
+
+    @Test public void metadataIsBoundedAndDoesNotCarryHostObjects() {
+        assertNull(ProfileNowPlaying.fromFields("", "Artist", true, null));
+        assertNull(ProfileNowPlaying.fromFields("Track", "Artist", "yes", null));
+        ProfileNowPlaying track = ProfileNowPlaying.fromFields("  Y\u202E\nZ", "A".repeat(300), false, "content://secret");
+        assertEquals("YZ", track.getTitle());
+        assertEquals(ProfileNowPlaying.MAX_LABEL_LENGTH, track.getArtist().length());
+        assertFalse(track.isPlaying());
+        assertNull(track.getArtwork());
+        String almostFull = "x".repeat(ProfileNowPlaying.MAX_LABEL_LENGTH - 1);
+        assertEquals(almostFull, ProfileNowPlaying.fromFields(almostFull + "🎵", "", true, null).getTitle());
+    }
+
+    @Test public void chromeDoesNotImplyMediaAndReportsOneCompleteBoundedLayout() {
+        int[] calls = {0};
+        IDesktopPanelSession dock = new IDesktopPanelSession.Default() {
+            @Override public boolean setDashboardLayout(boolean music, boolean right, boolean target, int px) {
+                calls[0]++;
+                return !music && right && !target && px == 0;
+            }
+            @Override public boolean sendDashboardAction(int action) { return action == ProfileContract.DASH_BACK; }
+        };
+        assertFalse(ProfileSession.fromWire(1, ProfileContract.CAP_MEDIA, dock).setDashboardLayout(true, false, true, 39));
+        ProfileSession chrome = ProfileSession.fromWire(1, ProfileContract.CAP_PROFILE_CHROME, dock);
+        assertTrue(chrome.canUseProfileChrome());
+        assertFalse(chrome.canUseMedia());
+        assertFalse(chrome.canUseMicrophone());
+        assertFalse(chrome.setDashboardLayout(true, false, true, -1));
+        assertFalse(chrome.setDashboardLayout(true, false, true, Integer.MAX_VALUE));
+        assertEquals(0, calls[0]);
+        assertTrue(chrome.setDashboardLayout(false, true, false, 0));
+        assertEquals(1, calls[0]);
+        assertTrue(chrome.sendDashboardAction(ProfileContract.DASH_BACK));
+        assertFalse(chrome.sendDashboardAction(66));
+    }
 }

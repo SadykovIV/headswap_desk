@@ -743,10 +743,10 @@ class DexSetupActivity : Activity() {
             }.setNegativeButton("Отмена", null).show()
     }
 
-    private fun selectDesktopProfile(mode: Int, entry: DesktopComponentEntry?) {
+    private fun selectDesktopProfile(mode: Int, entry: DesktopComponentEntry?, mediaAllowed: Boolean) {
         if (accessChoiceLocked()) return
         if (entry == null) DesktopComponents.clear(this)
-        else if (!DesktopComponents.select(this, entry)) {
+        else if (!DesktopComponents.select(this, entry, mediaAllowed)) {
             AlertDialog.Builder(this).setTitle("Компонент изменился")
                 .setMessage("Откройте список профилей заново и проверьте пакет и подпись установленного приложения.")
                 .setPositiveButton("Понятно", null).show()

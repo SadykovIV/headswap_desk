@@ -3,7 +3,6 @@ package com.headswap.desk.update
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -12,10 +11,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import androidx.core.content.FileProvider
 import com.headswap.desk.BuildConfig
-import com.headswap.desk.component.DesktopComponents
-import com.headswap.desk.dex.DesktopProfilePicker
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.dex.DesktopSetupViews
 import com.headswap.desk.dex.DesktopModePolicy
@@ -28,11 +24,12 @@ class ComponentUpdatesActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private lateinit var version: TextView
     private lateinit var status: TextView
-    private lateinit var profiles: TextView
+    private lateinit var profiles: InstalledProfileCards
     private lateinit var check: Button
     private lateinit var pick: Button
     private lateinit var remote: Button
     private lateinit var install: Button
+    private lateinit var remove: Button
     private var spec = DesktopComponent.entries.first()
     private var available: ComponentAsset? = null
     private var pending: File? = null
@@ -66,10 +63,6 @@ class ComponentUpdatesActivity : Activity() {
         val mainApp = ui.section(root, "HeadSwap Desktop")
         ui.text(mainApp, "Основное приложение · ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})", 15f)
         ui.button(mainApp, "Проверить обновления HeadSwap Desktop") { Updater.check(this, manual = true) }
-        val thirdParty = ui.section(root, "Независимые профили")
-        ui.text(thirdParty, "Установите APK разработчика через Android. На главном экране откройте «Профиль» и выберите его лаунчер.", 14f)
-        profiles = ui.text(thirdParty, "", 14f)
-        ui.button(thirdParty, "Обновить список профилей") { refreshProfiles() }
         val card = ui.section(root)
         fun button(value: String, click: () -> Unit) = ui.button(card, value, click)
         val componentTitle = ui.text(card, spec.title, 18f, true)
@@ -92,26 +85,26 @@ class ComponentUpdatesActivity : Activity() {
                 .setType(APK_TYPE), PICK)
         }
         install = button("Продолжить установку") { installPrepared() }
+        remove = button("Удалить компонент…") {
+            work("Проверяю установленный компонент…", {
+                check(DexPrefs(this).desktopMode != DesktopModePolicy.DRIVEDECK || !CarLifeState.running) {
+                    "Остановите сеанс DriveDeck и повторите действие."
+                }
+                ComponentPackages.builtinRemoval(this, spec)
+            }) { launchSystem(it, REMOVE) }
+        }
         status = ui.text(card, state?.getString("status") ?: "Проверяются только выпуски HeadSwap. Установка — с подтверждением Android.", 15f)
+        profiles = InstalledProfileCards(this, ui, root, worker, state)
         refresh()
     }
 
-    override fun onResume() { super.onResume(); refresh(); refreshProfiles() }
-
-    private fun refreshProfiles() {
-        worker.execute {
-            val entries = DesktopComponents.list(this)
-            val installed = entries.joinToString("\n\n") { "${DesktopProfilePicker.name(it)} · ${it.versionName} (${it.versionCode})\n${it.componentName.flattenToShortString()}" }
-            runOnUiThread {
-                if (!isFinishing && !isDestroyed) profiles.text = installed.ifEmpty { "Совместимые профили пока не установлены." }
-            }
-        }
-    }
+    override fun onResume() { super.onResume(); refresh(); profiles.refresh() }
     override fun onDestroy() { worker.shutdownNow(); super.onDestroy() }
     override fun onSaveInstanceState(state: Bundle) {
         super.onSaveInstanceState(state)
         state.putString("pending", pending?.name)
         state.putString("component", spec.pkg)
+        profiles.save(state)
         if (!busy) state.putString("status", status.text.toString())
     }
 
@@ -122,7 +115,8 @@ class ComponentUpdatesActivity : Activity() {
         remote.text = "${if (current == null) "Скачать" else "Обновить до"} ${next?.version} (код ${next?.code})"
         remote.visibility = if (next != null) View.VISIBLE else View.GONE
         install.visibility = if (pending != null) View.VISIBLE else View.GONE
-        listOf(check, pick, install, remote).forEach { it.isEnabled = !busy }
+        remove.visibility = if (current == null) View.GONE else View.VISIBLE
+        listOf(check, pick, install, remote, remove).forEach { it.isEnabled = !busy }
     }
 
     private fun <T> work(message: String, run: () -> T, done: (T) -> Unit) {
@@ -181,12 +175,8 @@ class ComponentUpdatesActivity : Activity() {
             launchSystem(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")), SOURCE)
             return
         }
-        val uri = FileProvider.getUriForFile(this, "$packageName.components", apk.file)
-        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, APK_TYPE)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).putExtra(Intent.EXTRA_RETURN_RESULT, true)
-        val handler = packageManager.queryIntentActivities(intent, PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY)
-            .firstOrNull() ?: run { status.text = "Системный установщик APK недоступен."; return }
-        intent.setClassName(handler.activityInfo.packageName, handler.activityInfo.name)
+        val intent = runCatching { ComponentPackages.installerIntent(this, apk) }
+            .getOrElse { status.text = it.message ?: "Системный установщик APK недоступен."; return }
         launchSystem(intent, INSTALL)
     }
 
@@ -198,6 +188,7 @@ class ComponentUpdatesActivity : Activity() {
     @Deprecated("Platform Activity callback")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (profiles.result(requestCode, resultCode, data)) return
         when (requestCode) {
             PICK -> if (resultCode == RESULT_OK) data?.data?.let { uri ->
                 pending = null
@@ -210,6 +201,9 @@ class ComponentUpdatesActivity : Activity() {
             INSTALL -> if (resultCode == RESULT_OK) {
                 pending = null; status.text = "Компонент установлен."
             } else status.text = "Установка не завершена. Можно повторить."
+            REMOVE -> if (resultCode == RESULT_OK) {
+                pending = null; available = null; status.text = "Компонент удалён."
+            } else status.text = "Компонент остался установлен."
         }
         refresh()
     }
@@ -219,5 +213,6 @@ class ComponentUpdatesActivity : Activity() {
         const val PICK = 1
         const val SOURCE = 2
         const val INSTALL = 3
+        const val REMOVE = 4
     }
 }

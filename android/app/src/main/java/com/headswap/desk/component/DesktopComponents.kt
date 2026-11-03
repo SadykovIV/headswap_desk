@@ -11,6 +11,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.UserHandle
 import android.os.UserManager
+import com.headswap.desk.component.api.ProfileContract
 import java.security.MessageDigest
 import java.text.Collator
 import java.util.concurrent.atomic.AtomicBoolean
@@ -23,6 +24,8 @@ internal data class DesktopComponentEntry(
     val versionCode: Long,
     val signerSha256: Set<String>,
     val modeId: String? = null,
+    val dashboard: Boolean = false,
+    val profileChrome: Boolean = false,
 ) {
     val packageName: String get() = componentName.packageName
 }
@@ -40,30 +43,57 @@ internal object DesktopComponents {
         }
     }
 
+    fun installed(context: Context, component: ComponentName): DesktopComponentEntry? =
+        query(context, component).singleOrNull()
+
     /** The confirmed row might have been replaced while the user was reading the confirmation. */
-    fun select(context: Context, entry: DesktopComponentEntry): Boolean {
+    fun select(context: Context, entry: DesktopComponentEntry, mediaAllowed: Boolean = false): Boolean {
         val current = query(context, entry.componentName).singleOrNull() ?: return false
         val user = userSerial(context)
         val pin = entry.pin(user)
-        if (!pin.accepts(current.pin(user))) return false
+        if (!pin.accepts(current.pin(user)) || current.dashboard != entry.dashboard || current.profileChrome != entry.profileChrome) return false
         context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit()
             .putString("component", pin.component).putLong("user", user).putString("mode", pin.modeId)
-            .putStringSet("signers", pin.signers.toSet()).apply()
+            .putStringSet("signers", pin.signers.toSet())
+            .putBoolean("media", entry.dashboard && mediaAllowed).apply()
         return true
     }
 
     /** Recheck manifest, membership of the current user and the live signing certificate on every use. */
     fun selected(context: Context): DesktopComponentEntry? {
-        val prefs = context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
-        val name = prefs.getString("component", null)?.let(ComponentName::unflattenFromString) ?: return null
-        val pin = DesktopComponentPolicy.Pin(name.flattenToString(), prefs.getLong("user", -1),
-            prefs.getStringSet("signers", null).orEmpty().toSet(), prefs.getString("mode", null))
+        return resolveSelection(context, context.getSharedPreferences(STORE, Context.MODE_PRIVATE).all)
+    }
+
+    /** Read consent and identity from one preference generation. Old installations default to no grant. */
+    fun mediaAllowed(context: Context, entry: DesktopComponentEntry): Boolean {
+        val prefs = context.getSharedPreferences(STORE, Context.MODE_PRIVATE).all
+        if (!entry.dashboard || prefs["media"] != true) return false
+        val installed = resolveSelection(context, prefs) ?: return false
+        return installed.dashboard && installed.componentName == entry.componentName &&
+            installed.signerSha256 == entry.signerSha256 && installed.modeId == entry.modeId &&
+            installed.versionCode == entry.versionCode
+    }
+
+    private fun resolveSelection(context: Context, prefs: Map<String, *>): DesktopComponentEntry? {
+        val name = (prefs["component"] as? String)?.let(ComponentName::unflattenFromString) ?: return null
+        val signers = (prefs["signers"] as? Set<*>)?.map { it as? String ?: return null }?.toSet() ?: return null
+        val pin = DesktopComponentPolicy.Pin(name.flattenToString(), prefs["user"] as? Long ?: -1,
+            signers, prefs["mode"] as? String)
         val user = userSerial(context)
         if (pin.userSerial != user || user < 0) return null
         return query(context, name).singleOrNull()?.takeIf { pin.accepts(it.pin(user)) }
     }
 
     fun clear(context: Context) { context.getSharedPreferences(STORE, Context.MODE_PRIVATE).edit().clear().apply() }
+
+    /** Drop old trust only after Android confirms this package is gone in the current user. */
+    fun clearIfRemoved(context: Context, packageName: String) {
+        try { context.packageManager.getPackageInfo(packageName, 0); return }
+        catch (_: PackageManager.NameNotFoundException) { /* This user no longer has the package. */ }
+        val prefs = context.getSharedPreferences(STORE, Context.MODE_PRIVATE)
+        val name = prefs.getString("component", null)?.let(ComponentName::unflattenFromString)
+        if (name?.packageName == packageName) clear(context)
+    }
 
     /** One UI notification per edit, even though a selection comprises several preference keys. */
     fun observeSelection(context: Context, listener: () -> Unit): () -> Unit {
@@ -130,7 +160,9 @@ internal object DesktopComponents {
         fun label(value: CharSequence?) = value?.toString().orEmpty().take(128).filterNot {
             it.isISOControl() || Character.getType(it) == Character.FORMAT.toInt()
         }.trim().ifEmpty { name.packageName }
+        val dashboard = activity.metaData?.get(ProfileContract.META_DASHBOARD) == true
         return DesktopComponentEntry(name, label(activity.loadLabel(pm)), label(activity.applicationInfo.loadLabel(pm)),
-            pkg.versionName.orEmpty(), pkg.longVersionCode, signers, modeId as? String)
+            pkg.versionName.orEmpty(), pkg.longVersionCode, signers, modeId as? String, dashboard,
+            dashboard && activity.metaData?.get(ProfileContract.META_PROFILE_CHROME) == true)
     }
 }

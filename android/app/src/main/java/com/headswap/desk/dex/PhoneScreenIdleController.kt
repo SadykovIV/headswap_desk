@@ -71,11 +71,13 @@ internal class PhoneScreenIdleController(
             watching = true
             readTimeout()
         }
+        if (activity.display?.displayId == Display.DEFAULT_DISPLAY) phoneWindow = this
         focused = activity.hasWindowFocus()
         refresh()
     }
 
     fun onStop() {
+        if (phoneWindow === this) phoneWindow = null
         started = false
         manualOutsideTimer = false
         focused = false
@@ -281,7 +283,17 @@ internal class PhoneScreenIdleController(
     }
 
     private fun now(): Long = SystemClock.uptimeMillis()
-    private companion object {
-        const val LIGHT_BARS = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+    companion object {
+        // Main thread only. Reuse the resumed primary HeadSwap window and its existing eligibility checks.
+        private var phoneWindow: PhoneScreenIdleController? = null
+        fun phoneCurtainVisible(): Boolean? = phoneWindow?.isCurtainVisible
+        fun setPhoneCurtain(show: Boolean): Boolean {
+            val window = phoneWindow ?: return false
+            if (!window.prefs.desktopPanelControl || window.prefs.phoneScreenMode != PhoneIdleMode.CURTAIN) return false
+            if (show) return window.showNow(manualCurtain = true)
+            if (window.isCurtainVisible) window.dismiss()
+            return true
+        }
+        private const val LIGHT_BARS = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
     }
 }

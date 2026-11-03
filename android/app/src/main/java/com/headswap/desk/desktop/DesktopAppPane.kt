@@ -35,10 +35,13 @@ internal class DesktopAppPane(
         setOnTouchListener { _, event -> forwardTouch(event) }
     }
     private val uid = Process.myUid()
-    private var current: Output? = null // Main thread.
+    @Volatile private var current: Output? = null
     private var wanted: DesktopAppCatalog.Entry? = null
     private var fromPanel = false
-    private var component: DesktopComponentEntry? = null
+    data class DashboardLaunch(val provider: DesktopComponentEntry, val allowTaskMove: Boolean,
+        val current: () -> Boolean, val needsConsent: () -> Unit)
+    private var dashboardLaunch: DashboardLaunch? = null
+    @Volatile private var component: DesktopComponentEntry? = null
     private var attachSession: ((Intent) -> Unit)? = null
     @Volatile private var request = 0L
 
@@ -46,15 +49,17 @@ internal class DesktopAppPane(
         val token = Binder()
         val surface = Surface(texture)
         @Volatile var retired = false
-        var handle = 0 // Only accessed on the serial worker.
-        var buffer: Buffer? = null
+        @Volatile var handle = 0 // Written only on the serial worker.
+        @Volatile var buffer: Buffer? = null
         var appPackage: String? = null
+        var dashboardTarget: ComponentName? = null
         var needsFreshChild = false
     }
 
     private data class Buffer(val width: Int, val height: Int, val density: Int)
 
-    fun open(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false) {
+    fun open(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false, dashboard: DashboardLaunch? = null) {
+        dashboardLaunch = dashboard
         fromPanel = requestedByPanel
         if (component != null) resetChild()
         component = null
@@ -66,6 +71,7 @@ internal class DesktopAppPane(
 
     fun openComponent(entry: DesktopComponentEntry, attach: (Intent) -> Unit) {
         resetChild()
+        dashboardLaunch = null
         fromPanel = false
         component = entry
         attachSession = attach
@@ -86,7 +92,29 @@ internal class DesktopAppPane(
         }
     }
 
+    // Called from the media Binder worker; it never waits on the UI thread or returns task data.
+    fun isComponentForeground(entry: DesktopComponentEntry): Boolean {
+        val serial = request
+        val output = current ?: return false
+        val handle = output.handle
+        if (output.retired || handle <= 0 || component != entry) return false
+        return runCatching { EmbeddedSessionRegistry.taskState(uid, handle, entry.packageName) }.getOrNull() == 2 &&
+            !output.retired && output === current && output.handle == handle && component == entry && request == serial
+    }
+
+    /** Author reports pixels of its full child, which may use an app-specific render buffer. */
+    fun viewportPixels(childPixels: Int): Int {
+        val childHeight = current?.buffer?.height ?: return childPixels
+        return ((childPixels.toLong() * view.height) / childHeight.coerceAtLeast(1)).toInt()
+    }
+
+    fun closeApp() {
+        if (component == null) resetChild()
+        home()
+    }
+
     fun home() {
+        dashboardLaunch = null
         if (component != null) resetChild()
         component = null
         attachSession = null
@@ -110,6 +138,7 @@ internal class DesktopAppPane(
         output.handle = 0
         output.buffer = null
         output.appPackage = null
+        output.dashboardTarget = null
         output.needsFreshChild = false
     }
 
@@ -186,6 +215,7 @@ internal class DesktopAppPane(
         val serial = request
         val provider = component
         val publicLaunch = fromPanel
+        val dashboard = dashboardLaunch
         val attach = attachSession
         val parent = activity.display?.displayId ?: -1
         val width = view.width
@@ -201,6 +231,26 @@ internal class DesktopAppPane(
                     }
                     output.appPackage = entry.packageName
                     watchComponent(output, entry, serial, false, SystemClock.elapsedRealtime() + 7_000)
+                    return@execute
+                }
+                if (dashboard != null) {
+                    if (!dashboard.current()) return@execute
+                    configure(output, parent, entry.packageName, width, height)
+                    if (request != serial || output.retired) return@execute
+                    val target = ComponentName(entry.packageName, entry.className)
+                    if (output.dashboardTarget == target &&
+                        EmbeddedSessionRegistry.taskState(uid, output.handle, entry.packageName) == 2) {
+                        main.post { if (!output.retired && request == serial) onOpened() }
+                        return@execute
+                    }
+                    if (!EmbeddedSessionRegistry.launchDashboardApp(activity, output.handle, dashboard.provider, target,
+                            dashboard.allowTaskMove) { !output.retired && request == serial && dashboard.current() }) {
+                        main.post { if (!output.retired && request == serial && dashboard.current()) dashboard.needsConsent() }
+                        return@execute
+                    }
+                    output.appPackage = entry.packageName
+                    output.dashboardTarget = target
+                    main.post { if (!output.retired && request == serial) onOpened() }
                     return@execute
                 }
                 if (publicLaunch) {

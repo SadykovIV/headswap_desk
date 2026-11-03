@@ -17,6 +17,9 @@ def main():
     args = parser.parse_args()
     files = {
         "README.md": (SDK / "KIT-README.md").read_bytes(),
+        "STARTER.md": (SAMPLE / "STARTER.md").read_bytes(),
+        "DEVELOPER-GUIDE.md": (SDK / "DEVELOPER-GUIDE.md").read_bytes(),
+        "tools/new_profile.py": (SDK / "tools/new_profile.py").read_bytes(),
         "LICENSE": (ROOT / "LICENSE").read_bytes(),
         "libs/" + AAR_NAME: args.aar.read_bytes(),
         "gradle.properties": ("desktopPanelSdkAar=../libs/" + AAR_NAME + "\n").encode(),
@@ -30,6 +33,12 @@ def main():
             files[p.relative_to(SAMPLE).as_posix()] = p.read_bytes()
     for p in sorted((SDK / "src/main/aidl").rglob("*.aidl")):
         files["api/" + p.relative_to(SDK / "src/main/aidl").as_posix()] = p.read_bytes()
+    # Ship the same buildable library sources used by the host, including API and SDK tests.
+    for name in ("settings.gradle.kts", "build.gradle.kts"):
+        files["sdk-source/" + name] = (SDK / name).read_bytes()
+    for p in sorted((SDK / "src").rglob("*")):
+        if p.is_file():
+            files["sdk-source/" + p.relative_to(SDK).as_posix()] = p.read_bytes()
     files["SHA256SUMS.txt"] = "".join(f"{sha256(data).hexdigest()}  {name}\n" for name, data in sorted(files.items())).encode()
     args.zip.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(args.zip, "w") as archive:

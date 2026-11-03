@@ -1,6 +1,8 @@
 package com.headswap.desk.desktop
 
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
@@ -37,6 +39,14 @@ import com.headswap.desk.component.DesktopComponentEntry
 import com.headswap.desk.component.DesktopComponents
 import com.headswap.desk.component.PanelLaunchSession
 import com.headswap.desk.AppLog
+import com.headswap.desk.BridgeService
+import com.headswap.desk.CarLifeState
+import com.headswap.desk.component.api.ProfileContract
+import com.headswap.desk.dex.DexPrefs
+import com.headswap.desk.dex.DelegatedPanelAccess
+import com.headswap.desk.dex.DesktopConnectionState
+import com.headswap.desk.dex.PhoneIdleMode
+import com.headswap.desk.dex.PhoneScreenIdleController
 import com.headswap.desk.R
 import com.headswap.desk.dex.DexState
 import com.headswap.desk.embed.EmbeddedSessionRegistry
@@ -48,6 +58,18 @@ class AndroidDesktopActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var layout: LinearLayout
     private lateinit var menu: LinearLayout
+    private lateinit var sidebar: LinearLayout
+    private lateinit var workspace: FrameLayout
+    private lateinit var appsWindow: FrameLayout
+    private lateinit var musicPane: DesktopAppPane
+    @Volatile private var dashboard = false
+    @Volatile private var musicVisible = true
+    private var musicOnRight = false
+    @Volatile private var profileExposed = false
+    private var targetVisible = false
+    private var dockHeightPx: Int? = null
+    private var phoneConfirmation: AlertDialog? = null
+    private var confirmMove: AlertDialog? = null
     private lateinit var pane: DesktopAppPane
     private lateinit var rail: ListView
     private lateinit var railDrag: DesktopRailDrag
@@ -61,7 +83,7 @@ class AndroidDesktopActivity : Activity() {
     private var entries: List<DesktopAppCatalog.Entry> = emptyList()
     private var icons: Map<String, Drawable> = emptyMap()
     private var loading = false
-    private var visible = false
+    @Volatile private var visible = false
     private var ownershipDeadline = 0L
     private val adapter = AppsAdapter()
     private val railAdapter = RailAdapter()
@@ -70,8 +92,8 @@ class AndroidDesktopActivity : Activity() {
 
     private lateinit var panelButton: Button
     private var panelChoice: DesktopComponentEntry? = null
-    private var panelSession: PanelLaunchSession? = null
-    private var panelPlaced = false
+    @Volatile private var panelSession: PanelLaunchSession? = null
+    @Volatile private var panelPlaced = false
     private var autoOpenPanel = true
     private var choiceQuery = 0L
     private var stopObserving: (() -> Unit)? = null
@@ -85,7 +107,7 @@ class AndroidDesktopActivity : Activity() {
         override fun run() {
             if (!visible || isDestroyed) return
             when {
-                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); refreshPanelChoice(); loadApps() }
+                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); musicPane.refreshBuffer(); refreshPanelChoice(); loadApps() }
                 currentDisplayId() <= 0 || SystemClock.elapsedRealtime() >= ownershipDeadline -> finish()
                 else -> main.postDelayed(this, 100)
             }
@@ -145,6 +167,8 @@ class AndroidDesktopActivity : Activity() {
             stopObserving?.invoke()
             unregisterReceiver(packageChanges)
         }
+        confirmMove?.dismiss()
+        phoneConfirmation?.dismiss()
         revokePanel()
         main.removeCallbacksAndMessages(null)
         loader.shutdownNow()
@@ -153,16 +177,20 @@ class AndroidDesktopActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (::pane.isInitialized && ownsDisplay()) { autoOpenPanel = false; pane.home() }
+        if (::pane.isInitialized && ownsDisplay()) { if (dashboard) revealProfile() else pane.home() }
     }
 
     @Deprecated("The desktop remains open until its CarLife session ends")
     override fun onBackPressed() {
-        if (::pane.isInitialized && ownsDisplay()) pane.back()
+        if (::pane.isInitialized && ownsDisplay()) {
+            if (dashboard && !targetVisible) musicPane.back()
+            else if (dashboard && menu.isShown) revealProfile()
+            else pane.back()
+        }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (::railDrag.isInitialized && railDrag.handle(event) { super.dispatchTouchEvent(it) }) return true
+        if (!dashboard && ::railDrag.isInitialized && railDrag.handle(event) { super.dispatchTouchEvent(it) }) return true
         return super.dispatchTouchEvent(event)
     }
 
@@ -183,7 +211,7 @@ class AndroidDesktopActivity : Activity() {
         val displayHeight = resources.displayMetrics.heightPixels
         val railWidth = dp(72).coerceAtMost(displayWidth / 5)
         val buttonHeight = dp(60).coerceAtMost(displayHeight / 4)
-        val sidebar = LinearLayout(this).apply {
+        sidebar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(23, 30, 39))
         }
@@ -207,27 +235,40 @@ class AndroidDesktopActivity : Activity() {
             if (ownsDisplay()) { autoOpenPanel = false; pane.home() }
         }, LinearLayout.LayoutParams(-1, buttonHeight))
         layout.addView(sidebar, LinearLayout.LayoutParams(railWidth, -1))
-        val workspace = FrameLayout(this)
+        workspace = FrameLayout(this)
         layout.addView(workspace, LinearLayout.LayoutParams(0, -1, 1f))
+        musicPane = DesktopAppPane(this, onOpened = {
+            if (dashboard && panelSession != null) {
+                panelPlaced = true
+                setChildInputFocus(true)
+            }
+        }, onHome = { if (dashboard) leaveDashboard() }, onError = ::showError)
+        musicPane.view.visibility = View.GONE
+        workspace.addView(musicPane.view, FrameLayout.LayoutParams(-1, -1))
+        appsWindow = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        workspace.addView(appsWindow, FrameLayout.LayoutParams(-1, -1))
+        workspace.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if (dashboard && (r - l != oldR - oldL || b - t != oldB - oldT)) layoutDashboard()
+        }
         pane = DesktopAppPane(this, onOpened = {
-            panelPlaced = panelSession != null
+            if (!dashboard) panelPlaced = panelSession != null
             setChildInputFocus(true)
             menu.visibility = View.GONE
         }, onHome = {
             autoOpenPanel = false
-            revokePanel()
-            setChildInputFocus(false)
+            if (!dashboard) revokePanel()
+            setChildInputFocus(dashboard && panelPlaced)
             menu.visibility = View.VISIBLE
             status.setTextColor(Color.rgb(180, 190, 203))
             status.text = when {
-                entries.isNotEmpty() -> CATALOG_HINT
+                entries.isNotEmpty() -> catalogHint()
                 loading -> "Загружаю приложения…"
                 else -> "Приложения не найдены"
             }
             grid.smoothScrollToPosition(0)
         }, onError = ::showError)
         // Keep the app display alive behind the opaque catalog, preserving tasks across Home.
-        workspace.addView(pane.view, FrameLayout.LayoutParams(-1, -1))
+        appsWindow.addView(pane.view, FrameLayout.LayoutParams(-1, -1))
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
@@ -269,14 +310,14 @@ class AndroidDesktopActivity : Activity() {
                 val entry = entries.getOrNull(position)
                 if (entry != null && ownsDisplay()) {
                     val icon = icons[entry.key] ?: packageManager.defaultActivityIcon
-                    railDrag.begin(card, entry, icon)
+                    if (dashboard) showPinMenu(card, entry) else railDrag.begin(card, entry, icon)
                 }
                 true
             }
         }
         body.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         menu = body
-        workspace.addView(menu, FrameLayout.LayoutParams(-1, -1))
+        appsWindow.addView(menu, FrameLayout.LayoutParams(-1, -1))
         setContentView(layout)
     }
 
@@ -346,7 +387,7 @@ class AndroidDesktopActivity : Activity() {
         refreshPins()
         grid.visibility = View.VISIBLE
         if (status.text == "Загружаю приложения…" || status.text == "Подключение рабочего стола…") {
-            status.text = if (entries.isEmpty()) "Приложения не найдены" else CATALOG_HINT
+            status.text = if (entries.isEmpty()) "Приложения не найдены" else catalogHint()
             status.setTextColor(Color.rgb(180, 190, 203))
         }
     }
@@ -412,7 +453,7 @@ class AndroidDesktopActivity : Activity() {
             main.post {
                 if (isDestroyed || !visible || generation != choiceQuery || !ownsDisplay()) return@post
                 panelChoice = choice
-                panelButton.visibility = if (choice != null) View.VISIBLE else View.GONE
+                panelButton.visibility = if (choice != null && !dashboard) View.VISIBLE else View.GONE
                 if (choice != null) {
                     panelButton.text = "Открыть панель «${choice.label}»"
                     if (autoOpenPanel) openPanel(choice)
@@ -424,7 +465,7 @@ class AndroidDesktopActivity : Activity() {
 
     private fun panelChoiceChanged() {
         choiceQuery++
-        if (panelSession != null) pane.home()
+        if (dashboard) musicPane.home() else if (panelSession != null) pane.home()
         panelChoice = null
         panelButton.visibility = View.GONE
         if (visible && ownsDisplay()) refreshPanelChoice()
@@ -434,14 +475,36 @@ class AndroidDesktopActivity : Activity() {
         if (!ownsDisplay()) return
         autoOpenPanel = false
         revokePanel()
+        if (entry.profileChrome && !dashboard) enterDashboard()
+        val providerPane = if (dashboard) musicPane else pane
         lateinit var session: PanelLaunchSession
-        val current = { !isDestroyed && !isFinishing && panelSession === session && panelPlaced && ownsDisplay() }
+        val current = { visible && !isDestroyed && !isFinishing && panelSession === session && panelPlaced && ownsDisplay() }
+        val lock = getSystemService(KeyguardManager::class.java)
+        val foreground = { current() && CarLifeState.running && !CarLifeState.wirelessSession &&
+            !lock.isDeviceLocked && !lock.isKeyguardLocked && providerPane.isComponentForeground(entry) && current() }
         try {
-            session = PanelLaunchSession(this, entry, current, onCatalog = {
-                pane.ifComponentForeground(entry) { if (current()) pane.home() }
+            session = PanelLaunchSession(this, entry, current, mediaForeground = {
+                (!dashboard || musicVisible) && foreground() &&
+                    (!dashboard || musicVisible)
+            }, chromeForeground = { dashboard && foreground() }, chromeVisible = { profileExposed }, onDashboardAction = { action ->
+                providerPane.ifComponentForeground(entry) { if (dashboard && profileExposed && current()) dashboardAction(action, entry, current) }
+            }, onDashboardLayout = { showMusic, right, showTarget, dockPx ->
+                providerPane.ifComponentForeground(entry) {
+                    if (dashboard && current()) {
+                        musicVisible = showMusic
+                        musicOnRight = right
+                        targetVisible = showTarget
+                        dockHeightPx = providerPane.viewportPixels(dockPx)
+                        layoutDashboard()
+                    }
+                }
+            }, onCatalog = {
+                providerPane.ifComponentForeground(entry) {
+                    if (current() && (!dashboard || profileExposed)) { if (dashboard) showTarget(); pane.home() }
+                }
             }) { target ->
-                pane.ifComponentForeground(entry) {
-                    if (current()) {
+                providerPane.ifComponentForeground(entry) {
+                    if (current() && (!dashboard || profileExposed)) {
                         val app = entries.firstOrNull { it.packageName == target.packageName && it.className == target.className }
                             ?: DesktopAppCatalog.Entry(target.packageName, target.className, target.packageName)
                         launchApp(app, requestedByPanel = true)
@@ -449,10 +512,10 @@ class AndroidDesktopActivity : Activity() {
                 }
             }
             panelSession = session
-            status.text = "Открывается ${entry.label}…"
-            pane.openComponent(entry, session::attach)
+            if (!dashboard) status.text = "Открывается ${entry.label}…"
+            providerPane.openComponent(entry, session::attach)
         } catch (e: Exception) {
-            pane.home()
+            providerPane.home()
             showError("Компонент «${entry.label}» недоступен")
         }
     }
@@ -463,17 +526,121 @@ class AndroidDesktopActivity : Activity() {
         panelPlaced = false
     }
 
-    private fun launchApp(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false) {
+    private fun launchApp(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false,
+        allowTaskMove: Boolean = false) {
         if (!ownsDisplay()) {
             showError("Подключение рабочего стола ещё не готово или уже завершено")
             return
         }
         autoOpenPanel = false
-        revokePanel()
+        if (!dashboard) revokePanel() else showTarget()
         status.text = "Открывается ${entry.label}…"
         status.setTextColor(Color.rgb(180, 190, 203))
-        pane.open(entry, requestedByPanel)
+        val owner = panelChoice
+        val session = panelSession
+        if (!dashboard) { pane.open(entry, requestedByPanel); return }
+        if (owner?.profileChrome != true || session == null) return
+        val current = { visible && dashboard && !isDestroyed && !isFinishing && panelPlaced &&
+            panelSession === session && CarLifeState.running && !CarLifeState.wirelessSession && ownsDisplay() }
+        pane.open(entry, requestedByPanel, DesktopAppPane.DashboardLaunch(owner, allowTaskMove, current) {
+            if (!current() || confirmMove?.isShowing == true) return@DashboardLaunch
+            confirmMove = AlertDialog.Builder(this).setTitle("Открыть на головном устройстве?")
+                .setMessage("«${entry.label}» может использовать уже открытое на телефоне окно. Разрешить перенос на ГУ?")
+                .setPositiveButton("Открыть на ГУ") { _, _ ->
+                    musicPane.ifComponentForeground(owner) {
+                        if (current()) launchApp(entry, requestedByPanel, allowTaskMove = true)
+                    }
+                }.setNegativeButton("Выбрать другое") { _, _ -> if (current()) { showTarget(); pane.home() } }.show()
+        })
     }
+
+    private fun enterDashboard() {
+        dashboard = true
+        musicVisible = true
+        sidebar.visibility = View.GONE
+        musicOnRight = false
+        targetVisible = false
+        profileExposed = false
+        dockHeightPx = null
+        musicPane.view.visibility = View.VISIBLE
+        panelButton.visibility = View.GONE
+        layoutDashboard()
+        status.text = "Выберите приложение для второго окна."
+    }
+
+    private fun leaveDashboard() {
+        dashboard = false
+        profileExposed = false
+        confirmMove?.dismiss()
+        phoneConfirmation?.dismiss()
+        revokePanel()
+        pane.closeApp()
+        musicPane.view.visibility = View.GONE
+        appsWindow.layoutParams = FrameLayout.LayoutParams(-1, -1)
+        sidebar.visibility = View.VISIBLE
+        panelButton.visibility = if (panelChoice != null) View.VISIBLE else View.GONE
+    }
+
+    // The author owns its entire screen, including the bottom bar. Android draws the
+    // second real task over just the map rectangle. Changing Z order keeps both leases alive.
+    private fun layoutDashboard() {
+        if (!dashboard) return
+        val width = workspace.width
+        val height = workspace.height
+        if (width <= 0 || height <= 0) return
+        val viewport = DashboardViewport.measure(width, height, musicVisible, targetVisible, dockHeightPx ?: dp(39), dp(96))
+        profileExposed = viewport.providerVisible
+        val gravity = (if (musicOnRight) Gravity.LEFT else Gravity.RIGHT) or Gravity.TOP
+        val old = appsWindow.layoutParams as FrameLayout.LayoutParams
+        if (old.width != viewport.appWidth || old.height != viewport.appHeight || old.gravity != gravity)
+            appsWindow.layoutParams = FrameLayout.LayoutParams(viewport.appWidth, viewport.appHeight, gravity)
+        val front = if (targetVisible) appsWindow else musicPane.view
+        if (workspace.getChildAt(workspace.childCount - 1) !== front) front.bringToFront()
+        appsWindow.importantForAccessibility = if (targetVisible) View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+            else View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+    }
+
+    private fun showTarget() { targetVisible = true; layoutDashboard() }
+    private fun revealProfile() { targetVisible = false; layoutDashboard() }
+
+    private fun dashboardAction(action: Int, provider: DesktopComponentEntry, current: () -> Boolean) {
+        when (action) {
+            ProfileContract.DASH_BACK -> if (targetVisible && !menu.isShown) pane.back() else revealProfile()
+            ProfileContract.DASH_NAVIGATION -> { showTarget(); pane.home() }
+            ProfileContract.DASH_PHONE_TOGGLE -> requestPhoneScreen(provider, current)
+        }
+    }
+
+    private fun requestPhoneScreen(provider: DesktopComponentEntry, current: () -> Boolean) {
+        val prefs = DexPrefs(this)
+        fun available(): Boolean = current() && dashboard && profileExposed && CarLifeState.running && !CarLifeState.wirelessSession &&
+            BridgeService.alive && DesktopConnectionState.aliveForIdleTimer(SystemClock.elapsedRealtime()) &&
+            prefs.desktopPanelControl && !DexState.phoneScreenBusy
+        if (!available() || phoneConfirmation?.isShowing == true) return
+        val curtain = prefs.phoneScreenMode == PhoneIdleMode.CURTAIN
+        val restore = if (curtain) PhoneScreenIdleController.phoneCurtainVisible() ?: return else DexState.phoneScreenOff
+        if (!curtain && !(prefs.useShizuku || prefs.useDelegated && DelegatedPanelAccess.isAvailable(this))) return
+        val title = when {
+            restore -> "Включить экран телефона?"
+            curtain -> "Затемнить экран телефона?"
+            else -> "Погасить экран телефона?"
+        }
+        phoneConfirmation = AlertDialog.Builder(this).setTitle(title)
+            .setMessage("Запрос от панели «${provider.label}».")
+            .setNegativeButton("Отмена", null).setPositiveButton("Да") { _, _ ->
+                musicPane.ifComponentForeground(provider) {
+                    if (available() && curtain == (prefs.phoneScreenMode == PhoneIdleMode.CURTAIN)) {
+                        if (curtain) PhoneScreenIdleController.setPhoneCurtain(!restore)
+                        else if (DexState.phoneScreenOff == restore) {
+                            val command = if (restore) BridgeService.ACTION_PHONE_SCREEN_ON else BridgeService.ACTION_PHONE_SCREEN_OFF
+                            runCatching { startService(Intent(this, BridgeService::class.java).setAction(command)) }
+                        }
+                    }
+                }
+            }.show()
+    }
+
+    private fun catalogHint() = if (dashboard) "Выберите приложение для второго окна." else CATALOG_HINT
 
     private fun currentDisplayId(): Int = display?.displayId ?: -1
     private fun ownsDisplay(): Boolean = DesktopAppCatalog.ownsDisplay(currentDisplayId(), DexState.displayId) &&

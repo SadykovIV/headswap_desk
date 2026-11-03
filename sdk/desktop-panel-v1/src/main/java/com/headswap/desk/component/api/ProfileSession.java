@@ -45,7 +45,8 @@ public final class ProfileSession {
 
     /** Only one implemented SDK capability may be requested. An advertised unknown, reserved or composite bit is insufficient. */
     public boolean supports(int capability) {
-        boolean implemented = capability == ProfileContract.CAP_LAUNCH_APP || capability == ProfileContract.CAP_OPEN_CATALOG;
+        boolean implemented = capability == ProfileContract.CAP_LAUNCH_APP || capability == ProfileContract.CAP_OPEN_CATALOG ||
+                capability == ProfileContract.CAP_MEDIA || capability == ProfileContract.CAP_PROFILE_CHROME;
         return implemented && (capabilities & capability) != 0;
     }
 
@@ -53,6 +54,51 @@ public final class ProfileSession {
     public boolean canOpenCatalog() { return supports(ProfileContract.CAP_OPEN_CATALOG); }
     public boolean canUseMicrophone() { return supports(ProfileContract.CAP_MICROPHONE_INPUT); }
     public boolean canUseVoiceChannel() { return supports(ProfileContract.CAP_VOICE_CHANNEL); }
+    public boolean canUseMedia() { return supports(ProfileContract.CAP_MEDIA); }
+    public boolean canUseProfileChrome() { return supports(ProfileContract.CAP_PROFILE_CHROME); }
+
+    /** Reports this profile's full layout. Hiding the target reveals the profile without ending the target task.
+     * Dock height is measured in this Activity's display pixels; 0 is allowed for auto-hide. Call on a worker. */
+    public boolean setDashboardLayout(boolean musicVisible, boolean musicOnRight, boolean targetVisible, int dockHeightPx) {
+        if (!canUseProfileChrome() || dockHeightPx < 0 || dockHeightPx > 4096) return false;
+        try {
+            return remote.setDashboardLayout(musicVisible, musicOnRight, targetVisible, dockHeightPx);
+        } catch (RemoteException | RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    /** Requests one host action for the active projection. Returns false for unsupported actions or an expired session. */
+    public boolean sendDashboardAction(int action) {
+        if (!canUseProfileChrome() || action != ProfileContract.DASH_BACK && action != ProfileContract.DASH_NAVIGATION &&
+                action != ProfileContract.DASH_PHONE_TOGGLE) return false;
+        try {
+            return remote.sendDashboardAction(action);
+        } catch (RemoteException | RuntimeException unavailable) {
+            return false;
+        }
+    }
+
+    /** Returns null if no track is available or the music pane no longer has access. Call on a worker. */
+    public ProfileNowPlaying getNowPlaying() {
+        if (!canUseMedia()) return null;
+        try {
+            return ProfileNowPlaying.fromBundle(remote.getNowPlaying());
+        } catch (RemoteException | RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    /** Request a supported transport action on the current local player. Call on a worker after a user click. */
+    public boolean sendMediaCommand(int command) {
+        if (!canUseMedia() || command != ProfileContract.MEDIA_PREVIOUS && command != ProfileContract.MEDIA_PLAY_PAUSE &&
+                command != ProfileContract.MEDIA_NEXT) return false;
+        try {
+            return remote.sendMediaCommand(command);
+        } catch (RemoteException | RuntimeException unavailable) {
+            return false;
+        }
+    }
 
     /** Returns true if HeadSwap accepted the request for validation. The actual launch can still fail. */
     public boolean requestLaunch(ComponentName target) {

@@ -1,0 +1,8 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity android:name=".PanelActivity" android:label="@string/app_name">
+            <meta-data android:name="com.headswap.desk.component.DASHBOARD" android:value="true" />
+            <meta-data android:name="com.headswap.desk.component.PROFILE_CHROME" android:value="true" />
+        </activity>
+    </application>
+</manifest>

@@ -1,4 +1,16 @@
 <resources>
-    <string name="app_name">Тестовая панель HeadSwap для CarBridge</string>
-    <string name="heading">Проверка профиля CarBridge · пример HeadSwap</string>
+    <string name="app_name">Музыкальная панель HeadSwap</string>
+    <string name="music">Музыка</string>
+    <string name="no_playback">Нет данных о воспроизведении</string>
+    <string name="start_player">Включите музыку в плеере или проверьте доступ к музыке в HeadSwap.</string>
+    <string name="media_permission">Нет доступа к музыке</string>
+    <string name="media_permission_hint">Проверьте разрешение на музыку при выборе профиля в HeadSwap.</string>
+    <string name="media_unavailable">Музыка недоступна</string>
+    <string name="session_hint">Откройте профиль на подключённом головном устройстве.</string>
+    <string name="unknown_track">Без названия</string>
+    <string name="play">Воспроизвести</string>
+    <string name="pause">Приостановить</string>
+    <string name="previous">Предыдущий трек</string>
+    <string name="next">Следующий трек</string>
+    <string name="transport_unsupported">Этот плеер не поддерживает выбранное действие.</string>
 </resources>

@@ -20,10 +20,17 @@ android {
             dimension = "mode"
             manifestPlaceholders["panelModeId"] = "example-panel"
         }
+        create("starter") {
+            dimension = "mode"
+            applicationIdSuffix = ".starter"
+            manifestPlaceholders["panelModeId"] = "open-dashboard-starter"
+        }
         create("carbridgePreview") {
             dimension = "mode"
             applicationIdSuffix = ".carbridgepreview"
-            manifestPlaceholders["panelModeId"] = "carbridge"
+            versionCode = 2
+            versionName = "1.1"
+            manifestPlaceholders["panelModeId"] = "headswap-music-example"
         }
     }
 

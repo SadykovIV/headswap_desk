@@ -34,4 +34,33 @@ class PanelRequestGateTest {
         gate.finish()
         assertFalse(gate.reserve(10111, "com.example.app", "Screen", 3000))
     }
+
+    @Test fun mediaHasIndependentPollAndClickLimitsAndCannotOutliveRevocation() {
+        assertFalse(gate.reserveMedia(44, true, 1000))
+        assertTrue(gate.reserveMedia(10111, true, 1000))
+        assertFalse(gate.reserveMedia(10111, false, 1002)) // Only one media call concurrently.
+        assertTrue(gate.reserveCatalog(10111, 1002))
+        gate.finishMedia()
+        assertTrue(gate.reserveMedia(10111, false, 1005))
+        gate.finishMedia()
+        assertFalse(gate.reserveMedia(10111, true, 1500))
+        assertTrue(gate.reserveMedia(10111, true, 1750))
+        gate.revoke()
+        gate.finishMedia()
+        assertFalse(gate.reserveMedia(10111, false, 2000))
+    }
+
+    @Test fun forwardedBinderCannotChangeChromeAndLayoutCannotBlockNavigationAction() {
+        assertFalse(gate.reserveChrome(55, true, 1000))
+        assertTrue(gate.reserveChrome(10111, true, 1000))
+        assertFalse(gate.reserveChrome(10111, true, 2000))
+        assertTrue(gate.reserveChrome(10111, false, 1000))
+        gate.finishChrome(false)
+        assertFalse(gate.reserveChrome(10111, false, 1100))
+        gate.finishChrome(true)
+        assertTrue(gate.reserveChrome(10111, true, 1100))
+        gate.revoke()
+        gate.finishChrome(true)
+        assertFalse(gate.reserveChrome(10111, true, 2000))
+    }
 }

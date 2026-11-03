@@ -1,10 +1,16 @@
 package com.headswap.desk.update
 
 import android.content.Context
+import android.content.ComponentName
+import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Build
+import android.net.Uri
 import androidx.core.content.FileProvider
+import com.headswap.desk.component.DesktopComponentEntry
+import com.headswap.desk.component.DesktopComponentPolicy
+import com.headswap.desk.component.DesktopComponents
 import java.io.File
 import java.io.InputStream
 import java.net.URL
@@ -45,6 +51,14 @@ internal object ComponentPackages {
     }
 
     fun stage(ctx: Context, spec: DesktopComponent, input: InputStream, expected: ComponentAsset? = null): PreparedComponent {
+        return stageChecked(ctx, input, expected) { file -> validate(ctx, spec, file) }
+    }
+
+    fun stageProfile(ctx: Context, entry: DesktopComponentEntry, input: InputStream): PreparedComponent =
+        stageChecked(ctx, input, null) { file -> validateProfile(ctx, entry, file) }
+
+    private fun stageChecked(ctx: Context, input: InputStream, expected: ComponentAsset?,
+                             validateFile: (File) -> PreparedComponent): PreparedComponent {
         val temp = File.createTempFile("component-", ".apk", ctx.cacheDir)
         try {
             val hash = MessageDigest.getInstance("SHA-256")
@@ -63,7 +77,7 @@ internal object ComponentPackages {
             }
             val sha = hash.digest().joinToString("") { "%02x".format(it) }
             if (expected != null) check(expected.sha256 == sha && expected.bytes == count) { "Контрольная сумма APK не совпадает." }
-            val apk = validate(ctx, spec, temp)
+            val apk = validateFile(temp)
             if (expected != null) check(apk.code == expected.code && apk.version == expected.version) { "Версия APK не совпадает с выпуском." }
             val final = File(dir(ctx), "$sha.apk")
             check(temp.renameTo(final)) { "Не удалось сохранить проверенный APK." }
@@ -76,6 +90,57 @@ internal object ComponentPackages {
 
     fun restore(ctx: Context, name: String?): File? = name?.takeIf { it.matches(Regex("[0-9a-f]{64}\\.apk")) }
         ?.let { File(dir(ctx), it) }?.takeIf { it.isFile }
+
+    @Suppress("DEPRECATION")
+    fun validateProfile(ctx: Context, entry: DesktopComponentEntry, file: File): PreparedComponent {
+        val installed = DesktopComponents.installed(ctx, entry.componentName)
+            ?: error("Установленный компонент изменился или недоступен.")
+        check(installed.signerSha256 == entry.signerSha256 && installed.modeId == entry.modeId) {
+            "Подпись или профиль установленного компонента изменились."
+        }
+        val flags = PackageManager.PackageInfoFlags.of((PackageManager.GET_SIGNING_CERTIFICATES or
+            PackageManager.GET_ACTIVITIES or PackageManager.GET_META_DATA).toLong())
+        val apk = ctx.packageManager.getPackageArchiveInfo(file.absolutePath, flags) ?: error("Не удалось прочитать APK.")
+        val sha = MessageDigest.getInstance("SHA-256")
+        val pins = apk.signers().map { sha.digest(it.toByteArray()).joinToString("") { b -> "%02x".format(b) } }.toSet()
+        val activity = apk.activities?.firstOrNull { it.name == entry.componentName.className }
+        val mode = activity?.metaData?.get(DesktopComponentPolicy.MODE_ID)
+        val compatible = activity != null && mode == entry.modeId && DesktopComponentPolicy.acceptsDeclaration(
+            activity.metaData?.get(DesktopComponentPolicy.API), activity.metaData?.get(DesktopComponentPolicy.PROFILE),
+            activity.exported, activity.enabled && activity.applicationInfo.enabled,
+            activity.permission.isNullOrEmpty() || ctx.checkSelfPermission(activity.permission) == PackageManager.PERMISSION_GRANTED, mode)
+            && DesktopComponentPolicy.supportsIsolatedTask(activity.launchMode, activity.documentLaunchMode,
+                activity.flags and android.content.pm.ActivityInfo.FLAG_ALLOW_TASK_REPARENTING != 0)
+        ProfileUpdatePolicy.checkArchive(entry.packageName, entry.signerSha256, installed.versionCode,
+            apk.packageName, pins, apk.longVersionCode, compatible)
+        check((apk.applicationInfo?.minSdkVersion ?: Int.MAX_VALUE) <= Build.VERSION.SDK_INT) { "Этой версии нужен более новый Android." }
+        return PreparedComponent(apk.versionName.orEmpty(), apk.longVersionCode, file)
+    }
+
+    fun installerIntent(ctx: Context, apk: PreparedComponent): Intent {
+        val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.components", apk.file)
+        val intent = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).putExtra(Intent.EXTRA_RETURN_RESULT, true)
+        val handler = ctx.packageManager.queryIntentActivities(intent, PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY)
+            .firstOrNull()?.activityInfo ?: error("Системный установщик APK недоступен.")
+        return intent.setComponent(ComponentName(handler.packageName, handler.name))
+    }
+
+    @Suppress("DEPRECATION") // The Android package-removal Activity presents the system confirmation.
+    fun uninstallIntent(ctx: Context, pkg: String): Intent {
+        val intent = Intent(Intent.ACTION_UNINSTALL_PACKAGE, Uri.fromParts("package", pkg, null))
+            .putExtra(Intent.EXTRA_RETURN_RESULT, true)
+        val handler = ctx.packageManager.queryIntentActivities(intent, PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY)
+            .firstOrNull()?.activityInfo ?: error("Системное удаление недоступно.")
+        return intent.setComponent(ComponentName(handler.packageName, handler.name))
+    }
+
+    fun builtinRemoval(ctx: Context, spec: DesktopComponent): Intent {
+        val pkg = checkNotNull(installed(ctx, spec)) { "Компонент не установлен." }
+        val host = ctx.packageManager.getPackageInfo(ctx.packageName, sigFlags).signers()
+        check(host.isNotEmpty() && host == pkg.signers()) { "Подпись установленного компонента отличается от подписи HeadSwap." }
+        return uninstallIntent(ctx, spec.pkg)
+    }
 
     fun validate(ctx: Context, spec: DesktopComponent, file: File): PreparedComponent {
         val pm = ctx.packageManager

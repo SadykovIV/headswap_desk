@@ -5,6 +5,7 @@ import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.os.IBinder
@@ -206,8 +207,7 @@ internal object EmbeddedSessionRegistry {
         decorate: (Intent, Int) -> Unit) {
         launchHostChild(activity, handle, target.componentName, decorate) {
             val selected = DesktopComponents.selected(activity)
-            check(selected != null && selected.componentName == target.componentName &&
-                selected.signerSha256 == target.signerSha256 && selected.modeId == target.modeId) {
+            check(selected == target) {
                 "Компонент рабочего стола изменился"
             }
             // A warm provider also opened on the phone keeps its own task there.
@@ -231,27 +231,56 @@ internal object EmbeddedSessionRegistry {
         }
     }
 
+    /** Starts only as the ordinary host UID. For an existing/unknown single-task window we first
+     * return to the host for confirmation. Only a stopped package is definitively cold. */
+    fun launchDashboardApp(activity: Activity, handle: Int, provider: DesktopComponentEntry,
+        target: ComponentName, allowTaskMove: Boolean, stillCurrent: () -> Boolean): Boolean {
+        val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(target.packageName)
+        val pm = activity.packageManager
+        return launchHostChild(activity, handle, target, { _, _ ->
+            check(stillCurrent() && provider == DesktopComponents.selected(activity))
+        }) {
+            check(stillCurrent() && provider.profileChrome && provider == DesktopComponents.selected(activity))
+            check(EmbeddedGatewayPolicy.allowsLauncherPackage(target.packageName, activity.packageName) &&
+                target.packageName != provider.packageName)
+            val info = pm.queryIntentActivities(query, 0).mapNotNull { it.activityInfo }.firstOrNull {
+                it.packageName == target.packageName && it.name == target.className && it.enabled &&
+                    it.exported && it.applicationInfo.enabled && it.permission.isNullOrEmpty()
+            } ?: error("Приложение недоступно на рабочем столе")
+            // Some Android versions do not copy all launch attributes onto an exported alias.
+            val declared = info.targetActivity?.let { pm.getActivityInfo(ComponentName(target.packageName, it), 0) } ?: info
+            check(declared.enabled && declared.applicationInfo.enabled &&
+                declared.applicationInfo.uid == info.applicationInfo.uid)
+            val isolated = DesktopComponentPolicy.supportsIsolatedTask(declared.launchMode, declared.documentLaunchMode,
+                declared.flags and ActivityInfo.FLAG_ALLOW_TASK_REPARENTING != 0)
+            if (!isolated && !allowTaskMove && (info.applicationInfo.flags and ApplicationInfo.FLAG_STOPPED) == 0)
+                return@launchHostChild null
+            query.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+    }
+
     private fun launchHostChild(activity: Activity, handle: Int, target: ComponentName,
-        decorate: (Intent, Int) -> Unit, resolve: () -> Intent) {
+        decorate: (Intent, Int) -> Unit, resolve: () -> Intent?): Boolean {
         val lease = active(Process.myUid(), handle)
-        activeCall(lease) { remote ->
+        return activeCall(lease) { remote ->
             val id = lease.displayId
             EmbeddedGatewayPolicy.requireComponentChild(lease.parent.mode, lease.fullscreen,
                 activity.display?.displayId ?: -1, lease.parent.displayId, id)
-            remote.trackDesktopChildLaunch(lease.token, target.packageName)
             val context = activity.applicationContext
-            val intent = resolve().setComponent(target).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val intent = resolve()?.setComponent(target)?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return@activeCall false
             check(context.packageManager.hasSystemFeature(PackageManager.FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS) &&
                 context.getSystemService(ActivityManager::class.java).isActivityStartAllowedOnDisplay(context, id, intent)) {
                 "Android не разрешил запуск на дочернем дисплее рабочего стола"
             }
             decorate(intent, id)
+            remote.trackDesktopChildLaunch(lease.token, target.packageName)
             synchronized(lock) {
                 check(parent === lease.parent && leases[handle] === lease && lease.closing == null &&
                     lease.token.isBinderAlive && !activity.isDestroyed)
             }
             context.startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(id).toBundle())
             lease.packageName = target.packageName
+            true
         }
     }
 
