@@ -4,13 +4,13 @@
 
 HeadSwap Desktop выводит приложения Android-телефона на штатную магнитолу с **Baidu CarLife по USB**. На ГУ появляется отдельный рабочий стол. Касания с магнитолы передаются телефону, а установленный на телефоне домашний экран сохраняется.
 
-**[Предварительный выпуск HeadSwap Desktop 0.5.0](https://github.com/SadykovIV/headswap_desk/releases/tag/v0.5.0) · Android 13+ · пакет `com.headswap.desk`.** Публичный стабильный выпуск — [HeadSwap Desktop 0.4.1](https://github.com/SadykovIV/headswap_desk/releases/tag/v0.4.1).
+**[Стабильный выпуск HeadSwap Desktop 0.5.1](https://github.com/SadykovIV/headswap_desk/releases/tag/v0.5.1) · Android 13+ · пакет `com.headswap.desk`.**
 
 В Android Desktop можно собрать свою боковую панель. Удерживайте приложение в каталоге и перетащите его влево, чтобы закрепить. Для удаления удерживайте иконку на панели и нажмите корзину. Внизу панели доступны «Назад» и «Домой». В «Настройки → Компоненты HeadSwap Desktop» отдельно показаны основное приложение и DriveDeck. Здесь можно проверить обновления и установить совместимый DriveDeck.
 
-[Скачать HeadSwap Desktop и DriveDeck · HeadSwap](https://github.com/SadykovIV/headswap_desk/releases) · [Установка и запуск](INSTALL.md)
+[Скачать HeadSwap Desktop 0.5.1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Desktop-0.5.1.apk) · [Скачать DriveDeck 0.6.8 code305](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/DriveDeck-HeadSwap-0.6.8-code305.apk) · [Установка и запуск](INSTALL.md)
 
-В Android Desktop и DriveDeck штатная клавиатура открывается в окне приложения на ГУ, в том числе при погашенной панели телефона. Кнопка «Назад» магнитолы скрывает клавиатуру. Совместимой приборной панели и HUD HeadSwap передаёт текущую песню из медиасессии Android и ближайший манёвр из навигационного уведомления Яндекса. На Android 16 и новее HeadSwap также читает стрелку и расстояние из видимой карточки Навигатора или Карт в окне проекции. [Как настроить клавиатуру и подсказки](INSTALL.md#клавиатура-и-приборная-панель)
+В Android Desktop и DriveDeck штатная клавиатура открывается в окне приложения на ГУ, в том числе при погашенной панели телефона. Кнопка «Назад» магнитолы скрывает клавиатуру. При отключении USB режим «Доступ HeadSwap» сразу отправляет текущему плееру команду паузы. После восстановления изображения и звука воспроизведение той же композиции может продолжиться. Совместимой приборной панели и HUD HeadSwap передаёт текущую песню из медиасессии Android и ближайший манёвр из навигационного уведомления Яндекса. На Android 16 и новее HeadSwap также читает стрелку и расстояние из видимой карточки Навигатора или Карт в окне проекции. [Как настроить клавиатуру и подсказки](INSTALL.md#клавиатура-и-приборная-панель)
 
 | Профиль | Что появляется на ГУ | Что установить на телефон |
 | --- | --- | --- |
@@ -44,7 +44,7 @@ HeadSwap Desktop выводит приложения Android-телефона н
 
 ## Разработчикам компонентов
 
-В предварительной 0.5.0 независимые лаунчеры появляются в списке **«Профиль» на главном экране**. CarBridge — отдельный профиль этого списка. Как и другие независимые профили v1, он работает на движке Android Desktop. Родительский экран, системная навигация, ввод и CarLife остаются у HeadSwap. Автор развивает и подписывает свой APK отдельно. [Полная инструкция и быстрый старт](sdk/desktop-panel-v1/DEVELOPER-GUIDE.md) · [Справочник SDK](sdk/desktop-panel-v1/README.md) · [Как проверить 0.5.0](docs/TESTING-0.5.0.md) · [Границы API](docs/DESKTOP-COMPONENT-API.md) · [Пилот CarBridge](docs/CARBRIDGE-PILOT.md).
+В HeadSwap Desktop 0.5.1 независимые лаунчеры появляются в списке **«Профиль» на главном экране**. CarBridge — отдельный профиль этого списка. Как и другие независимые профили v1, он работает на движке Android Desktop. Родительский экран, системная навигация, ввод и CarLife остаются у HeadSwap. Автор развивает и подписывает свой APK отдельно. [Полная инструкция и быстрый старт](sdk/desktop-panel-v1/DEVELOPER-GUIDE.md) · [Справочник SDK](sdk/desktop-panel-v1/README.md) · [Скачать комплект SDK v1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Profile-SDK-v1-dev.zip) · [Границы API](docs/DESKTOP-COMPONENT-API.md) · [Пилот CarBridge](docs/CARBRIDGE-PILOT.md).
 
 ## Контакты и поддержка
 

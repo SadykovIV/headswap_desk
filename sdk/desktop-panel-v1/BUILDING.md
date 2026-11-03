@@ -1,6 +1,6 @@
 # Сборка и подключение HeadSwap Profile SDK v1
 
-Это отдельная Android-библиотека для профилей **HeadSwap 0.5.0**. В AAR входят `ProfileContract`, `ProfileSession`, `ProfileNowPlaying` и сгенерированный Binder-интерфейс. Библиотека не добавляет в манифест разработчика разрешения, Activity или сервисы. APK профиля подписывает его автор.
+Это отдельная Android-библиотека для профилей **HeadSwap Desktop 0.5.1**, совместимая с предварительной версией хоста 0.5.0. В AAR входят `ProfileContract`, `ProfileSession`, `ProfileNowPlaying` и сгенерированный Binder-интерфейс. Библиотека не добавляет в манифест разработчика разрешения, Activity или сервисы. APK профиля подписывает его автор.
 
 ## Сборка AAR
 

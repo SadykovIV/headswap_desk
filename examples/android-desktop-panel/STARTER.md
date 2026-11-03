@@ -14,7 +14,7 @@
 gradlew.bat :app:assembleStarterDebug
 ```
 
-Установите `app/build/outputs/apk/starter/debug/app-starter-debug.apk` в тот же Android-профиль пользователя, что и HeadSwap Desktop 0.5.0. Откройте **Профиль → Стартовый рабочий стол**, сверьте издателя и подтвердите выбор. Для испытания трека дайте отдельное согласие на музыку. Откройте сеанс ГУ. В исходном репозитории вместо команды выше используйте `./android/gradlew -p examples/android-desktop-panel :app:assembleStarterDebug`.
+Установите `app/build/outputs/apk/starter/debug/app-starter-debug.apk` в тот же Android-профиль пользователя, что и [HeadSwap Desktop 0.5.1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Desktop-0.5.1.apk). Откройте **Профиль → Стартовый рабочий стол**, сверьте издателя и подтвердите выбор. Для испытания трека дайте отдельное согласие на музыку. Откройте сеанс ГУ. В исходном репозитории вместо команды выше используйте `./android/gradlew -p examples/android-desktop-panel :app:assembleStarterDebug`.
 
 | Идентификатор | Значение |
 |---|---|

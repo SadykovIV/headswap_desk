@@ -28,8 +28,11 @@ class UpdatePrefs(ctx: Context) {
         get() = sp.getString("dismissed", "") ?: ""
         set(v) = sp.edit().putString("dismissed", v).apply()
 
-    fun save(r: UpdateLogic.Release?) = sp.edit().putString("tag", r?.tag).apply()
-    fun release() = UpdateLogic.Release.fromTag(sp.getString("tag", null))
+    fun save(r: UpdateLogic.Release?) = sp.edit().putString("tag", r?.tag).putString("apkName", r?.apkName).apply()
+    fun release(): UpdateLogic.Release? {
+        val saved = sp.all
+        return UpdateLogic.Release.fromTag(saved["tag"] as? String, saved["apkName"] as? String)
+    }
 }
 
 object Updater {

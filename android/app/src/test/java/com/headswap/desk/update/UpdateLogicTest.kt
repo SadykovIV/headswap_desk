@@ -38,6 +38,25 @@ class UpdateLogicTest {
         )))
     }
 
+    @Test fun canonicalAssetIsPreferredInEitherOrderAndRestoredWithItsExactUrl() {
+        val canonical = "HeadSwap-Desktop-0.5.1.apk"
+        val legacy = desktop("0.5.1")
+        for (files in listOf(listOf(canonical), listOf(legacy, canonical), listOf(canonical, legacy))) {
+            val rel = UpdateLogic.newestInPage(page(release("0.5.1", *files.toTypedArray()).put("prerelease", false)))!!
+            val restored = UpdateLogic.Release.fromTag(rel.tag, rel.apkName)!!
+            assertEquals("$owner/releases/download/v0.5.1/$canonical", restored.apkUrl)
+        }
+        assertEquals(legacy, UpdateLogic.Release.fromTag("v0.5.1")?.apkName)
+        assertNull(UpdateLogic.Release.fromTag("v0.5.1", "HeadSwap-Desktop-0.5.0.apk"))
+    }
+
+    @Test fun untrustedCanonicalUrlCannotDisplaceVerifiedLegacyAsset() {
+        val release = release("0.5.1", "HeadSwap-Desktop-0.5.1.apk", desktop("0.5.1"))
+        release.getJSONArray("assets").getJSONObject(0).put("browser_download_url", "$owner/releases/download/v0.5.0/HeadSwap-Desktop-0.5.0.apk")
+        val rel = UpdateLogic.newestInPage(page(release))!!
+        assertEquals("$owner/releases/download/v0.5.1/${desktop("0.5.1")}", UpdateLogic.Release.fromTag(rel.tag, rel.apkName)?.apkUrl)
+    }
+
     @Test fun checksTagAndAssetStateBeforeOfferingDownload() {
         assertNull(UpdateLogic.Release.fromTag("v0.2.14/../../other"))
         assertNull(UpdateLogic.Release.fromTag("v0.2.14-beta3"))

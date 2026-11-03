@@ -2,7 +2,7 @@
 
 [Полная инструкция разработчика](DEVELOPER-GUIDE.md) · [Пример собственного рабочего стола](STARTER.md).
 
-Для сборки нужны JDK 17 и Android SDK Platform 37. Для проверки на ГУ — HeadSwap Desktop 0.5.0 и телефон с Android 13+. Комплект содержит сессионный SDK в формате AAR, соответствующие исходники с тестами, AIDL, три примера APK в исходном виде и Gradle Wrapper. Стабильная версия HeadSwap 0.4.1 не поддерживает API v1.
+Для сборки нужны JDK 17 и Android SDK Platform 37. Для проверки на ГУ — [HeadSwap Desktop 0.5.1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Desktop-0.5.1.apk) и телефон с Android 13+. Комплект содержит сессионный SDK в формате AAR, соответствующие исходники с тестами, AIDL, три примера APK в исходном виде и Gradle Wrapper. Profile API v1 также поддерживается в HeadSwap Desktop 0.5.0.
 
 Чтобы получить **свой** независимый проект, распакуйте ZIP, откройте терминал в корне и выполните:
 

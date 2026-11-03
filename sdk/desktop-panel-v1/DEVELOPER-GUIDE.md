@@ -2,11 +2,11 @@
 
 Профиль — отдельное Android-приложение со своим именем, интерфейсом, настройками и подписью. После установки оно появляется в списке **«Профиль» на главном экране HeadSwap**. Пользователь выбирает его точно так же, как встроенные режимы. Исходники HeadSwap, изменение его APK, ключ команды HeadSwap и регистрация у разработчика хоста для этого не требуются.
 
-Это руководство для **HeadSwap Desktop 0.5.0, Profile API v1, Android 13+**. Стабильный HeadSwap 0.4.1 не распознаёт профили. Номер API, версия HeadSwap и версия APK вашего профиля меняются независимо. Все внешние профили v1 используют движок Android Desktop; они не заменяют DriveDeck или Samsung DeX.
+Это руководство для **HeadSwap Desktop 0.5.1, Profile API v1, Android 13+**. Профили v1 также работают с предварительной версией 0.5.0. Номер API, версия HeadSwap и версия APK вашего профиля меняются независимо. Все внешние профили v1 используют движок Android Desktop; они не заменяют DriveDeck или Samsung DeX.
 
 ## 1. От пустой папки до установленного профиля
 
-Возьмите из предварительного выпуска `HeadSwap-Profile-SDK-v1-dev.zip` и совместимый APK HeadSwap Desktop. На компьютере нужны JDK 17, Android SDK Platform 37 и Platform Tools (`adb`); удобнее всего установить их через Android Studio. Укажите пути к JDK в `JAVA_HOME` и Android SDK в `ANDROID_HOME`. Gradle Wrapper входит в комплект. Первая сборка загружает Gradle и Android Gradle Plugin. На телефоне нужен Android 13 (API 33) или новее.
+Скачайте [комплект Profile SDK v1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Profile-SDK-v1-dev.zip) и [HeadSwap Desktop 0.5.1](https://github.com/SadykovIV/headswap_desk/releases/download/v0.5.1/HeadSwap-Desktop-0.5.1.apk). На компьютере нужны JDK 17, Android SDK Platform 37 и Platform Tools (`adb`); удобнее всего установить их через Android Studio. Укажите пути к JDK в `JAVA_HOME` и Android SDK в `ANDROID_HOME`. Gradle Wrapper входит в комплект. Первая сборка загружает Gradle и Android Gradle Plugin. На телефоне нужен Android 13 (API 33) или новее.
 
 **Самый короткий путь:** распакуйте ZIP в каталог `headswap-sdk`, перейдите в него и выполните команды ниже. Python 3.8+ нужен только для создания проекта; готовый пример собирается без Python. Подставьте свои уникальные пакет, идентификатор и видимое имя. Название `CarBridge` и ID `carbridge` оставьте соответствующему автору.
 

@@ -9,17 +9,20 @@ object UpdateLogic {
     const val CHECK_INTERVAL_MS = 6 * 3600_000L
     const val RETRY_MS = 3600_000L
 
-    // Desktop's published prereleases use numeric tags (v0.2.13) and an "-experimental" APK.
     private val tagPattern = Regex("""v(\d+\.\d+\.\d+)""")
 
-    class Release private constructor(val tag: String, val version: String) {
-        val apkName get() = "HeadSwap-Desktop-$version-experimental.apk"
+    class Release private constructor(val tag: String, val version: String, val apkName: String) {
+        internal val canonical get() = apkName == "HeadSwap-Desktop-$version.apk"
         val apkUrl get() = "https://github.com/$REPO/releases/download/$tag/$apkName"
 
         companion object {
-            fun fromTag(tag: String?): Release? {
+            fun fromTag(tag: String?, apkName: String? = null): Release? {
                 val v = tagPattern.matchEntire(tag ?: return null)?.groupValues?.get(1) ?: return null
-                return if (parseVersion(v) != null) Release(tag, v) else null
+                if (parseVersion(v) == null) return null
+                val legacy = "HeadSwap-Desktop-$v-experimental.apk"
+                // Old installations stored only the tag after verifying the legacy asset.
+                val name = apkName ?: legacy
+                return if (name == legacy || name == "HeadSwap-Desktop-$v.apk") Release(tag, v, name) else null
             }
         }
     }
@@ -47,14 +50,16 @@ object UpdateLogic {
         for (i in 0 until page.length()) {
             val item = page.optJSONObject(i) ?: continue
             if (item.optBoolean("draft")) continue
-            val rel = Release.fromTag(item.optString("tag_name")) ?: continue
-            if (best != null && !isNewer(rel.version, best.version)) continue
+            val tag = item.optString("tag_name")
             val assets = item.optJSONArray("assets") ?: continue
-            if ((0 until assets.length()).any { j ->
-                    val a = assets.optJSONObject(j)
-                    a?.optString("state") == "uploaded" && a.optString("name") == rel.apkName &&
-                        a.optString("browser_download_url") == rel.apkUrl
-                }) best = rel
+            for (j in 0 until assets.length()) {
+                val asset = assets.optJSONObject(j) ?: continue
+                if (asset.optString("state") != "uploaded") continue
+                val rel = Release.fromTag(tag, asset.optString("name")) ?: continue
+                if (asset.optString("browser_download_url") != rel.apkUrl) continue
+                if (best == null || isNewer(rel.version, best.version) ||
+                    (rel.tag == best.tag && rel.canonical && !best.canonical)) best = rel
+            }
         }
         return best
     }
