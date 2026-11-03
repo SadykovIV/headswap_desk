@@ -296,13 +296,11 @@ internal class DesktopAppPane(
     // Launch success alone does not prove placement. ActivityManager observations are
     // bounded by the existing task query; a crash/missing task returns to stock without relaunch.
     private fun watchComponent(output: Output, entry: DesktopAppCatalog.Entry, serial: Long,
-        confirmed: Boolean, deadline: Long) {
+        confirmed: Boolean, initialDeadline: Long, previousDelay: Long = 300) {
         if (output.retired || request != serial || output.handle <= 0) return
         val state = runCatching { EmbeddedSessionRegistry.taskState(uid, output.handle, entry.packageName) }.getOrNull()
-        val now = SystemClock.elapsedRealtime()
-        val placed = state == 2 || confirmed && state == 1
-        if (placed && !confirmed) main.post { if (!output.retired && request == serial) onOpened() }
-        if (!placed && (now >= deadline || confirmed && state == 0)) {
+        val leaseAlive = EmbeddedSessionRegistry.isComponentLeaseAlive(uid, output.handle)
+        if (PanelPlacement.lost(confirmed, state, leaseAlive, SystemClock.elapsedRealtime() >= initialDeadline)) {
             Log.w(TAG, "Panel placement lost: package=${entry.packageName} state=$state confirmed=$confirmed")
             main.post {
                 if (!output.retired && request == serial) {
@@ -312,8 +310,11 @@ internal class DesktopAppPane(
             }
             return
         }
-        work.schedule({ watchComponent(output, entry, serial, confirmed || placed,
-            if (placed) now + 5_000 else deadline) }, if (placed) 1_000 else 300, TimeUnit.MILLISECONDS)
+        if (!confirmed && state == 2) main.post { if (!output.retired && request == serial) onOpened() }
+        val placed = confirmed || state == 2
+        val delay = PanelPlacement.pollDelay(placed, state, previousDelay)
+        work.schedule({ watchComponent(output, entry, serial, placed, initialDeadline, delay) },
+            delay, TimeUnit.MILLISECONDS)
     }
 
     fun back() {

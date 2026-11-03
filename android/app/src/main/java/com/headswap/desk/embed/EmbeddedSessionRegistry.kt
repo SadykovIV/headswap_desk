@@ -181,6 +181,14 @@ internal object EmbeddedSessionRegistry {
         lease
     }
 
+    /** Local lease liveness is independent of a delayed or unavailable ActivityManager observation. */
+    fun isComponentLeaseAlive(uid: Int, handle: Int): Boolean = synchronized(lock) {
+        val lease = leases[handle] ?: return@synchronized false
+        lease.uid == uid && parent === lease.parent && lease.parent.mode == DesktopModePolicy.ANDROID_DESKTOP &&
+            !lease.fullscreen && lease.displayId > 0 && lease.closing == null && lease.token.isBinderAlive &&
+            lease.parent.remote.asBinder().isBinderAlive
+    }
+
     fun resize(uid: Int, handle: Int, width: Int, height: Int, density: Int) {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         val lease = active(uid, handle)
