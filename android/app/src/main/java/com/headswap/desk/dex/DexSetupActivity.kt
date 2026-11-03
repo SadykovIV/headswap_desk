@@ -1065,7 +1065,7 @@ class DexSetupActivity : Activity() {
         val enabled = !accessChoiceLocked()
         val computerReady = prefs.useDelegated && DelegatedDesktopAccess.isReady(this)
         accessHint.updateText(when {
-            computerReady && !ShellPanelClient.isConnected -> "Клавиатура на магнитоле недоступна. Завершите доступ на главном экране и активируйте HeadSwap ещё раз."
+            computerReady && !DelegatedDesktopInstrumentation.keyboardRoutingReady -> "HeadSwap ожидает клавиатуру для экрана магнитолы."
             desktop -> "USB CarLife · ${prefs.desktopResolutionLabel}"
             else -> "USB CarLife · DeX по ADB · 1280 × 720"
         })

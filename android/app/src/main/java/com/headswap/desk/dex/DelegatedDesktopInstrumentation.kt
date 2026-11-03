@@ -22,6 +22,11 @@ import java.util.concurrent.TimeUnit
 /** PC-started, main-process lifetime for a narrowly scoped, temporary UID delegation. */
 @Keep
 class DelegatedDesktopInstrumentation : Instrumentation() {
+    companion object {
+        /** Last live route check, shared with the main screen without blocking UI on a helper call. */
+        @Volatile internal var keyboardRoutingReady = false
+            private set
+    }
     private var requestAudio = false
     private var requestScreen = false
     private var requestHudApi = false
@@ -54,13 +59,14 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         var recovery: DisplayHelperRendezvous? = null
         fun writeHeartbeat(active: Boolean) {
             val permissions = DelegatedDesktopAccess.hasPermissions(context)
+            keyboardRoutingReady = active && permissions && DelegatedInputGateway.imeRoutesReady() &&
+                (ShellPanelClient.isConnected || ShellDisplayIme.availableInActivation(context))
             val bytes = JSONObject().put("protocol", DelegatedDesktopAccess.PROTOCOL)
                 .put("ready", active && permissions).put("pid", Process.myPid())
                 .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
                 .put("permissionsChecked", permissions)
                 .put("helperSession", if (active) recovery?.fingerprint() else null)
-                .put("keyboardRouting", active && DelegatedInputGateway.imeRoutesReady() &&
-                    (ShellPanelClient.isConnected || ShellDisplayIme.availableInActivation(context)))
+                .put("keyboardRouting", keyboardRoutingReady)
                 .put("displayHelper", active && ShellPanelClient.isConnected)
                 .put("panelNeedsHelper", active && panelReady && DelegatedPanelAccess.usesShellBackend())
                 .put("mediaControl", active && context.checkSelfPermission(DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL) == android.content.pm.PackageManager.PERMISSION_GRANTED)
