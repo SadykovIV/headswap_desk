@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Дисплей HeadSwap</string>
+    <string name="heading">Окно приложения</string>
+    <string name="display_details">%1$s · ID %2$d\nПлотность окна: %3$d DPI\nРазмер окна: %4$d × %5$d px</string>
+    <string name="phone_display">Основной дисплей</string>
+    <string name="external_display">Дополнительный дисплей</string>
+    <string name="tap_count">Нажатий: %1$d</string>
+    <string name="count_button">Проверить нажатие</string>
+</resources>

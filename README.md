@@ -42,6 +42,10 @@ HeadSwap Desktop выводит приложения Android-телефона н
 - **RotkivKiv** — автор автомобильного лаунчера DriveDeck. Для работы на отдельном дисплее HeadSwap подготовлены патчи к DriveDeck 0.6.8 code300. [Страница обновлений DriveDeck](https://github.com/RotkivKiv/DriveDeck-Updates) · [Профиль автора](https://github.com/RotkivKiv)
 - **SadykovIV** публикует эту независимую адаптацию HeadSwap Desktop. Она добавляет рабочий стол Android, профиль DriveDeck и вывод на CarLife без запуска Android Auto. [Репозиторий адаптации](https://github.com/SadykovIV/headswap_desk)
 
+## Разработчикам компонентов
+
+Собственное Android-приложение с подписью автора уже можно запускать в Android Desktop 0.4.1. Для сменных рабочих столов подготовлен проект API. Инструкция включает собираемый пример, порядок проверки на внешнем дисплее и разбор адаптации CarBridge с компоновкой 70/30. [Руководство разработчика](docs/COMPONENTS.md) · [Проект API](docs/DESKTOP-COMPONENT-API.md) · [Пилот CarBridge](docs/CARBRIDGE-PILOT.md)
+
 ## Контакты и поддержка
 
 Связаться с автором HeadSwap Desktop в Telegram — [@sadykovildar](https://t.me/sadykovildar).
