@@ -17,6 +17,7 @@ def main():
     parser.add_argument("--adb", default=os.environ.get("ADB", "adb"))
     parser.add_argument("--reconnect", action="store_true",
                         help="Test IME routing on the same virtual display before and after an authenticated reconnect")
+    parser.add_argument("--density", action="store_true", help="Verify that creating and resizing virtual displays preserves the primary DPI")
     args = parser.parse_args()
     if not re.fullmatch(r"emulator-\d+", args.serial):
         parser.error("Select a disposable Android emulator")
@@ -28,6 +29,11 @@ def main():
     if shell("getprop ro.kernel.qemu") != "1" or shell("getprop ro.hardware") not in ("ranchu", "goldfish"):
         parser.error("The selected device is not an Android SDK emulator")
     api = int(shell("getprop ro.build.version.sdk"))
+    if args.density:
+        result = shell(shlex.join(["am", "instrument", "--no-hidden-api-checks", "-w", "-e",
+                                   "probe", "density", COMPONENT]), timeout=60)
+        print(result)
+        return 0 if "INSTRUMENTATION_CODE: -1" in result and "primaryUnchanged=true" in result else 1
     shell("input keyevent KEYCODE_WAKEUP")
     shell("wm dismiss-keyguard")
     options = ["-e", "probe", "panel-reconnect" if args.reconnect else "panel"]

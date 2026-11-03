@@ -22,8 +22,12 @@ public final class EmbeddedRenderProfile {
         }
     }
 
-    public static Geometry configured(String packageName, int width, int height, int parentDpi, boolean compactMaps) {
-        int[] pixels = DesktopRenderPolicy.geometry(packageName, width, height, parentDpi, compactMaps);
+    public static boolean corrected(String pkg, boolean hostFlag, boolean exactPackageConfig) {
+        return pkg != null && !pkg.isEmpty() && hostFlag && (exactPackageConfig || DesktopRenderPolicy.isMap(pkg));
+    }
+
+    public static Geometry configured(int width, int height, int parentDpi, boolean correctThisPackage) {
+        int[] pixels = DesktopRenderPolicy.geometry(width, height, parentDpi, correctThisPackage);
         double scale = pixels[0] / (double) Math.max(128, width);
         return new Geometry(pixels[0], pixels[1], pixels[2], parentDpi, scale, scale);
     }

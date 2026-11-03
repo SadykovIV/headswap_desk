@@ -17,7 +17,6 @@ import android.content.res.ColorStateList;
 import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.TextView;
-import com.headswap.desk.shared.DesktopRenderPolicy;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -88,10 +87,14 @@ public final class DisplayOnlyLaunch {
         SharedPreferences prefs = context.getSharedPreferences("drive_deck", Context.MODE_PRIVATE);
         boolean back = prefs.getBoolean(BACK, false);
         boolean home = prefs.getBoolean(HOME, false);
-        if (host != null && target != null && (back || home || DesktopRenderPolicy.isMap(target.getPackageName()))
+        if (host != null && target != null
                 && isLauncherRequest(context, intent, target) && hasFullscreenHost(context)) {
             Intent original = new Intent(intent);
-            boolean scheduled = EmbeddedDisplayClient.checkFullscreenParent(host, parent, admitted -> {
+            boolean scheduled = EmbeddedDisplayClient.checkFullscreenParent(host, parent, target.getPackageName(), back || home, admitted -> {
+                if (admitted == null) {
+                    failure(context, new IllegalStateException("Не удалось проверить настройки приложения на рабочем столе."));
+                    return;
+                }
                 if (admitted) {
                     Intent routed = new Intent().setComponent(FULLSCREEN_HOST)
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)

@@ -88,6 +88,16 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             val adb = own(DexAccess.connect(context, prefs.connectPort))
             DexAccess.verifyShell(adb, prefs.host, prefs.connectPort)
             ensureActive()
+            // Recover only an interrupted 0.4.1 change. Normal sessions never write display 0.
+            val userId = context.applicationInfo.uid / 100000
+            val pending = adb.shell("settings --user $userId get secure ${LegacyDensityRecovery.JOURNAL}")
+            if (pending.exitCode == 0 && pending.output.trim() !in setOf("", "null")) {
+                val apk = DexOverlayPolicy.quote(context.applicationInfo.sourceDir)
+                val repaired = adb.shell("CLASSPATH=$apk /system/bin/app_process / " +
+                    "${LegacyDensityRecovery::class.java.name} ${context.applicationInfo.uid}")
+                check(repaired.exitCode == 0) { "Не удалось восстановить прежний DPI из сохранённой записи HeadSwap 0.4.1" }
+            }
+            ensureActive()
 
             val bytes = context.assets.open(ASSET).use { it.readBytes() }
             val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -116,6 +126,12 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             check(displayReady.await(12, TimeUnit.SECONDS)) { "scrcpy не сообщил ID виртуального дисплея" }
             ensureActive()
             check(displayId > 0) { "Нельзя использовать основной экран вместо DeX" }
+            // scrcpy owns this secondary display. Verify that Android applied the requested DPI.
+            val displays = context.getSystemService(android.hardware.display.DisplayManager::class.java)
+            val external = checkNotNull(displays.getDisplay(displayId)) { "Созданный дисплей DeX недоступен" }
+            @Suppress("DEPRECATION")
+            val actual = android.util.DisplayMetrics().also(external::getRealMetrics).densityDpi
+            DexUserServicePolicy.requireProjectionDensity(actual, density)
             // One UI 8.5/9 may default new displays to fullscreen. This only changes our display.
             val freeform = adb.shell("wm set-display-windowing-mode -d $displayId 5")
             check(freeform.exitCode == 0) { "Прошивка не разрешила оконный режим DeX: ${freeform.allOutput.take(250)}" }

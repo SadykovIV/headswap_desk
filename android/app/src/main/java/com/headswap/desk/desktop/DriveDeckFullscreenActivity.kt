@@ -35,7 +35,9 @@ class DriveDeckFullscreenActivity : Activity() {
     private var target: ComponentName? = null
 
     private val parentId get() = display?.displayId ?: -1
-    private fun config() = runCatching { EmbeddedSessionRegistry.renderConfig(parentId, ownDesktop = false) }.getOrNull()
+    private fun config(pkg: String? = null) = runCatching {
+        EmbeddedSessionRegistry.renderConfig(parentId, ownDesktop = false, packageName = pkg)
+    }.getOrNull()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -86,7 +88,6 @@ class DriveDeckFullscreenActivity : Activity() {
     }
 
     private fun openTarget(intent: Intent) {
-        if (config() == null) { finish(); return }
         val component = ComponentName.unflattenFromString(intent.getStringExtra("component").orEmpty())
         if (component == null || !EmbeddedGatewayPolicy.allowsLauncherPackage(component.packageName, packageName)) {
             finish(); return
@@ -102,8 +103,9 @@ class DriveDeckFullscreenActivity : Activity() {
         target = component
         val backEnabled = intent.getBooleanExtra("back", false)
         val homeEnabled = intent.getBooleanExtra("home", false)
-        if (!backEnabled && !homeEnabled) {
-            // The native parent display already uses the selected desktop DPI.
+        val policy = config(component.packageName) ?: run { finish(); return }
+        if (!backEnabled && !homeEnabled && policy[1] == 0) {
+            // No overlay or app-specific rendering is needed on the parent display.
             if (!tryNativeLaunch()) goHome()
             return
         }

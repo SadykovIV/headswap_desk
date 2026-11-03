@@ -11,6 +11,7 @@ import com.headswap.desk.aa.AaNavDistance
 import com.headswap.desk.aa.AaNavTurn
 import com.headswap.desk.aa.MetaRelay
 import com.headswap.desk.cluster.ClusterNavigationHint
+import com.headswap.desk.cluster.GuidanceInterest
 import com.headswap.desk.cluster.ClusterNowPlaying
 import com.headswap.desk.aa.CarlifeAudio
 import com.headswap.desk.aa.AaTranscoder
@@ -78,6 +79,7 @@ class CarLifeSession(
     private val calls: CallStateSource = CallStateSource.NONE,
     /** Размер кадра из VIDEO_ENCODER_INIT ГУ (для подсказки «Как просит ГУ» в разделе для разработчиков). */
     private val onHuSize: (Int, Int) -> Unit = { _, _ -> },
+    private val onNavigationInterestChanged: () -> Unit = {},
     private val onClosed: (String) -> Unit,
 ) : VideoSource.Listener, CarlifeLink {
 
@@ -120,6 +122,12 @@ class CarLifeSession(
     private class HudSubscription(val on: Boolean)
     @Volatile private var musicHud = HudSubscription(true) // CarLife's music subscription starts enabled.
     @Volatile private var naviHud = HudSubscription(false)
+    @Volatile private var navigationEnabled = cfg.metaNavi
+    @Volatile internal var guidanceInterest = GuidanceInterest(GuidanceInterest.Mode.NONE)
+        private set
+    private var naviExplicitlyStopped = false
+    private var lastNavigationRequest: ByteArray? = null // guarded by the bridge
+    private var clearingNavigation = false // only while ending a route under the bridge lock
 
     private val t0 = SystemClock.elapsedRealtime()
     private val desktopAudioOutputLease = DesktopAudioOutputLease(t0)
@@ -222,7 +230,9 @@ class CarLifeSession(
         sched.scheduleWithFixedDelay({ pauseHeartbeat() }, PAUSE_HEARTBEAT_MS, PAUSE_HEARTBEAT_MS, TimeUnit.MILLISECONDS)
         sched.scheduleWithFixedDelay({ adaptBitrate() }, 1000, BITRATE_POLL_MS, TimeUnit.MILLISECONDS)
         sched.scheduleWithFixedDelay({ mobisKeepalive() }, MOBIS_KEEPALIVE_POLL_MS, MOBIS_KEEPALIVE_POLL_MS, TimeUnit.MILLISECONDS)
-        if (cfg.metaNavi) sched.scheduleWithFixedDelay({ bridge.refreshDesktopNavigation(this) }, 1, 1, TimeUnit.SECONDS)
+        sched.scheduleWithFixedDelay({
+            if (navigationEnabled) bridge.refreshDesktopNavigation(this)
+        }, 1, 1, TimeUnit.SECONDS)
         val callsOn = calls.start { state ->
             try {
                 sched.execute { onCallState(state) }
@@ -246,8 +256,56 @@ class CarLifeSession(
         }
     }
 
+    internal fun setNavigationHints(enabled: Boolean) = synchronized(bridge) {
+        if (closed.get() || enabled == navigationEnabled) return@synchronized
+        if (!enabled) {
+            // Retire pending SHOW/UPDATE first, then let the relay end any maneuver
+            // that actually reached the cluster while the subscription is still valid.
+            naviHud = HudSubscription(naviHud.on)
+            clearingNavigation = true
+            try {
+                bridge.onDesktopNavigation(this, null, null)
+            } finally {
+                clearingNavigation = false
+            }
+            if (naviHud.on) bridge.onCarlifeSubscribe(listOf(SUB_NAVI), false, this)
+        }
+        navigationEnabled = enabled
+        lastNavigationRequest?.let(::replyToSubscribe)
+        if (enabled && naviHud.on) bridge.onCarlifeSubscribe(listOf(SUB_NAVI), true, this)
+        updateGuidanceInterest()
+    }
+
+    private fun updateGuidanceInterest() {
+        val mode = when {
+            closed.get() || !navigationEnabled -> GuidanceInterest.Mode.NONE
+            naviHud.on -> GuidanceInterest.Mode.ACTIVE
+            lastNavigationRequest != null && !naviExplicitlyStopped -> GuidanceInterest.Mode.REQUESTED
+            else -> GuidanceInterest.Mode.NONE
+        }
+        if (mode != guidanceInterest.mode) {
+            guidanceInterest = GuidanceInterest(mode)
+            AppLog.i("CLUSTER navigation subscription=$mode", false)
+            onNavigationInterestChanged()
+        }
+    }
+
+    private fun replyToSubscribe(request: ByteArray) {
+        val done = Msgs.subscribeDone(request, navigation = navigationEnabled, music = cfg.metaMusic)
+        if (done == null) {
+            AppLog.i("== CARLIFE_DATA_SUBSCRIBE не разобрался, не отвечаю (как Baidu)")
+            return
+        }
+        val ids = Msgs.subscribeIds(request)
+        if (SUB_NAVI in ids) lastNavigationRequest = request
+        bridge.onCarlifeSubscribeDone(this, if (navigationEnabled) ids else emptyList()) {
+            sendCmd(Msg.CARLIFE_DATA_SUBSCRIBE_DONE, done)
+        }
+        updateGuidanceInterest()
+    }
+
     internal fun onClusterNavigation(hint: ClusterNavigationHint?) {
-        if (closed.get() || !cfg.metaNavi) return
+        if (closed.get() || !navigationEnabled) return
         if (hint == null) {
             bridge.onDesktopNavigation(this, null, null)
         } else {
@@ -302,6 +360,7 @@ class CarLifeSession(
 
     fun close(reason: String) {
         if (!closed.compareAndSet(false, true)) return
+        synchronized(bridge) { updateGuidanceInterest() }
         desktopVideoDelivery.close()
         DesktopConnectionState.detach(desktopVideoDelivery)
         desktopAudioOutputLease.close()
@@ -483,28 +542,21 @@ class CarLifeSession(
                     sendCmd(Msg.BT_IDENTIFY_RESULT_IND, Msgs.btIdentifyResult(0, addr))
                 }
             }
-            Msg.CARLIFE_DATA_SUBSCRIBE -> {
-                val done = Msgs.subscribeDone(m.body, navigation = cfg.metaNavi, music = cfg.metaMusic)
-                if (done == null) {
-                    AppLog.i("== CARLIFE_DATA_SUBSCRIBE не разобрался, не отвечаю (как Baidu)")
-                } else {
-                    val ids = Msgs.subscribeIds(m.body)
-                    AppLog.i("== CARLIFE_DATA_SUBSCRIBE moduleID=$ids, отвечаю DONE")
-                    bridge.onCarlifeSubscribeDone(this, if (cfg.metaNavi) ids else emptyList()) {
-                        sendCmd(Msg.CARLIFE_DATA_SUBSCRIBE_DONE, done)
-                    }
-                }
-            }
-            Msg.CARLIFE_DATA_SUBSCRIBE_START, Msg.CARLIFE_DATA_SUBSCRIBE_STOP -> {
+            Msg.CARLIFE_DATA_SUBSCRIBE -> synchronized(bridge) { replyToSubscribe(m.body) }
+            Msg.CARLIFE_DATA_SUBSCRIBE_START, Msg.CARLIFE_DATA_SUBSCRIBE_STOP -> synchronized(bridge) {
                 val on = m.type == Msg.CARLIFE_DATA_SUBSCRIBE_START
                 val ids = Msgs.subscribeIds(m.body)
                 // навигация выключена в настройках: подписку ГУ не передаём, NAVI_NEXT_TURN_INFO не уйдёт
-                if (SUB_NAVI in ids) naviHud = HudSubscription(on && cfg.metaNavi)
+                if (SUB_NAVI in ids) {
+                    naviHud = HudSubscription(on)
+                    naviExplicitlyStopped = !on
+                }
                 if (MetaRelay.SUB_MUSIC in ids) musicHud = HudSubscription(on && cfg.metaMusic)
-                val pass = ids.filter { (it != SUB_NAVI || cfg.metaNavi) && (it != MetaRelay.SUB_MUSIC || cfg.metaMusic) }
+                val pass = ids.filter { (it != SUB_NAVI || navigationEnabled) && (it != MetaRelay.SUB_MUSIC || cfg.metaMusic) }
                 AppLog.i("== SUBSCRIBE_${if (on) "START" else "STOP"} moduleID=$ids" +
                     (if (pass.size != ids.size) ", навигация выключена в настройках" else ""))
                 bridge.onCarlifeSubscribe(pass, on, this)
+                updateGuidanceInterest()
             }
             Msg.VIDEO_ENCODER_JPEG -> {
                 AppLog.i("== ГУ просит JPEG-режим видео: отвечаю ACK, но шлю только H.264")
@@ -1147,8 +1199,14 @@ class CarLifeSession(
 
     override fun sendNaviTurn(info: NaviTurnInfo): Boolean {
         val subscription = naviHud
-        if (!cfg.metaNavi || !subscription.on) return false
+        if (!navigationEnabled || !subscription.on) return false
         val sent = fitRoad(info)
+        if (clearingNavigation && sent.action == 3) {
+            // Queue the final HIDE before changing the advertised capability. A HU
+            // can send STOP immediately on seeing DONE(false).
+            sendCmd(Msg.NAVI_NEXT_TURN_INFO, Msgs.naviNextTurn(sent, cfg.naviField6, ByteArray(0)))
+            return true
+        }
         return metaSubmit("NAVI_NEXT_TURN_INFO") {
             // конец маршрута (action 3) - иконка пустая, как Baidu onNaviStateChange(false)
             val icon = if (!cfg.naviField6.icon || info.action == 3) ByteArray(0) else turnIcons.getOrPut(info.nextTurn) {
@@ -1156,7 +1214,10 @@ class CarLifeSession(
                     AppLog.i("метаданные: стрелка nextTurn=${info.nextTurn} ${PbText.blob(it)}", ui = false)
                 }
             }
-            if (naviHud === subscription) sendCmd(Msg.NAVI_NEXT_TURN_INFO, Msgs.naviNextTurn(sent, cfg.naviField6, icon))
+            val body = Msgs.naviNextTurn(sent, cfg.naviField6, icon)
+            synchronized(bridge) {
+                if (naviHud === subscription) sendCmd(Msg.NAVI_NEXT_TURN_INFO, body)
+            }
         }
     }
 

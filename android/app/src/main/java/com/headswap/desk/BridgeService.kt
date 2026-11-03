@@ -33,12 +33,14 @@ import com.headswap.desk.aa.VideoMode
 import com.headswap.desk.aa.DesktopVideoSelection
 import com.headswap.desk.aa.DesktopVideoGeometry
 import com.headswap.desk.cluster.ClusterMediaSource
+import com.headswap.desk.cluster.CarLifeForegroundGuidance
 import com.headswap.desk.cluster.ClusterNavigationSource
 import com.headswap.desk.dex.DexConnector
 import com.headswap.desk.dex.ShizukuDexConnector
 import com.headswap.desk.dex.DelegatedDexConnector
 import com.headswap.desk.dex.DesktopAccess
 import com.headswap.desk.dex.DexPrefs
+import com.headswap.desk.dex.PhoneIdleMode
 import com.headswap.desk.dex.DexState
 import com.headswap.desk.dex.DesktopRecoveryPolicy
 import com.headswap.desk.dex.DesktopAudioCapture
@@ -87,6 +89,8 @@ class BridgeService : Service() {
     private var session: CarLifeSession? = null
     private var clusterMedia: ClusterMediaSource? = null
     private var clusterNavigation: ClusterNavigationSource? = null
+    private var foregroundGuidance: CarLifeForegroundGuidance? = null
+    private var unobserveNavigationHints: (() -> Unit)? = null
     private var host: BridgeHost? = null
     private var phoneIdleTimer: com.headswap.desk.dex.CarLifePhoneIdleTimer? = null
     private val desktopAudio by lazy { DesktopAudioCapture(applicationContext) }
@@ -226,7 +230,8 @@ class BridgeService : Service() {
         // never create a foreground service, acquire USB, or start a new desktop.
         if (intent?.action == ACTION_PHONE_SCREEN_OFF || intent?.action == ACTION_PHONE_SCREEN_ON) {
             val off = intent.action == ACTION_PHONE_SCREEN_OFF
-            val accepted = !stopRequested && session != null && host?.setPhoneScreenOff(off) == true
+            val panelSelected = !off || DexPrefs(this).let { it.desktopPanelControl && it.phoneScreenMode == PhoneIdleMode.PANEL }
+            val accepted = panelSelected && !stopRequested && session != null && host?.setPhoneScreenOff(off) == true
             AppLog.i("DEX phone panel request off=$off accepted=$accepted", false)
             if (session == null && host == null && !linkWaiting) stopSelfResult(startId)
             return stickiness()
@@ -928,7 +933,10 @@ class BridgeService : Service() {
         stopRequested = false
 
         val sref = arrayOfNulls<CarLifeSession>(1)
-        val s = CarLifeSession(transport, cfg, h.core, PhoneThermal(this), CallStateSource.NONE, onHuSize = { w, hh -> aaPrefs.saveHuSize(w, hh) }) { reason -> main.post { onSessionClosed(sref[0]!!, reason) } }
+        val s = CarLifeSession(transport, cfg, h.core, PhoneThermal(this), CallStateSource.NONE,
+            onHuSize = { w, hh -> aaPrefs.saveHuSize(w, hh) },
+            onNavigationInterestChanged = { main.post { if (!stopRequested && session === sref[0]) clusterNavigation?.subscriptionChanged() } }
+        ) { reason -> main.post { onSessionClosed(sref[0]!!, reason) } }
         sref[0] = s
         session = s
         com.headswap.desk.dex.DesktopMusicPlayback.attach(applicationContext, this, s,
@@ -949,12 +957,12 @@ class BridgeService : Service() {
                 requestOff = { session === s && h.setPhoneScreenOff(true) }).also { it.start() }
         } else null
         s.start()
-        startClusterSources(s, cfg)
+        startClusterSources(s, cfg, clusterTransport, aaPrefs)
         h.onUsbSessionStarted()
         if (transport.caps.kind == TransportCaps.USB_AOA.kind) Actions.onUsbSessionStarted()
     }
 
-    private fun startClusterSources(owner: CarLifeSession, config: SessionConfig) {
+    private fun startClusterSources(owner: CarLifeSession, config: SessionConfig, clusterTransport: Boolean, prefs: AaPrefs) {
         stopClusterSources()
         if (config.metaMusic) {
             clusterMedia = ClusterMediaSource(applicationContext) { value ->
@@ -963,18 +971,43 @@ class BridgeService : Service() {
                 runCatching { source.start() }.onFailure { AppLog.e("CLUSTER: music source unavailable", it) }
             }
         }
-        if (config.metaNavi) {
-            clusterNavigation = ClusterNavigationSource(applicationContext) { hint ->
+        if (clusterTransport) {
+            unobserveNavigationHints = prefs.observeNavigationHints { enabled ->
+                if (!stopRequested && session === owner) updateNavigationHints(owner, enabled)
+            }
+        }
+    }
+
+    private fun updateNavigationHints(owner: CarLifeSession, enabled: Boolean) {
+        owner.setNavigationHints(enabled)
+        if (!enabled) {
+            clusterNavigation?.close()
+            clusterNavigation = null
+            foregroundGuidance?.close()
+            foregroundGuidance = null
+        } else if (clusterNavigation == null) {
+            val foreground = if (android.os.Build.VERSION.SDK_INT >= 36)
+                CarLifeForegroundGuidance(applicationContext) { owner.guidanceInterest } else null
+            foregroundGuidance = foreground
+            val source = ClusterNavigationSource(applicationContext, { owner.guidanceInterest }, foreground?.let { it::request }) { hint ->
                 if (!stopRequested && session === owner) owner.onClusterNavigation(hint)
-            }.also { source ->
-                runCatching { source.start() }.onFailure { AppLog.e("CLUSTER: navigation source unavailable", it) }
+            }
+            runCatching { source.start(); clusterNavigation = source }.onFailure {
+                source.close()
+                foreground?.close()
+                foregroundGuidance = null
+                AppLog.e("CLUSTER: navigation source unavailable", it)
             }
         }
     }
 
     private fun stopClusterSources() {
+        unobserveNavigationHints?.invoke()
+        unobserveNavigationHints = null
         runCatching { clusterMedia?.close() }.onFailure { AppLog.e("CLUSTER: music source cleanup", it) }
         runCatching { clusterNavigation?.close() }.onFailure { AppLog.e("CLUSTER: navigation source cleanup", it) }
+        foregroundGuidance?.close()
+        foregroundGuidance = null
         clusterMedia = null
         clusterNavigation = null
     }

@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.provider.Settings
 import android.view.GestureDetector
+import android.view.Display
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +20,7 @@ import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
+import com.headswap.desk.AppLog
 
 /** Tracks this phone window's idle time and hands hardware OFF requests to the existing panel lease. */
 internal class PhoneScreenIdleController(
@@ -45,6 +47,7 @@ internal class PhoneScreenIdleController(
     private var keepAwakeWasSet = false
     private var lastFocusReport = ""
     private var curtain: CurtainView? = null
+    private var manualOutsideTimer = false
     private var savedBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
     private data class BarAppearance(val statusColor: Int, val navColor: Int, val dividerColor: Int,
         val statusContrast: Boolean, val navContrast: Boolean, val lightFlags: Int, val hidStatus: Boolean)
@@ -74,6 +77,7 @@ internal class PhoneScreenIdleController(
 
     fun onStop() {
         started = false
+        manualOutsideTimer = false
         focused = false
         if (Build.VERSION.SDK_INT >= 35) presentation?.close()
         if (watching) {
@@ -114,24 +118,29 @@ internal class PhoneScreenIdleController(
             selectedTimeout = selected
         }
         return apply(policy.refresh(eligible(), timestamp, selected.effectiveMs(systemTimeoutMs),
-            prefersPhysicalOff(), panelBusy(), panelOff()))
+            !manualOutsideTimer && prefersPhysicalOff(), panelBusy(), panelOff()))
     }
 
     private fun readTimeout() {
         systemTimeoutMs = Settings.System.getLong(activity.contentResolver, Settings.System.SCREEN_OFF_TIMEOUT, 0L)
     }
 
-    fun showNow(): Boolean {
+    fun showNow(manualCurtain: Boolean = false): Boolean {
+        // Explicit dimming still works with the automatic timer disabled.
+        manualOutsideTimer = manualCurtain && !isEnabled() && prefs.desktopPanelControl
         if (updateEligibility()) return true
-        return apply(policy.showNow(now()))
+        return apply(policy.showNow(now())).also { if (!it) manualOutsideTimer = false }
     }
 
     fun dismiss() {
+        manualOutsideTimer = false
         apply(policy.dismiss(now()))
+        refresh()
     }
 
     private fun eligible(): Boolean {
-        if (!started || activity.isFinishing || activity.isDestroyed || !isEnabled() || !isConnected()) return false
+        if (!started || activity.isFinishing || activity.isDestroyed || activity.display?.displayId != Display.DEFAULT_DISPLAY ||
+            !prefs.desktopPanelControl || (!isEnabled() && !manualOutsideTimer) || !isConnected()) return false
         if (Build.VERSION.SDK_INT >= 35) presentation?.observe()
         if (!focused) {
             if (Build.VERSION.SDK_INT < 35) return false
@@ -164,7 +173,11 @@ internal class PhoneScreenIdleController(
             keepAwakeOwned = false
         }
         state.delayMs?.let { handler.postDelayed(deadline, it.coerceAtLeast(1L)) }
-        if (wasVisible != isCurtainVisible) onStateChanged()
+        if (wasVisible != isCurtainVisible) {
+            if (!isCurtainVisible) manualOutsideTimer = false
+            AppLog.i("DESKTOP PANEL: phone window curtain=${isCurtainVisible}; ${phoneDisplayStatus(activity)}", false)
+            onStateChanged()
+        }
         return accepted || isCurtainVisible
     }
 

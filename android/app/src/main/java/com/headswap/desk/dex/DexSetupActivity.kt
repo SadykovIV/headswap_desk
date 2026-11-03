@@ -24,7 +24,6 @@ import android.text.TextWatcher
 import android.view.View
 import android.view.WindowInsets
 import android.widget.Button
-import android.widget.Switch
 import android.widget.FrameLayout
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -33,14 +32,13 @@ import android.widget.ScrollView
 import android.widget.TextView
 import com.headswap.desk.AppLog
 import com.headswap.desk.BridgeService
-import com.headswap.desk.BuildConfig
+import com.headswap.desk.aa.AaPrefs
 import com.headswap.desk.aa.DesktopResolution
 import com.headswap.desk.aa.FpsSetting
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.MainActivity
 import com.headswap.desk.ui.Actions
 import com.headswap.desk.ui.LogShare
-import com.headswap.desk.update.Updater
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
@@ -49,6 +47,7 @@ import rikka.shizuku.Shizuku
 /** USB desktop setup; local ADB activation is a separate, explicit action. */
 class DexSetupActivity : Activity() {
     private lateinit var prefs: DexPrefs
+    private val clusterPrefs by lazy { AaPrefs(this) }
     private lateinit var title: TextView
     private lateinit var hint: TextView
     private lateinit var progress: ProgressBar
@@ -76,15 +75,16 @@ class DexSetupActivity : Activity() {
     private val phoneIdle by lazy {
         PhoneScreenIdleController(this,
             isEnabled = { when (prefs.phoneIdleMode) {
-                PhoneIdleMode.CURTAIN -> true
-                PhoneIdleMode.PANEL -> !CarLifePhoneIdleTimer.ownsPhysicalTimer && prefs.useDelegated && prefs.desktopPanelControl && DelegatedPanelAccess.hasPermission(this)
+                PhoneIdleMode.CURTAIN -> prefs.desktopPanelControl
+                PhoneIdleMode.PANEL -> !CarLifePhoneIdleTimer.ownsPhysicalTimer && prefs.desktopPanelControl &&
+                    (prefs.useShizuku || prefs.useDelegated && DelegatedPanelAccess.hasPermission(this))
                 PhoneIdleMode.DISABLED -> false
             } },
             isConnected = { prefs.useDesktopService && !stopped && desktopIdleSessionReady() },
             prefersPhysicalOff = { prefs.phoneIdleMode == PhoneIdleMode.PANEL },
             requestPhysicalOff = {
-                prefs.phoneIdleMode == PhoneIdleMode.PANEL && prefs.useDelegated && desktopIdleSessionReady() &&
-                    DelegatedPanelAccess.isAvailable(this) && runCatching {
+                prefs.phoneIdleMode == PhoneIdleMode.PANEL && prefs.desktopPanelControl && desktopIdleSessionReady() &&
+                    (prefs.useShizuku || prefs.useDelegated && DelegatedPanelAccess.isAvailable(this)) && runCatching {
                     startService(Intent(this, BridgeService::class.java).setAction(BridgeService.ACTION_PHONE_SCREEN_OFF)) != null
                 }.getOrDefault(false)
             },
@@ -103,6 +103,7 @@ class DexSetupActivity : Activity() {
     private lateinit var settingsPage: ScrollView
     private lateinit var audioSettings: LinearLayout
     private lateinit var phoneSettings: LinearLayout
+    private lateinit var phoneControlDetails: LinearLayout
     private lateinit var accessChoice: Button
     private lateinit var adbOptions: Button
     private var manualAdbOpen = false
@@ -114,11 +115,13 @@ class DexSetupActivity : Activity() {
     private lateinit var densityChoice: Button
     private lateinit var resolutionChoice: Button
     private lateinit var fpsChoice: Button
-    private lateinit var usbAudioChoice: Switch
+    private lateinit var usbAudioChoice: DesktopSetupViews.Toggle
     private lateinit var usbAudioHint: TextView
-    private lateinit var panelControlChoice: Switch
+    private lateinit var panelControlChoice: DesktopSetupViews.Toggle
+    private lateinit var navigationChoice: DesktopSetupViews.Toggle
     private lateinit var panelControlHint: TextView
     private lateinit var densityHint: TextView
+    private lateinit var dpiAppsButton: Button
     private val densityPresets = listOf(0, 128, 160, 200)
     private lateinit var code: EditText
     private lateinit var host: EditText
@@ -357,6 +360,7 @@ class DexSetupActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        navigationChoice.control.isChecked = clusterPrefs.metaNavi
         phoneIdle.onStart()
     }
 
@@ -461,7 +465,9 @@ class DexSetupActivity : Activity() {
         connectButtonHint = ui.text(connection, "Нажмите ещё раз, чтобы отменить подключение.", 13f).apply { visibility = View.GONE }
         cancelWaitingButton = ui.button(connection, "Остановить ожидание") { stop() }.apply { visibility = View.GONE }
         phoneScreenButton = ui.button(connection, "Выключить панель телефона") { togglePhoneScreen() }
-        phoneCurtainButton = ui.button(connection, "Погасить экран телефона") { phoneIdle.showNow() }
+        phoneCurtainButton = ui.button(connection, "Погасить экран телефона") {
+            phoneIdle.showNow(manualCurtain = true)
+        }
         phoneScreenHint = ui.text(connection, "", 13f)
         val activation = ui.section(home, "Активация")
         accessChoice = ui.button(activation, "") { chooseAccessMode() }
@@ -543,14 +549,15 @@ class DexSetupActivity : Activity() {
             settings.addView(this, LinearLayout.LayoutParams(-1, -2))
         }
         ui.button(settingsHeader, "Назад") { openSettings(false) }.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        ui.text(settingsHeader, "Настройки", 24f, true).apply { setPadding(dp(12), 0, 0, 0) }
+        ui.text(settingsHeader, "Настройки", 24f, true).apply {
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            setPadding(dp(12), 0, 0, 0)
+        }
         buildDisplaySettings(settings)
         buildOutputSettings(settings)
         val app = ui.section(settings, "Приложение")
         ui.button(app, "Компоненты HeadSwap Desktop") { startActivity(Intent(this, com.headswap.desk.update.ComponentUpdatesActivity::class.java)) }
-        ui.button(app, "Проверить обновления HeadSwap Desktop") { Updater.check(this, manual = true) }
         ui.button(app, "Отправить журнал") { LogShare.shareLog(this) }
-        ui.text(app, "Версия ${BuildConfig.VERSION_NAME}", 13f)
         renderAccessControls()
     }
 
@@ -598,6 +605,10 @@ class DexSetupActivity : Activity() {
             }
         }
         densityHint = ui.text(imageSettings, "", 13f)
+        ui.text(imageSettings, "Выбранный DPI задаёт размер интерфейса на магнитоле. Масштаб экрана телефона сохраняется.", 13f)
+        dpiAppsButton = ui.button(imageSettings, "Исправить DPI приложения") {
+            startActivity(Intent(this, DpiCorrectionActivity::class.java))
+        }
     }
 
     private fun buildOutputSettings(settings: LinearLayout) {
@@ -611,47 +622,69 @@ class DexSetupActivity : Activity() {
         usbAudioHint = ui.text(audioSettings, "", 13f)
         phoneSettings = ui.section(settings, "Экран телефона")
         panelControlChoice = ui.toggle(phoneSettings, "Управление экраном телефона", prefs.desktopPanelControl) { checked ->
-            if (!applyingAccessChoice && !accessChoiceLocked() && prefs.useDelegated) {
+            if (!applyingAccessChoice && !accessChoiceLocked()) {
                 prefs.desktopPanelControl = checked
+                phoneIdle.refresh()
                 renderAccessControls()
             }
         }
-        panelControlHint = ui.text(phoneSettings, "", 13f)
-        idleModeChoice = ui.button(phoneSettings, "Таймер экрана телефона ▾") {
-            android.app.AlertDialog.Builder(this).setTitle("Что делать при бездействии телефона")
-                .setSingleChoiceItems(PhoneIdleMode.entries.map { it.label }.toTypedArray(), prefs.phoneIdleMode.ordinal) { dialog, index ->
-                prefs.phoneIdleMode = PhoneIdleMode.entries[index]
-                dialog.dismiss()
-                phoneIdle.refresh()
-                renderPhoneScreenControl()
-            }.setNegativeButton("Отмена", null).show()
+        phoneControlDetails = ui.group(phoneSettings)
+        panelControlHint = ui.text(phoneControlDetails, "", 13f)
+        idleModeChoice = ui.button(phoneControlDetails, "Способ отключения экрана") {
+            val modes = listOf(PhoneIdleMode.PANEL, PhoneIdleMode.CURTAIN)
+            android.app.AlertDialog.Builder(this).setTitle("Способ отключения экрана телефона")
+                .setSingleChoiceItems(modes.map { it.label }.toTypedArray(), modes.indexOf(prefs.phoneScreenMode)) { dialog, index ->
+                    prefs.phoneScreenMode = modes[index]
+                    dialog.dismiss()
+                    phoneIdle.refresh()
+                    renderAccessControls()
+                }.setNegativeButton("Отмена", null).show()
         }
-        idleTimeoutChoice = ui.button(phoneSettings, "Гасить через ▾") {
+        idleTimeoutChoice = ui.button(phoneControlDetails, "Гасить через ▾") {
+            val choices = PhoneIdleTimeout.entries
             android.app.AlertDialog.Builder(this).setTitle("Гасить экран при подключении к CarLife")
-                .setSingleChoiceItems(PhoneIdleTimeout.entries.map { it.label }.toTypedArray(), prefs.phoneIdleTimeout.ordinal) { dialog, index ->
-                    prefs.phoneIdleTimeout = PhoneIdleTimeout.entries[index]
+                .setSingleChoiceItems((choices.map { it.label } + "Без таймера").toTypedArray(),
+                    if (prefs.phoneTimerEnabled) prefs.phoneIdleTimeout.ordinal else choices.size) { dialog, index ->
+                    prefs.phoneTimerEnabled = index < choices.size
+                    if (index < choices.size) prefs.phoneIdleTimeout = choices[index]
                     dialog.dismiss()
                     phoneIdle.refresh()
                     renderPhoneScreenControl()
                 }.setNegativeButton("Отмена", null).show()
         }
-        idleModeHint = ui.text(phoneSettings, "", 13f)
+        idleModeHint = ui.text(phoneControlDetails, "", 13f)
         val hud = ui.section(settings, "Приборная панель и HUD")
-        ui.button(hud, "Подсказки навигации на приборной панели") {
+        navigationChoice = ui.toggle(hud, "Подсказки навигации на приборной панели и HUD", clusterPrefs.metaNavi) {
+            clusterPrefs.metaNavi = it
+        }
+        ui.button(hud, "Настройка уведомлений приложений") {
+            openNotificationSettings(Intent(Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS),
+                Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS,
+                "Откройте настройки уведомлений приложений на телефоне и разрешите уведомления навигатору.")
+        }
+        ui.button(hud, "Доступ HeadSwap к уведомлениям") {
             val component = android.content.ComponentName(this, com.headswap.desk.cluster.ClusterNavigationListener::class.java)
             val details = Intent(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS)
                 .putExtra(Settings.EXTRA_NOTIFICATION_LISTENER_COMPONENT_NAME, component.flattenToString())
-            try { startActivity(details) }
-            catch (_: android.content.ActivityNotFoundException) {
-                runCatching { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
-                    .onFailure {
-                        android.app.AlertDialog.Builder(this).setTitle("Доступ к уведомлениям")
-                            .setMessage("Откройте в настройках телефона раздел «Доступ к уведомлениям» и выберите HeadSwap.")
-                            .setPositiveButton("Закрыть", null).show()
-                    }
+            openNotificationSettings(details, Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS,
+                "Откройте в настройках телефона раздел «Доступ к уведомлениям» и выберите HeadSwap.")
+        }
+        ui.text(hud, "Разрешите HeadSwap доступ к уведомлениям и начните ведение по маршруту. На Android 16 и новее HeadSwap также может взять поворот и расстояние из карточки Навигатора или Карт в открытом окне ГУ. Подсказки отображаются, если магнитола подписана на навигацию.", 13f)
+    }
+
+    private fun openNotificationSettings(primary: Intent, fallback: String, instructions: String) {
+        for (intent in listOf(primary, Intent(fallback))) {
+            try {
+                startActivity(intent)
+                return
+            } catch (_: android.content.ActivityNotFoundException) {
+                // Some vendor Settings packages omit the more specific screen.
+            } catch (_: SecurityException) {
+                // The OEM may also expose a screen that only system apps can start.
             }
         }
-        ui.text(hud, "Для подсказок разрешите HeadSwap доступ к уведомлениям. Во время CarLife HeadSwap передаёт направление и расстояние, когда Яндекс публикует их в навигационном уведомлении. Вывод на приборную панель и HUD зависит от магнитолы.", 13f)
+        android.app.AlertDialog.Builder(this).setTitle("Настройки уведомлений").setMessage(instructions)
+            .setPositiveButton("Закрыть", null).show()
     }
 
     private fun openSettings(open: Boolean) {
@@ -1049,6 +1082,7 @@ class DexSetupActivity : Activity() {
         audioSettings.visibility = if (desktop) View.VISIBLE else View.GONE
         phoneSettings.visibility = if (desktop) View.VISIBLE else View.GONE
         densityChoice.isEnabled = enabled
+        dpiAppsButton.visibility = if (desktop) View.VISIBLE else View.GONE
         resolutionChoice.isEnabled = enabled
         fpsChoice.isEnabled = enabled
         resolutionChoice.updateText("Разрешение: ${prefs.desktopResolutionLabel} ▾")
@@ -1060,8 +1094,8 @@ class DexSetupActivity : Activity() {
             else -> "Изменения вступят в силу при следующем подключении. «Авто» подбирает DPI по разрешению."
         })
         applyingAccessChoice = true
-        try { usbAudioChoice.isChecked = prefs.usbPlaybackAudio } finally { applyingAccessChoice = false }
-        usbAudioChoice.isEnabled = enabled && prefs.useDelegated
+        try { usbAudioChoice.control.isChecked = prefs.usbPlaybackAudio } finally { applyingAccessChoice = false }
+        usbAudioChoice.setEnabled(enabled && prefs.useDelegated)
         usbAudioHint.updateText(when {
             !prefs.useDelegated -> "USB-звук доступен в режиме «Доступ HeadSwap». Здесь можно оставить звук через Bluetooth автомобиля."
             !prefs.usbPlaybackAudio -> "Звук остаётся на обычном выходе телефона, например Bluetooth автомобиля."
@@ -1069,12 +1103,13 @@ class DexSetupActivity : Activity() {
             else -> DesktopAudioState.status
         })
         applyingAccessChoice = true
-        try { panelControlChoice.isChecked = prefs.desktopPanelControl } finally { applyingAccessChoice = false }
-        panelControlChoice.isEnabled = enabled && prefs.useDelegated
-        panelControlChoice.visibility = if (prefs.useDelegated) View.VISIBLE else View.GONE
-        panelControlHint.visibility = panelControlChoice.visibility
+        try { panelControlChoice.control.isChecked = prefs.desktopPanelControl } finally { applyingAccessChoice = false }
+        panelControlChoice.setEnabled(enabled)
+        phoneControlDetails.visibility = if (prefs.desktopPanelControl) View.VISIBLE else View.GONE
+        panelControlHint.visibility = panelControlChoice.row.visibility
         panelControlHint.updateText(when {
-            !prefs.desktopPanelControl -> "HeadSwap получит временный доступ к панели и системной диагностике, чтобы узнать время последней активности телефона. Перед выключением панели он откроет свой экран для двойного касания."
+            prefs.phoneScreenMode == PhoneIdleMode.CURTAIN -> "Оставьте HeadSwap открытым на телефоне. Двойное касание снимает затемнение."
+            PhonePanelPolicy.prefersCurtain -> "На этой модели аппаратное выключение может погасить изображение на ГУ. Для сохранения изображения выберите «Затемнять экран»."
             DelegatedPanelAccess.unsupportedThisActivation -> PhoneActivationPolicy.PANEL_MESSAGE
             !DelegatedPanelAccess.isAvailable(this) -> "Для таймера и двойного касания повторите активацию на телефоне или с --screen на компьютере. HeadSwap запросит управление панелью и чтение времени активности экрана."
             else -> "Перед выключением панели HeadSwap открывает свой экран для двойного касания. Прежнее приложение телефона может приостановиться до пробуждения."
@@ -1139,39 +1174,32 @@ class DexSetupActivity : Activity() {
         CarLifeState.running && DexState.error == null && DesktopConnectionState.videoIsFlowing(SystemClock.elapsedRealtime())
 
     private fun renderPhoneScreenControl() {
-        val available = prefs.useDesktopService && BridgeService.alive && DexState.running && !stopped
+        val available = prefs.useDesktopService && BridgeService.alive && DexState.running && !stopped &&
+            (prefs.desktopPanelControl || DexState.phoneScreenOff)
         val visibility = if (available) View.VISIBLE else View.GONE
-        val canBlankPanel = available && (prefs.useShizuku || prefs.useDelegated && DelegatedPanelAccess.isAvailable(this))
-        val mode = prefs.phoneIdleMode
-        idleModeChoice.updateText("При бездействии: ${mode.label} ▾")
-        idleTimeoutChoice.visibility = if (mode == PhoneIdleMode.DISABLED) View.GONE else View.VISIBLE
-        idleTimeoutChoice.updateText("Гасить через: ${prefs.phoneIdleTimeout.label} ▾")
-        idleModeHint.updateText(when (mode) {
-            PhoneIdleMode.CURTAIN -> "Пока HeadSwap открыт и CarLife подключён, через выбранный интервал экран станет чёрным с минимальной яркостью. Сенсор останется активным; двойное касание вернёт интерфейс. Панель физически не выключается."
-            PhoneIdleMode.PANEL -> if (prefs.useDelegated && DelegatedPanelAccess.unsupportedThisActivation)
-                PhoneActivationPolicy.PANEL_MESSAGE
-                else if (!prefs.useDelegated || !prefs.desktopPanelControl || !DelegatedPanelAccess.hasPermission(this))
-                "Для автоматического выключения панели выберите «Доступ HeadSwap», включите управление экраном и повторите активацию."
-                else "Во время работы CarLife панель гаснет через выбранный интервал бездействия телефона. Дважды коснитесь экрана для возврата. Если сенсор не реагирует, отсоедините USB."
-            PhoneIdleMode.DISABLED -> "HeadSwap не использует таймер. Действуют обычные настройки блокировки телефона."
+        val mode = prefs.phoneScreenMode
+        val canBlankPanel = available && prefs.desktopPanelControl && (prefs.useShizuku || prefs.useDelegated && DelegatedPanelAccess.isAvailable(this))
+        idleModeChoice.updateText("Способ отключения: ${mode.label} ▾")
+        idleTimeoutChoice.updateText("Гасить через: ${if (prefs.phoneTimerEnabled) prefs.phoneIdleTimeout.label else "Без таймера"} ▾")
+        idleModeHint.updateText(when {
+            mode == PhoneIdleMode.CURTAIN -> "Затемняется окно HeadSwap на телефоне. Оставьте его открытым. Чтобы вернуть изображение, дважды коснитесь экрана."
+            prefs.useDelegated && DelegatedPanelAccess.unsupportedThisActivation -> PhoneActivationPolicy.PANEL_MESSAGE
+            prefs.useDelegated && !DelegatedPanelAccess.hasPermission(this) -> "Для аппаратного выключения панели повторите активацию с управлением экраном."
+            else -> "Питание панели телефона отключается во время проекции. Двойное касание возвращает изображение."
         })
-        phoneCurtainButton.visibility = if (available && mode == PhoneIdleMode.CURTAIN && !DexState.phoneScreenOff) View.VISIBLE else View.GONE
+        phoneCurtainButton.visibility = if (available && prefs.desktopPanelControl && mode == PhoneIdleMode.CURTAIN && !DexState.phoneScreenOff) View.VISIBLE else View.GONE
+        phoneCurtainButton.updateText("Затемнить экран телефона")
         phoneCurtainButton.isEnabled = desktopConnectionReady() && !DexState.phoneScreenBusy
-        phoneScreenButton.visibility = if (canBlankPanel) View.VISIBLE else View.GONE
+        phoneScreenButton.visibility = if (DexState.phoneScreenOff || canBlankPanel && mode == PhoneIdleMode.PANEL) View.VISIBLE else View.GONE
         phoneScreenHint.visibility = visibility
         phoneScreenButton.updateText(when {
             DexState.phoneScreenBusy -> "Меняю состояние экрана…"
             DexState.phoneScreenOff -> "Включить экран телефона"
             else -> "Выключить панель телефона"
         })
-        val enabled = canBlankPanel && !DexState.phoneScreenBusy
+        val enabled = (canBlankPanel || DexState.phoneScreenOff) && !DexState.phoneScreenBusy
         if (phoneScreenButton.isEnabled != enabled) phoneScreenButton.isEnabled = enabled
-        phoneScreenHint.updateText(DexState.phoneScreenError ?: if (mode == PhoneIdleMode.CURTAIN && !DexState.phoneScreenOff)
-            "Для режима «Чёрный экран» оставьте HeadSwap открытым на телефоне. Двойное касание вернёт изображение. Кнопка питания блокирует телефон."
-            else if (mode == PhoneIdleMode.PANEL) idleModeHint.text.toString()
-            else if (prefs.useDelegated && !DelegatedPanelAccess.isAvailable(this))
-            "Для выключения панели включите «Управление экраном телефона» и активируйте доступ с параметром --screen."
-            else "Выключайте экран этой кнопкой: кнопка питания блокирует и рабочий стол. Панель включится при отключении CarLife.")
+        phoneScreenHint.updateText(DexState.phoneScreenError ?: idleModeHint.text.toString())
     }
 
     private fun togglePhoneScreen() {

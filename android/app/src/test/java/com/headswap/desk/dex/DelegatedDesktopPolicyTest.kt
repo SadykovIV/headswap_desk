@@ -55,6 +55,24 @@ class DelegatedDesktopPolicyTest {
     private fun task(display: Int, user: Int = 0, base: String? = "com.example.map", top: String? = base) =
         DelegatedDesktopPolicy.Task(display, user, base, top)
 
+    @Test fun mapsPanePreservesAnOpenNavigatorWithoutCallingMapsForeground() {
+        val maps = "ru.yandex.yandexmaps"
+        val navigator = "ru.yandex.yandexnavi"
+        fun state(tasks: List<DelegatedDesktopPolicy.Task>, selected: String = maps) =
+            DelegatedDesktopPolicy.taskState(42, 0, selected, true, tasks)
+        // Navigator may occupy Maps' task, or may start a new task on this pane.
+        assertEquals(-1, state(listOf(task(42, base = maps, top = navigator))))
+        assertEquals(-1, state(listOf(task(42, base = navigator), task(42, base = maps))))
+        assertEquals(-1, state(listOf(task(42, base = navigator))))
+        assertEquals(2, state(listOf(task(42, base = navigator)), navigator))
+        assertEquals(2, state(listOf(task(42, base = maps), task(42, base = navigator))))
+        // Neither an unrelated foreground app nor Navigator on the phone/another tile/user owns this handoff.
+        assertEquals(1, state(listOf(task(42, base = maps, top = "another.app"))))
+        assertEquals(0, state(listOf(task(0, base = navigator), task(43, base = navigator),
+            task(42, user = 10, base = navigator))))
+        assertEquals(0, state(listOf(task(42, base = navigator)), "another.app"))
+    }
+
     @Test fun taskObserverNeverTurnsMissingPermissionOrFailedQueryIntoAbsent() {
         assertEquals(-1, DelegatedDesktopPolicy.taskState(42, 0, "com.example.map", false, emptyList()))
         assertEquals(-1, DelegatedDesktopPolicy.taskState(42, 0, "com.example.map", false, listOf(task(42))))

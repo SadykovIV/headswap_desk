@@ -17,6 +17,12 @@ class ComponentCatalogTest {
     }
     private fun asset(release: JSONObject) = release.getJSONArray("assets").getJSONObject(0)
     private fun page(vararg items: JSONObject) = JSONArray(items.toList())
+    @Test fun perAppDpiCompanionCanUpdateAnExistingCode304FromAHostRelease() {
+        val old = ComponentCatalog.newest(page(release("v0.4.0", 304, "0.6.8")), dd, null)
+        val asset = ComponentCatalog.newest(page(release("v0.4.1", 305, "0.6.8")), dd, old)!!
+        assertEquals(305L, asset.code)
+    }
+
     @Test fun independentReleaseWinsByComponentCodeAcrossPages() {
         val first = ComponentCatalog.newest(page(release("v0.2.16", 263)), dd, null)!!
         val newer = ComponentCatalog.newest(page(release("component-drivedeck-301", 301, "0.6.8")), dd, first)!!

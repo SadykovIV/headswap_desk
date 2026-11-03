@@ -149,6 +149,16 @@ class AaPrefs(ctx: Context) {
         get() = sp.getBoolean("metaNavi", true)
         set(v) = sp.edit().putBoolean("metaNavi", v).apply()
 
+    /** Observe the same preference as the developer screen; retain the listener until unsubscribe. */
+    fun observeNavigationHints(changed: (Boolean) -> Unit): () -> Unit {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "metaNavi" || key == null) changed(metaNavi)
+        }
+        sp.registerOnSharedPreferenceChangeListener(listener)
+        changed(metaNavi)
+        return { sp.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     /** Поле 6 NAVI_NEXT_TURN_INFO: bytes-иконка (как 8.6.7). */
     var naviIcon: Boolean
         get() = sp.getBoolean("naviIcon", true)

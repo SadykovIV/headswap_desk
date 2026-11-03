@@ -9,14 +9,14 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class DesktopRenderPolicyTest {
-    @Test fun mapsAndOtherAppsUseTheirViewportAndExactSessionDensity() {
+    @Test fun disablingCompactMapsKeepsTheViewportAndExactSessionDensity() {
         val owner = Any()
         val worker = Executors.newSingleThreadExecutor()
         val remote = IDexUserService.Default()
         try {
             for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK)) {
                 for (dpi in listOf(96, 128, 160, 200, 320, 640)) {
-                    EmbeddedSessionRegistry.activate(owner, remote, 4, worker, mode, dpi)
+                    EmbeddedSessionRegistry.activate(owner, remote, 4, worker, mode, dpi, false)
                     val policy = EmbeddedSessionRegistry.renderConfig(4, mode == DesktopModePolicy.ANDROID_DESKTOP)
                     assertArrayEquals(intArrayOf(dpi, 0), policy)
                     // Android Desktop and DriveDeck code303 use this same geometry contract.

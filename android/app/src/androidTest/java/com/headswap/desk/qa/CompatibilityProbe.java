@@ -23,9 +23,12 @@ public final class CompatibilityProbe extends Instrumentation {
         start();
     }
     @Override public void onStart() {
+        if ("density".equals(probe)) { ProjectionDensityProbe.run(this); return; }
         if ("panel".equals(probe)) { PanelProbe.run(this, panelToken); return; }
         if ("panel-reconnect".equals(probe)) { PanelReconnectProbe.run(this, panelToken); return; }
         if ("components".equals(probe)) { ComponentProbe.run(this); return; }
+        if ("settings".equals(probe)) { DesktopSettingsProbe.run(this); return; }
+        if ("phone-curtain".equals(probe)) { PhoneCurtainProbe.run(this); return; }
         Bundle result = new Bundle(); int code = Activity.RESULT_CANCELED;
         if (!"audio".equals(probe) || !(Build.HARDWARE.equals("ranchu") || Build.HARDWARE.equals("goldfish"))) {
             result.putString("error", "Select -e probe audio or panel on a disposable Android emulator."); finish(code, result); return;

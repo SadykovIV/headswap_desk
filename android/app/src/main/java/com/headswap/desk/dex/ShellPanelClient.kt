@@ -3,6 +3,8 @@ package com.headswap.desk.dex
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.embed.EmbeddedSessionRegistry
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -12,6 +14,10 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Main instrumentation process only. Blocking loopback I/O stays on the worker, never Android's UI thread. */
 internal object ShellPanelClient {
@@ -79,6 +85,11 @@ internal object ShellPanelClient {
         else -> null
     }
 
+    fun readGuidance(displayId: Int): ShellManeuverSample =
+        EmbeddedSessionRegistry.readDelegatedGuidance(displayId) {
+            connection?.takeIf { it.alive }?.readGuidance(displayId) ?: ShellManeuverSample.Unavailable
+        }
+
     private fun imeRequest(op: Int, displayId: Int): Int {
         require(displayId > 0)
         if (!isConnected) return RemotePanelWire.UNAVAILABLE
@@ -119,6 +130,8 @@ internal object ShellPanelClient {
         private val input = DataInputStream(socket.getInputStream())
         private val output = DataOutputStream(socket.getOutputStream())
         private val ack = ArrayBlockingQueue<Int>(1)
+        private val nextQuery = AtomicInteger()
+        private val guidance = ConcurrentHashMap<Int, CompletableFuture<ShellManeuverSample>>()
         @Volatile var alive = true
             private set
 
@@ -140,10 +153,33 @@ internal object ShellPanelClient {
                 try {
                     while (alive) {
                         val result = input.readUnsignedByte()
-                        check(ack.offer(result))
+                        if (result == RemotePanelWire.GUIDANCE_REPLY) {
+                            val id = input.readInt()
+                            val sample = ShellGuidanceWire.read(input)
+                            guidance.remove(id)?.complete(sample)
+                        } else check(ack.offer(result))
                     }
                 } catch (_: Exception) { } finally { shutdown(); onClosed() }
             }, "headswap-panel-replies").apply { isDaemon = true; start() }
+        }
+        fun readGuidance(displayId: Int): ShellManeuverSample {
+            val id = nextQuery.incrementAndGet()
+            val result = CompletableFuture<ShellManeuverSample>()
+            guidance[id] = result
+            try {
+                synchronized(output) {
+                    if (!alive) return ShellManeuverSample.Unavailable
+                    output.writeByte(RemotePanelWire.READ_GUIDANCE)
+                    output.writeInt(id)
+                    output.writeInt(displayId)
+                    output.flush()
+                }
+                return result.get(950, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (_: Exception) { /* missing card or ended activation */ }
+            finally { guidance.remove(id) }
+            return ShellManeuverSample.Unavailable
         }
         fun call(op: Int, target: Long?, responseMs: Long): Int {
             check(alive)
@@ -170,6 +206,7 @@ internal object ShellPanelClient {
         fun shutdown() {
             alive = false
             runCatching { socket.close() }
+            guidance.values.forEach { it.complete(ShellManeuverSample.Unavailable) }
             ack.offer(RemotePanelWire.FAILED)
         }
     }

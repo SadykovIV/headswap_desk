@@ -35,6 +35,8 @@ interface IDexUserService {
     IBinder childProducerLifetime(IBinder childToken) = 18;
     /** Protocol 6: one internal fullscreen viewport, separate from DriveDeck's two companion tiles. */
     int createFullscreenChildDisplay(in Surface surface, IBinder childToken, int width, int height, int density) = 19;
+    /** Protocol 13: bounded foreground manoeuvre from a live owned Shizuku display. */
+    @nullable String[] readShizukuGuidance(int displayId) = 21;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }

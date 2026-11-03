@@ -40,8 +40,12 @@ internal object DelegatedDesktopPolicy {
         EmbeddedDisplayPolicy.requirePackage(packageName)
         if (!permitted || tasks == null) return -1
         val owned = tasks.filter { it.displayId == id && it.userId == userId }
+        val foreground = owned.firstOrNull()?.topPackage
         return when {
-            owned.firstOrNull()?.topPackage == packageName -> 2
+            foreground == packageName -> 2
+            // Maps can hand its route to the separate Navigator in the same child. Defer
+            // automatic restore/Back decisions; only an explicit selection should reopen Maps.
+            packageName == "ru.yandex.yandexmaps" && foreground == "ru.yandex.yandexnavi" -> -1
             owned.any { it.basePackage == packageName || it.topPackage == packageName } -> 1
             else -> 0
         }

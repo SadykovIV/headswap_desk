@@ -20,6 +20,10 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import androidx.annotation.Keep
+import com.headswap.desk.embed.YandexGuidanceScope
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.cluster.ShellYandexGuidance
+import com.headswap.desk.cluster.YandexGuidanceCard
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
@@ -43,6 +47,13 @@ class DexUserService private constructor(private val context: Context, private v
     private val clientUid = context.applicationInfo.uid
     private val worker = HandlerThread(if (delegated) "headswap-app-display" else "headswap-shell-display").apply { start() }
     private val handler = Handler(worker.looper)
+
+    init {
+        if (!delegated) handler.post {
+            runCatching { LegacyDensityRecovery.run(clientUid) }
+                .onFailure { Log.w(TAG, "Could not complete legacy DPI recovery", it) }
+        }
+    }
     private val observations = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, ArrayBlockingQueue(2),
         java.util.concurrent.ThreadFactory { r -> Thread(r, "headswap-task-placement").apply { isDaemon = true } })
     private val generation = AtomicLong()
@@ -463,6 +474,35 @@ class DexUserService private constructor(private val context: Context, private v
         }
     }
 
+    private data class GuidanceLease(val parent: Session, val child: ChildSession?, val revision: Long, val pkg: String?)
+
+    private fun guidanceLease(id: Int): GuidanceLease? = DesktopReadDeadline.call(handler::post, 150L, { null }) {
+        val active = session ?: return@call null
+        if (id <= 0 || active.epoch != generation.get() || !active.token.isBinderAlive) return@call null
+        val parentDisplay = active.display?.display?.takeIf { it.isValid } ?: return@call null
+        if (parentDisplay.displayId == id && active.children.isEmpty()) return@call GuidanceLease(active, null, 0L, null)
+        val children = active.children.values
+        val child = children.singleOrNull { it.display?.display?.let { d -> d.isValid && d.displayId == id } == true }
+            ?: return@call null
+        if (!child.token.isBinderAlive || child.launchedPackage !in YandexGuidanceCard.PACKAGES ||
+            (!child.fullscreen && children.any { it.fullscreen })) return@call null
+        GuidanceLease(active, child, child.revision, child.launchedPackage)
+    }
+
+    override fun readShizukuGuidance(displayId: Int): Array<String>? {
+        enforceClient()
+        if (delegated) return null
+        val before = guidanceLease(displayId) ?: return null
+        // Read on this Binder thread, never on the display/input handler. Shizuku's virtual
+        // displays were created by its shell UID; the app UID determines the target Android user.
+        val identity = Binder.clearCallingIdentity()
+        val result = try { ShellYandexGuidance.read(displayId, Process.myUid(), clientUid / 100000) }
+        finally { Binder.restoreCallingIdentity(identity) }
+        if (before != guidanceLease(displayId) || (result is ShellManeuverSample.Card &&
+                !YandexGuidanceScope.allows(before.pkg, result.packageName))) return null
+        return result.encode()
+    }
+
     private fun injectChildTouchEvent(child: ChildSession, event: EmbeddedTouchState.Event) {
         val now = SystemClock.uptimeMillis()
         if (event.action == MotionEvent.ACTION_DOWN) child.downTime = now
@@ -479,7 +519,7 @@ class DexUserService private constructor(private val context: Context, private v
         child.downTime = 0L
     }
 
-    /** Only the physical internal panel is blanked. Android stays interactive; keyguard is untouched. */
+    /** Target the internal panel only on devices where independent physical blanking is supported. */
     override fun setPhoneScreenOff(off: Boolean) {
         enforceClient()
         serialized(INPUT_TIMEOUT_MS) {
@@ -513,7 +553,8 @@ class DexUserService private constructor(private val context: Context, private v
                 access.setPanelPower(restore.token, false)
                 ensureActive(active.epoch)
                 restore.confirmedOff = true
-                Log.i(TAG, "internal phone panel blanked; keyguard unchanged")
+                Log.i(TAG, "internal phone panel blank requested; " +
+                    phoneDisplayStatus(context, active.display?.display?.displayId ?: -1, localVideo = false))
             } catch (error: Throwable) {
                 restorePanel(bestEffort = true)
                 throw error
@@ -741,7 +782,8 @@ class DexUserService private constructor(private val context: Context, private v
             // SurfaceControl blanking leaves logical STATE_ON; framework OFF/DOZE means it took over.
             if (restore.powerTouched && restore.originalState == Display.STATE_ON && restore.access.primaryPanelState() == Display.STATE_ON) {
                 restore.access.setPanelPower(restore.token, true)
-                Log.i(TAG, "internal phone panel restored")
+                Log.i(TAG, "internal phone panel restore requested; " +
+                    phoneDisplayStatus(context, projectedId = -1, localVideo = false))
             }
             restore.powerTouched = false
             restore.confirmedOff = false
@@ -878,14 +920,11 @@ class DexUserService private constructor(private val context: Context, private v
                 // Check both identities rather than trusting an OEM's display filter.
                 // An unreadable task invalidates the entire observation.
                 val tasks = raw.map { it as ActivityManager.RunningTaskInfo }.map { task ->
-                    task to (FrameworkTaskIdentityReader.read(task) ?: return -1)
-                }.filter { (_, identity) -> identity.displayId == id && identity.userId == userId }
-                    .map { (task, _) -> task }
-                when {
-                    tasks.firstOrNull()?.topActivity?.packageName == packageName -> 2
-                    tasks.any { it.baseActivity?.packageName == packageName || it.topActivity?.packageName == packageName } -> 1
-                    else -> 0
+                    val identity = FrameworkTaskIdentityReader.read(task) ?: return -1
+                    DelegatedDesktopPolicy.Task(identity.displayId, identity.userId,
+                        task.baseActivity?.packageName, task.topActivity?.packageName)
                 }
+                DelegatedDesktopPolicy.taskState(id, userId, packageName, true, tasks)
             }.getOrDefault(-1)
         }
 

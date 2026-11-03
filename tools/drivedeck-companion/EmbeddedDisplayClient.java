@@ -55,6 +55,7 @@ public final class EmbeddedDisplayClient {
     private static volatile boolean highResolutionSupported;
     private static volatile int gatewayCapabilities;
     private static final int HOST_RENDER_CONFIG = 0x10;
+    private static final int APP_RENDER_CONFIG = 0x20;
     private static Context appContext;
     // Android 13 lacks independent display focus. Only the last touched child borrows its host's focus.
     private static Lease focusLease; // MAIN only.
@@ -71,6 +72,7 @@ public final class EmbeddedDisplayClient {
         volatile String selectedPackage;
         volatile EmbeddedRenderProfile.Geometry geometry, remoteGeometry, createGeometry;
         volatile ParentConfig config;
+        String configRequest; // MAIN only; coalesce a package switch and divider updates.
         volatile boolean closed, ownsTexture, released, geometryBlocked;
         String notifiedGeometryError; // MAIN only.
         final EmbeddedSurfaceRelease releaseState = new EmbeddedSurfaceRelease();
@@ -108,15 +110,25 @@ public final class EmbeddedDisplayClient {
     private static final class ParentConfig {
         final IEmbeddedDisplayGateway service;
         final int parentId, density;
-        final boolean compactMaps;
-        ParentConfig(IEmbeddedDisplayGateway service, int parentId, int[] values) {
+        final String packageName;
+        final boolean corrected;
+        ParentConfig(IEmbeddedDisplayGateway service, int parentId, String pkg, int[] values, boolean exact) {
             if (values == null || values.length != 2 || values[0] < 96 || values[0] > 640
                     || (values[1] != 0 && values[1] != 1)) throw new IllegalStateException("Invalid desktop render configuration");
             this.service = service;
             this.parentId = parentId;
+            this.packageName = pkg;
             this.density = values[0];
-            this.compactMaps = values[1] == 1;
+            this.corrected = EmbeddedRenderProfile.corrected(pkg, values[1] == 1, exact);
         }
+    }
+
+    // A legacy gateway returns one flag for both Yandex packages. New hosts decide each package
+    // separately. Empty unconfigured tiles need the parent's DPI but no application correction.
+    private static ParentConfig configFor(IEmbeddedDisplayGateway service, int parentId, String pkg) throws RemoteException {
+        boolean exact = (gatewayCapabilities & APP_RENDER_CONFIG) != 0 && !pkg.isEmpty();
+        int[] data = exact ? service.appRenderConfig(parentId, pkg) : service.desktopRenderConfig(parentId);
+        return new ParentConfig(service, parentId, pkg, data, exact);
     }
     private static final class TaskState {
         final int value; final long at;
@@ -255,12 +267,12 @@ public final class EmbeddedDisplayClient {
     }
 
     // Only called on WORK. A configuration belongs to this specific lease, gateway and parent.
-    private static boolean readParentConfig(Lease lease, IEmbeddedDisplayGateway service) {
+    private static boolean readParentConfig(Lease lease, IEmbeddedDisplayGateway service, String pkg) {
         if (lease.closed || service == null || service != gateway) return false;
         if ((gatewayCapabilities & HOST_RENDER_CONFIG) == 0) return true;
         try {
-            ParentConfig config = new ParentConfig(service, lease.parentId, service.desktopRenderConfig(lease.parentId));
-            if (lease.closed || service != gateway) return false;
+            ParentConfig config = configFor(service, lease.parentId, pkg);
+            if (lease.closed || service != gateway || !pkg.equals(lease.selectedPackage)) return false;
             lease.config = config;
             return true;
         } catch (RemoteException | RuntimeException unavailable) {
@@ -271,23 +283,23 @@ public final class EmbeddedDisplayClient {
 
     /** Only route a live DriveDeck Activity on the parent registered by the current HeadSwap.
      * A hub tap must not block the main thread on the display service. */
-    static boolean checkFullscreenParent(Activity host, int parent, Consumer<Boolean> finish) {
+    static boolean checkFullscreenParent(Activity host, int parent, String pkg, boolean controls, Consumer<Boolean> finish) {
         IEmbeddedDisplayGateway service = gateway;
         if (parent <= 0 || service == null || (gatewayCapabilities & HOST_RENDER_CONFIG) == 0) return false;
         EmbeddedResumeGate gate = RESUMES.get(host);
         EmbeddedResumeGate.Ticket ticket = gate == null ? null : gate.current(parent);
         WORK.post(() -> {
-            boolean admitted;
+            Boolean route;
             try {
-                new ParentConfig(service, parent, service.desktopRenderConfig(parent));
-                admitted = true;
+                ParentConfig config = configFor(service, parent, pkg);
+                route = controls || config.corrected;
             } catch (RemoteException | RuntimeException unavailable) {
-                admitted = false;
+                route = null;
             }
-            final boolean active = admitted;
+            final Boolean active = route;
             MAIN.post(() -> {
                 if (DisplayOnlyLaunch.displayId(host) != parent || (ticket != null && !ticket.isCurrent(parent))) return;
-                finish.accept(active && service == gateway);
+                finish.accept(service == gateway ? active : null);
             });
         });
         return true;
@@ -375,7 +387,7 @@ public final class EmbeddedDisplayClient {
     }
     private static void resumeGeometry(Lease lease, String selected, EmbeddedResumeGate.Ticket ticket, int attempt) {
         if (lease.closed || !ticket.isCurrent(lease.parentId) || !selected.equals(lease.selectedPackage)) return;
-        if (!readParentConfig(lease, gateway)) {
+        if (!readParentConfig(lease, gateway, selected)) {
             if (attempt < 4) WORK.postDelayed(() -> resumeGeometry(lease, selected, ticket, attempt+1), 500);
             return;
         }
@@ -415,8 +427,13 @@ public final class EmbeddedDisplayClient {
             // again on main after binding, before create/resize can reach a producer.
             if ((gatewayCapabilities & HOST_RENDER_CONFIG) != 0) {
                 ParentConfig config = lease.config;
-                if (config == null || config.service != gateway || config.parentId != lease.parentId) return false;
-                wanted = EmbeddedRenderProfile.configured(lease.selectedPackage, width, height, config.density, config.compactMaps);
+                if (config == null || config.service != gateway || config.parentId != lease.parentId
+                        || !config.packageName.equals(lease.selectedPackage)) {
+                    lease.geometryBlocked = true;
+                    requestPackageConfig(lease, lease.selectedPackage);
+                    return false;
+                }
+                wanted = EmbeddedRenderProfile.configured(width, height, config.density, config.corrected);
             } else {
                 wanted = legacyGeometry(lease.renderer, lease.selectedPackage, gateway == null || (gatewayCapabilities & 8) != 0,
                         width, height);
@@ -447,6 +464,29 @@ public final class EmbeddedDisplayClient {
         }
         return true;
     }
+    private static void requestPackageConfig(Lease lease, String pkg) {
+        if (pkg.equals(lease.configRequest)) return;
+        lease.configRequest = pkg;
+        WORK.post(() -> {
+            boolean ok = readParentConfig(lease, gateway, pkg);
+            MAIN.post(() -> {
+                if (!pkg.equals(lease.configRequest)) return;
+                lease.configRequest = null;
+                if (lease.closed || !pkg.equals(lease.selectedPackage)) return;
+                if (!ok) {
+                    message(lease.renderer, "Не удалось получить DPI приложения. Откройте его повторно.");
+                    return;
+                }
+                if (!updateGeometry(lease, lease.layoutWidth, lease.layoutHeight, pkg)) return;
+                if (lease.handle <= 0) scheduleCreate(lease, 0);
+                else {
+                    requestResize(lease);
+                    queueLaunch(lease);
+                }
+            });
+        });
+    }
+
     private static boolean syncRemoteGeometry(Lease lease, EmbeddedRenderProfile.Geometry wanted) {
         if (wanted.sameAs(lease.remoteGeometry)) return true;
         try {
@@ -581,7 +621,7 @@ public final class EmbeddedDisplayClient {
         WORK.postDelayed(() -> {
             if (lease.closed || lease.handle > 0) return;
             IEmbeddedDisplayGateway service = gateway;
-            if (!readParentConfig(lease, service)) {
+            if (!readParentConfig(lease, service, lease.selectedPackage)) {
                 if (retryCreate(lease)) scheduleCreate(lease, 500);
                 else message(lease.renderer, "Не удалось получить параметры рабочего стола. Проверьте подключение к HeadSwap.");
                 return;
@@ -668,8 +708,8 @@ public final class EmbeddedDisplayClient {
         // A reused pane must shrink back for music/other apps before their launch.
         MAIN.post(() -> {
             if (lease.closed) return;
-            if (!updateGeometry(lease, lease.layoutWidth, lease.layoutHeight, packageName)) return;
             synchronized (LOCK) { lease.pendingLaunch = packageName; lease.pendingRestore = null; }
+            if (!updateGeometry(lease, lease.layoutWidth, lease.layoutHeight, packageName)) return;
             requestResize(lease);
             queueLaunch(lease);
         });

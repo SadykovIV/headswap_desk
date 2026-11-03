@@ -23,4 +23,6 @@ interface IEmbeddedDisplayGateway {
     IBinder producerLifetime(int handle) = 10;
     /** Capability bit 4: [session logical DPI, compact map symbols 0 or 1] for the active parent. */
     int[] desktopRenderConfig(int parentDisplayId) = 11;
+    /** Capability bit 5: [session logical DPI, apply correction 0 or 1] for this exact package. */
+    int[] appRenderConfig(int parentDisplayId, String packageName) = 12;
 }

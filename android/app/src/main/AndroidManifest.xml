@@ -102,6 +102,7 @@
             android:taskAffinity="${applicationId}.drivedeck.fullscreen"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.Headswap.Dex" />
+        <activity android:name=".dex.DpiCorrectionActivity" android:exported="false" android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".update.ComponentUpdatesActivity" android:exported="false" />
         <provider
             android:name=".update.ComponentApkProvider"

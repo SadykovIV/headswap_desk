@@ -95,6 +95,7 @@ internal class DelegatedPanelController(private val context: Context) {
             }
             return
         }
+        check(DexPrefs(context).phoneScreenMode == PhoneIdleMode.PANEL) { "Выбран режим затемнения экрана" }
         check(id > 0 && stillOwned() && DelegatedPanelAccess.isAvailable(context) && DelegatedPanelAccess.outputIsFresh()) {
             "Для выключения панели нужен активный USB-сеанс и отдельная активация с --screen"
         }
@@ -116,6 +117,7 @@ internal class DelegatedPanelController(private val context: Context) {
             check(stillOwned() && platform.mayBlank()) { "Сеанс управления панелью завершён" }
             // The Activity must be able to run on the main thread; neither gateway nor panel
             // monitors are held while waiting. A detach or display release cancels this window.
+            AppLog.i("DESKTOP PANEL: physical blank requested; ${phoneDisplayStatus(context)}", false)
             window.show()
             synchronized(this) {
                 check(touchWindow === window && stillOwned()) { "Сеанс управления панелью завершён" }
@@ -126,7 +128,7 @@ internal class DelegatedPanelController(private val context: Context) {
                 value.blank(token, SystemClock.elapsedRealtime())
                 DexState.phoneScreenOff = true
                 main.post(tick)
-                AppLog.i("DESKTOP PANEL: internal display blanked; keyguard unchanged", false)
+                AppLog.i("DESKTOP PANEL: internal blank requested on confirmed wake window; ${phoneDisplayStatus(context)}", false)
             }
         } catch (error: Throwable) {
             window.close()
@@ -141,7 +143,8 @@ internal class DelegatedPanelController(private val context: Context) {
 
     @Synchronized private fun restoreFromWindow(window: PhonePanelWakeWindow, doubleTap: Boolean) {
         if (touchWindow !== window || doubleTap && lease?.isBlank != true) return
-        if (doubleTap) AppLog.i("DESKTOP PANEL: phone double tap; restoring internal panel", false)
+        AppLog.i("DESKTOP PANEL: restoring internal panel; reason=${if (doubleTap) "double_tap" else "wake_window_lost"} " +
+            phoneDisplayStatus(context), false)
         restoreBestEffort()
     }
 
@@ -158,7 +161,7 @@ internal class DelegatedPanelController(private val context: Context) {
         DelegatedPanelAccess.unregister(this)
         if (wasActive) {
             DexState.phoneScreenOff = false
-            AppLog.i("DESKTOP PANEL: internal panel lease released", false)
+            AppLog.i("DESKTOP PANEL: internal panel lease released; ${phoneDisplayStatus(context)}", false)
         }
     }
     private fun report(error: Throwable) {

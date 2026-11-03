@@ -4,10 +4,15 @@ import android.os.IBinder
 import android.util.Log
 import android.view.Surface
 import com.headswap.desk.AppLog
+import com.headswap.desk.CarLifeState
+import com.headswap.desk.cluster.ShellManeuverSample
+import com.headswap.desk.cluster.YandexGuidanceCard
 import com.headswap.desk.aa.DesktopGeometryPolicy
 import com.headswap.desk.dex.DesktopModePolicy
+import com.headswap.desk.dex.EmbeddedDisplayPolicy
 import com.headswap.desk.dex.IDexUserService
 import com.headswap.desk.dex.DesktopTouchState
+import com.headswap.desk.shared.DesktopRenderPolicy
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.ExecutionException
@@ -19,10 +24,12 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
-        val mode: Int, val density: Int)
+        val mode: Int, val density: Int, val correctedPackages: Set<String>, val shizuku: Boolean) {
+        fun bufferDensity(requested: Int): Int = if (correctedPackages.isNotEmpty()) requested else density
+    }
     private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean) {
         lateinit var death: IBinder.DeathRecipient
-        var displayId = -1
+        @Volatile var displayId = -1
         @Volatile var linked = false
         @Volatile var packageName: String? = null
         var closing: CompletableFuture<Unit>? = null // Guarded by lock.
@@ -36,23 +43,69 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
-        density: Int) = synchronized(lock) {
+        density: Int, compactMapSymbols: Boolean, correctionPackages: Set<String> = DesktopRenderPolicy.DEFAULT_PACKAGES,
+        shizuku: Boolean = false) = synchronized(lock) {
         require(displayId > 0)
         DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls, mode, density)
+        val selected = if (compactMapSymbols) correctionPackages.toSet() else emptySet()
+        parent = Parent(owner, remote, displayId, calls, mode, density, selected, shizuku)
     }
 
-    fun renderConfig(parentId: Int, ownDesktop: Boolean): IntArray = synchronized(lock) {
+    fun renderConfig(parentId: Int, ownDesktop: Boolean, packageName: String? = null): IntArray = synchronized(lock) {
         val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
         EmbeddedGatewayPolicy.requireParent(active.mode, parentId, active.displayId, ownDesktop)
-        // DriveDeck code303 expects two ints. Zero selects native buffer size and the exact desktop DPI.
-        intArrayOf(active.density, 0)
+        // Older companions have one flag for both maps. Never turn on a package the user removed.
+        val corrected = if (packageName == null) active.correctedPackages.containsAll(DesktopRenderPolicy.DEFAULT_PACKAGES)
+            else {
+                EmbeddedDisplayPolicy.requirePackage(packageName)
+                packageName in active.correctedPackages
+            }
+        intArrayOf(active.density, if (corrected) 1 else 0)
     }
 
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
         id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
     }
+
+    private data class GuidanceTarget(val parent: Parent, val displayId: Int, val child: Lease?, val pkg: String?)
+
+    /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
+    private fun guidanceTargets(): List<GuidanceTarget> {
+        if (!CarLifeState.running) return emptyList()
+        val active = parent?.takeIf { it.remote.asBinder().isBinderAlive } ?: return emptyList()
+        val current = leases.values.filter { it.parent === active }
+        if (current.isEmpty()) return listOf(GuidanceTarget(active, active.displayId, null, null))
+        val foreground = current.filter { it.fullscreen }.ifEmpty { current }
+        return foreground.mapNotNull { lease ->
+            val pkg = lease.packageName
+            if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in YandexGuidanceCard.PACKAGES) null
+            else GuidanceTarget(active, lease.displayId, lease, pkg)
+        }.sortedBy { it.child?.handle }
+    }
+
+    fun guidanceDisplayIds(): List<Int> = synchronized(lock) { guidanceTargets().map { it.displayId } }
+
+    /** Capture the active lease around the bounded shell read. A replacement task, display or
+     * connection cannot supply a late result to a new session. The caller is a HUD worker. */
+    private fun readGuidance(displayId: Int, shizuku: Boolean,
+        read: (IDexUserService) -> ShellManeuverSample): ShellManeuverSample {
+        val target = synchronized(lock) { guidanceTargets().find { it.parent.shizuku == shizuku && it.displayId == displayId } }
+            ?: return ShellManeuverSample.Unavailable
+        val result = try { read(target.parent.remote) }
+        catch (_: android.os.RemoteException) { return ShellManeuverSample.Unavailable }
+        catch (_: RuntimeException) { return ShellManeuverSample.Unavailable }
+        if (result is ShellManeuverSample.Card && !YandexGuidanceScope.allows(target.pkg, result.packageName))
+            return ShellManeuverSample.Unavailable
+        return synchronized(lock) { if (target in guidanceTargets()) result else ShellManeuverSample.Unavailable }
+    }
+
+    fun readShizukuGuidance(displayId: Int): ShellManeuverSample = readGuidance(displayId, true) {
+        ShellManeuverSample.decode(it.readShizukuGuidance(displayId))
+    }
+
+    fun readDelegatedGuidance(displayId: Int, read: () -> ShellManeuverSample): ShellManeuverSample =
+        readGuidance(displayId, false) { read() }
 
     /** Reject new operations immediately; retained leases can still acknowledge producer release. */
     fun deactivate(owner: Any) = synchronized(lock) {
@@ -90,8 +143,9 @@ internal object EmbeddedSessionRegistry {
             token.linkToDeath(lease.death, 0)
             lease.linked = true
             activeCall(lease) {
-                val id = if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, lease.parent.density)
-                else it.createChildDisplay(surface, token, width, height, lease.parent.density)
+                val bufferDpi = lease.parent.bufferDensity(density)
+                val id = if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, bufferDpi)
+                else it.createChildDisplay(surface, token, width, height, bufferDpi)
                 check(id > 0 && id != requestedParent) { "Приложение не получило отдельный дисплей" }
                 lease.displayId = id
             }
@@ -118,7 +172,7 @@ internal object EmbeddedSessionRegistry {
     fun resize(uid: Int, handle: Int, width: Int, height: Int, density: Int) {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         val lease = active(uid, handle)
-        activeCall(lease) { it.resizeChildDisplay(lease.token, width, height, lease.parent.density) }
+        activeCall(lease) { it.resizeChildDisplay(lease.token, width, height, lease.parent.bufferDensity(density)) }
     }
     fun launch(uid: Int, handle: Int, packageName: String, className: String) {
         EmbeddedGatewayPolicy.requireComponent(packageName, className)

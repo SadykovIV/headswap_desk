@@ -7,16 +7,23 @@ import com.headswap.desk.aa.DesktopVideoSelection
 import com.headswap.desk.aa.FpsSetting
 
 internal enum class PhoneIdleMode(val label: String) {
-    CURTAIN("Чёрный экран с двойным касанием"), PANEL("Выключать физическую панель"), DISABLED("Не использовать таймер")
+    PANEL("Выключать экран"), CURTAIN("Затемнять экран"), DISABLED("Без таймера")
 }
 
 /** Preferences are separate from upstream HeadSwap/Android Auto settings. */
 class DexPrefs(context: Context) {
     private val prefs = context.getSharedPreferences("headswap_dex", Context.MODE_PRIVATE)
-    /** Only controls the phone's HeadSwap window; never changes the system timeout or keyguard. */
-    internal var phoneIdleMode: PhoneIdleMode
-        get() = prefs.getString("phone_idle_mode", null)?.let { saved -> PhoneIdleMode.entries.firstOrNull { it.name == saved } } ?: PhoneIdleMode.PANEL
-        set(value) { prefs.edit().putString("phone_idle_mode", value.name).apply() }
+    internal var phoneScreenMode: PhoneIdleMode
+        get() = PhonePanelPolicy.screenMode(prefs.getString("phone_screen_mode", null),
+            prefs.getString("phone_idle_mode", null), PhonePanelPolicy.prefersCurtain)
+        set(value) {
+            require(value != PhoneIdleMode.DISABLED)
+            prefs.edit().putString("phone_screen_mode", value.name).apply()
+        }
+    internal var phoneTimerEnabled: Boolean
+        get() = prefs.getBoolean("phone_idle_timer_enabled", prefs.getString("phone_idle_mode", null) != PhoneIdleMode.DISABLED.name)
+        set(value) { prefs.edit().putBoolean("phone_idle_timer_enabled", value).apply() }
+    internal val phoneIdleMode: PhoneIdleMode get() = if (phoneTimerEnabled) phoneScreenMode else PhoneIdleMode.DISABLED
     internal var phoneIdleTimeout: PhoneIdleTimeout
         get() = PhoneIdleTimeout.restore(prefs.getString("phone_idle_timeout", null))
         set(value) { prefs.edit().putString("phone_idle_timeout", value.name).apply() }
@@ -110,10 +117,18 @@ class DexPrefs(context: Context) {
             if (it == 0) 0 else it.coerceIn(DesktopGeometryPolicy.MIN_DENSITY, DesktopGeometryPolicy.MAX_DENSITY)
         }
         set(value) { if (value != 0) DesktopGeometryPolicy.requireDensity(value); prefs.edit().putInt("desktop_density", value).apply() }
+    var compactMapSymbols: Boolean
+        get() = prefs.getBoolean("compact_map_symbols", true)
+        set(value) { prefs.edit().putBoolean("compact_map_symbols", value).apply() }
     /** Desktop frame rate is stored independently of the Android Auto preference. */
     var desktopFps: FpsSetting
         get() = prefs.getString("desktop_fps", null).let { name -> FpsSetting.entries.firstOrNull { it.name == name } ?: FpsSetting.FPS15 }
         set(value) { prefs.edit().putString("desktop_fps", value.name).apply() }
+    var dpiCorrectionPackages: Set<String>
+        get() = prefs.getStringSet("dpi_correction_packages", null)?.toSet()
+            ?: com.headswap.desk.shared.DesktopRenderPolicy.DEFAULT_PACKAGES
+        set(value) { prefs.edit().putStringSet("dpi_correction_packages", value.toSet()).apply() }
+
     /** UI hint only; a successful live probe is still required before starting projection. */
     var hasPaired: Boolean
         get() = prefs.getBoolean("has_paired", pairingPort > 0 || connectPort > 0)

@@ -16,7 +16,8 @@ internal object CarLifeIdleGuardProbe {
     @JvmStatic fun run(test: Instrumentation, ui: UiAutomation) {
         val context = test.targetContext
         val prefs = DexPrefs(context)
-        val previousMode = prefs.phoneIdleMode
+        val previousMode = prefs.phoneScreenMode
+        val originalTimerEnabled = prefs.phoneTimerEnabled
         val previousTimeout = prefs.phoneIdleTimeout
         val previousAccess = prefs.accessMode
         val previousControl = prefs.desktopPanelControl
@@ -28,7 +29,8 @@ internal object CarLifeIdleGuardProbe {
                 DelegatedDesktopAccess.REAL_GET_TASKS, DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL)
             prefs.useDelegated = true
             prefs.desktopPanelControl = true
-            prefs.phoneIdleMode = PhoneIdleMode.PANEL
+            prefs.phoneTimerEnabled = true
+            prefs.phoneScreenMode = PhoneIdleMode.PANEL
             prefs.phoneIdleTimeout = PhoneIdleTimeout.TEN_SECONDS
             DexState.phoneScreenBusy = true // Request accepted; panel's own wake lock not yet acquired.
             test.runOnMainSync(timer::start)
@@ -41,7 +43,8 @@ internal object CarLifeIdleGuardProbe {
             test.runOnMainSync(timer::stop)
             DexState.phoneScreenBusy = previousBusy
             prefs.accessMode = previousAccess
-            prefs.phoneIdleMode = previousMode
+            prefs.phoneScreenMode = previousMode
+            prefs.phoneTimerEnabled = originalTimerEnabled
             prefs.phoneIdleTimeout = previousTimeout
             prefs.desktopPanelControl = previousControl
             ui.dropShellPermissionIdentity()

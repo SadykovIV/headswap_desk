@@ -86,8 +86,8 @@ internal class DesktopAppPane(
     // Runs on the serial worker. Both the texture size and Android's child display have
     // to switch before input is mapped to the new coordinate space.
     private fun configure(output: Output, parent: Int, pkg: String, width: Int, height: Int) {
-        val policy = EmbeddedSessionRegistry.renderConfig(parent, ownDesktop = !fullscreenDriveDeck)
-        val g = DesktopRenderPolicy.geometry(pkg, width, height, policy[0], policy[1] == 1)
+        val policy = EmbeddedSessionRegistry.renderConfig(parent, ownDesktop = !fullscreenDriveDeck, packageName = pkg)
+        val g = DesktopRenderPolicy.geometry(width, height, policy[0], policy[1] == 1)
         val next = Buffer(g[0], g[1], g[2])
         val previous = output.buffer
         output.texture.setDefaultBufferSize(next.width, next.height)

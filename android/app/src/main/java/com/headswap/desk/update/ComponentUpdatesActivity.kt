@@ -13,6 +13,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
+import com.headswap.desk.BuildConfig
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.dex.DesktopSetupViews
 import com.headswap.desk.dex.DesktopModePolicy
@@ -55,7 +56,13 @@ class ComponentUpdatesActivity : Activity() {
             root.addView(this, LinearLayout.LayoutParams(-1, -2))
         }
         ui.button(header, "Назад") { finish() }.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        ui.text(header, "Компоненты HeadSwap Desktop", 22f, true).apply { setPadding(ui.dp(12), 0, 0, 0) }
+        ui.text(header, "Компоненты HeadSwap Desktop", 22f, true).apply {
+            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            setPadding(ui.dp(12), 0, 0, 0)
+        }
+        val mainApp = ui.section(root, "HeadSwap Desktop")
+        ui.text(mainApp, "Основное приложение · ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})", 15f)
+        ui.button(mainApp, "Проверить обновления HeadSwap Desktop") { Updater.check(this, manual = true) }
         val card = ui.section(root)
         fun button(value: String, click: () -> Unit) = ui.button(card, value, click)
         val componentTitle = ui.text(card, spec.title, 18f, true)
@@ -68,7 +75,7 @@ class ComponentUpdatesActivity : Activity() {
                 }.show()
         }
         version = ui.text(card, "", 15f)
-        check = button("Проверить обновления") { query() }
+        check = button("Проверить версии компонента") { query() }
         remote = button("") {
             val a = available ?: return@button
             work("Загружаю и проверяю APK…", { ComponentPackages.download(this, spec, a) }, ::prepared)

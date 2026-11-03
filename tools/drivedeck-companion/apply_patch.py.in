@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Restore the signed DriveDeck HeadSwap companion using a specific original APK."""
+import argparse
+import bz2
+import hashlib
+import io
+import json
+import os
+import sys
+import zipfile
+import zlib
+from pathlib import Path
+
+SOURCE = "bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4"
+RESULT = "@APK_SHA256@"
+DEFAULT_OUTPUT = "DriveDeck-HeadSwap-0.6.8-code305.apk"
+PATCH_DIR = Path(__file__).resolve().parent
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def read_asset(name, digest):
+    data = (PATCH_DIR / name).read_bytes()
+    if sha256(data) != digest:
+        raise ValueError("Повреждён файл патча " + name + ". Заново распакуйте архив.")
+    return data
+
+
+def number(block):
+    """Signed-magnitude little-endian integer used by BSDIFF40."""
+    magnitude = int.from_bytes(block, "little") & ((1 << 63) - 1)
+    return -magnitude if block[7] & 128 else magnitude
+
+
+def apply_delta(source, patch):
+    if patch[:8] != b"BSDIFF40":
+        raise ValueError("Некорректный формат дельты.")
+    control_len = number(patch[8:16])
+    diff_len = number(patch[16:24])
+    target_size = number(patch[24:32])
+    diff_offset = 32 + control_len
+    extra_offset = diff_offset + diff_len
+    controls = bz2.decompress(patch[32:diff_offset])
+    diffs = bz2.decompress(patch[diff_offset:extra_offset])
+    extras = bz2.decompress(patch[extra_offset:])
+
+    target = bytearray()
+    old_pos = diff_pos = extra_pos = 0
+    for index in range(0, len(controls), 24):
+        count = number(controls[index:index + 8])
+        literals = number(controls[index + 8:index + 16])
+        seek = number(controls[index + 16:index + 24])
+        block = bytearray(diffs[diff_pos:diff_pos + count])
+        for j in range(max(0, -old_pos), min(count, len(source) - old_pos)):
+            block[j] = (block[j] + source[old_pos + j]) & 255
+        target.extend(block)
+        target.extend(extras[extra_pos:extra_pos + literals])
+        old_pos += count + seek
+        diff_pos += count
+        extra_pos += literals
+    if len(target) != target_size:
+        raise ValueError("Размер результата не соответствует дельте.")
+    return target
+
+
+def restore(source_path):
+    if source_path.stat().st_size != 822209:
+        raise ValueError("Размер оригинала не совпал. Нужен DriveDeck 0.6.8 stable, code300.")
+    original = source_path.read_bytes()
+    if sha256(original) != SOURCE:
+        raise ValueError("SHA-256 оригинала не совпал. Нужен DriveDeck 0.6.8 stable, code300.")
+    delta = read_asset("delta.bin", "@DELTA_SHA256@")
+    deflate_spans = json.loads(read_asset("deflate.json", "@DEFLATE_SHA256@"))
+
+    # Apply the delta to the original APK and its uncompressed entries. Changed
+    # programs and resources can therefore reuse the bytes of their originals.
+    with zipfile.ZipFile(io.BytesIO(original)) as apk:
+        dictionary = original + b"".join(apk.read(item) for item in apk.infolist())
+    expanded = apply_delta(dictionary, delta)
+    result = bytearray()
+    previous = 0
+    for start, size, level in deflate_spans:
+        result.extend(expanded[previous:start])
+        end = start + size
+        encoder = zlib.compressobj(level, zlib.DEFLATED, -15)
+        result.extend(encoder.compress(expanded[start:end]) + encoder.flush())
+        previous = end
+    result.extend(expanded[previous:])
+    if sha256(result) != RESULT:
+        raise ValueError("Итоговый SHA-256 не совпал. Повторите с обычным CPython 3 и zlib.")
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Применить патч DriveDeck 0.6.8 code300 → HeadSwap code305.")
+    parser.add_argument("original", type=Path, help="оригинальный DriveDeck 0.6.8 stable code300")
+    parser.add_argument("-o", "--output", type=Path, default=Path(DEFAULT_OUTPUT),
+                        help="путь к новому APK (существующий файл не перезаписывается)")
+    args = parser.parse_args()
+    try:
+        result = restore(args.original)
+        with args.output.open("xb") as handle:
+            try:
+                handle.write(result)
+                handle.flush()
+                os.fsync(handle.fileno())
+            except BaseException:
+                handle.close()
+                args.output.unlink()
+                raise
+        print("Готово:", args.output.resolve())
+        print("SHA-256:", RESULT)
+    except (OSError, ValueError, zipfile.BadZipFile, zlib.error) as exc:
+        sys.exit("Ошибка: " + str(exc))
+
+
+if __name__ == "__main__":
+    main()
