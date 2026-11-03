@@ -7,6 +7,7 @@ import android.hardware.input.InputManager
 import android.os.Binder
 import android.os.IBinder
 import android.os.Process
+import android.os.SystemClock
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.KeyEvent
@@ -17,6 +18,7 @@ import com.headswap.desk.AppLog
 internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.Stub() {
     private val context = context.applicationContext
     private val registry = DelegatedInputRegistry()
+    private val imeRoutes = DelegatedImeRoutes()
     @Volatile private var liveDisplayIds: Set<Int> = emptySet()
     @Volatile private var panelParent: DelegatedInputRegistry.Entry? = null
     private val phonePanel = DelegatedPanelController(this.context)
@@ -42,11 +44,13 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
 
     @Synchronized fun beginGeneration(generation: Long, token: IBinder, allowFullscreen: Boolean) {
         registry.begin(generation, token, allowFullscreen)
+        imeRoutes.clear()
         panelParent = null
         liveDisplayIds = emptySet()
         activeGateway.set(this)
     }
     @Synchronized fun deactivate() {
+        imeRoutes.clear()
         panelParent = null
         liveDisplayIds = emptySet()
         activeGateway.compareAndSet(this, null)
@@ -57,8 +61,9 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized override fun registerParent(displayId: Int, token: IBinder, width: Int, height: Int) {
         requireActive(); requireTrustedDisplay(displayId)
         registry.registerParent(displayId, token, width, height)
-        routeIme(displayId)
-        panelParent = registry.requireDisplay(displayId, token)
+        val entry = registry.requireDisplay(displayId, token)
+        panelParent = entry
+        registerIme(entry)
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
@@ -71,13 +76,33 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized private fun registerChild(parentId: Int, displayId: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {
         requireActive(); requireTrustedDisplay(parentId); requireTrustedDisplay(displayId)
         registry.registerChild(parentId, displayId, token, width, height, fullscreen)
-        routeIme(displayId)
+        registerIme(registry.requireDisplay(displayId, token))
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
-    private fun routeIme(displayId: Int) {
-        if (!ShellPanelClient.enableLocalIme(displayId)) {
-            AppLog.i("DESKTOP IME: клавиатура на дисплее $displayId недоступна. Если доступ остался от прежней версии, завершите доступ и снова активируйте HeadSwap.", false)
+    private fun registerIme(entry: DelegatedInputRegistry.Entry) {
+        imeRoutes.register(entry)
+        val connection = ShellPanelClient.imeConnection
+        if (connection == null) {
+            AppLog.i("DESKTOP IME: дисплей ${entry.id} ожидает связи со службой клавиатуры", false)
+        } else refreshIme(connection, entry)
+    }
+
+    private fun refreshIme(connection: Any?, only: DelegatedInputRegistry.Entry? = null) {
+        if (activeGateway.get() !== this || ShellPanelClient.imeConnection !== connection) return
+        imeRoutes.refresh(connection, SystemClock.elapsedRealtime(), only) { entry ->
+            val parent = panelParent ?: return@refresh false
+            val token = entry.token as IBinder
+            if (activeGateway.get() !== this || ShellPanelClient.imeConnection !== connection ||
+                !(parent.token as IBinder).isBinderAlive || !token.isBinderAlive ||
+                !DelegatedDesktopAccess.isReady(context)) return@refresh false
+            val ok = try {
+                requireTrustedDisplay(entry.id)
+                ShellPanelClient.enableLocalIme(entry.id) && ShellPanelClient.imeConnection === connection
+            } catch (_: Exception) { false }
+            val state = if (ok) "LOCAL подтверждён" else "LOCAL недоступен, запланирован повтор"
+            AppLog.i("DESKTOP IME: дисплей ${entry.id} — $state", false)
+            ok
         }
     }
 
@@ -103,6 +128,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized override fun unregisterDisplay(displayId: Int, token: IBinder) {
         requireCaller() // Cleanup remains possible after activation has ended.
         val owned = runCatching { registry.requireDisplay(displayId, token) }.getOrNull()
+        if (owned != null) imeRoutes.unregister(owned)
         if (owned?.parent == null && owned != null) {
             panelParent = null
             phonePanel.restoreBestEffort()
@@ -205,6 +231,8 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     companion object {
         const val EXTRA_BINDER = "headswap_delegated_input_gateway"
         private val activeGateway = java.util.concurrent.atomic.AtomicReference<DelegatedInputGateway?>()
+        /** Instrumentation heartbeat, after attempting to reconnect the authenticated helper. */
+        fun refreshImeRoutes(connection: Any?) { activeGateway.get()?.refreshIme(connection) }
         fun ownsFocusedDisplay(id: Int): Boolean = id > 0 && activeGateway.get()?.liveDisplayIds?.contains(id) == true
     }
 }

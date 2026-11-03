@@ -34,14 +34,18 @@ object ShellPanelHelper {
 
     @JvmStatic fun main(args: Array<String>) {
         try {
-            check(Process.myUid() == 2000 && args.size == 3 && args[2] in setOf("ime", "ime-and-panel"))
+            check(Process.myUid() == 2000 && args.size in setOf(3, 5) && args[2] in setOf("ime", "ime-and-panel"))
             val uid = args[0].toInt()
             val token = args[1]
             val allowPanel = args[2] == "ime-and-panel" && DelegatedPanelAccess.usesShellBackend()
             require(uid >= 10000 && uid % 100000 >= 10000 && PhoneActivationPolicy.validToken(token))
             @Suppress("DEPRECATION")
             if (Looper.myLooper() == null) Looper.prepareMainLooper()
-            listen(uid, token, allowPanel)
+            val pinned = if (args.size == 5) args[3].toInt().also { require(it > 1) } to
+                args[4].also { require(it.toLong() > 0) } else null
+            listen(uid, token, allowPanel, pinned)
+            System.out.println("CLOSED")
+            System.out.flush()
         } catch (e: Exception) { Log.w(TAG, "Panel helper ended: ${e.javaClass.simpleName}: ${e.message}") }
         catch (e: LinkageError) { Log.w(TAG, "Panel system API unavailable", e) }
         finally {
@@ -51,7 +55,7 @@ object ShellPanelHelper {
         }
     }
 
-    private fun listen(uid: Int, token: String, allowPanel: Boolean) {
+    private fun listen(uid: Int, token: String, allowPanel: Boolean, expected: Pair<Int, String>?) {
         val deadline = SystemClock.elapsedRealtime() + 25_000
         var owner: Pair<Int, String>? = null
         ServerSocket().use { server ->
@@ -60,6 +64,7 @@ object ShellPanelHelper {
             while (true) {
                 val pinned = owner
                 if (pinned == null && SystemClock.elapsedRealtime() >= deadline) return
+                if (expected != null && startTicks(expected.first) != expected.second) return
                 if (pinned != null && startTicks(pinned.first) != pinned.second) return
                 val peer = try { server.accept() } catch (_: SocketTimeoutException) { continue }
                 peer.use { socket ->
@@ -67,8 +72,12 @@ object ShellPanelHelper {
                     socket.tcpNoDelay = true
                     val input = DataInputStream(socket.getInputStream())
                     val output = DataOutputStream(socket.getOutputStream())
-                    val id = try { authenticate(uid, token, input, output, pinned) } catch (_: Exception) { null }
+                    val id = try { authenticate(uid, token, input, output, pinned ?: expected) } catch (_: Exception) { null }
                     if (id != null) {
+                        if (owner == null) {
+                            System.out.println("PIN:${id.first}:${id.second}")
+                            System.out.flush()
+                        }
                         owner = id
                         runCatching { LegacyDensityRecovery.run(uid) }
                             .onFailure { Log.w(TAG, "Could not complete legacy DPI recovery", it) }

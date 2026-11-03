@@ -25,6 +25,8 @@ internal object ShellPanelClient {
     @Volatile private var connection: Session? = null
     private var generation = 0L
     val isConnected: Boolean get() = connection?.alive == true
+    // Identity changes on every successful authentication, including a reconnect within one heartbeat.
+    internal val imeConnection: Any? get() = connection?.takeIf { it.alive }
 
     fun connect(token: String) {
         require(PhoneActivationPolicy.validToken(token)) { "Нет идентификатора активации панели" }

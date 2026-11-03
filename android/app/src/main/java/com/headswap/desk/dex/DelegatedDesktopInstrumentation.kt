@@ -8,6 +8,7 @@ import android.app.UiAutomation
 import android.os.Bundle
 import android.os.Process
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.AtomicFile
 import android.util.Log
 import androidx.annotation.Keep
@@ -44,12 +45,15 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         var panelReady = false
         var failureReason: String? = null
         val heartbeat = AtomicFile(File(context.filesDir, "computer-access-status.json"))
+        val recoveryFile = AtomicFile(File(context.noBackupFilesDir, DisplayHelperRendezvous.FILE_NAME))
+        var recovery: DisplayHelperRendezvous? = null
         fun writeHeartbeat(active: Boolean) {
             val permissions = DelegatedDesktopAccess.hasPermissions(context)
             val bytes = JSONObject().put("protocol", DelegatedDesktopAccess.PROTOCOL)
                 .put("ready", active && permissions).put("pid", Process.myPid())
                 .put("elapsedRealtimeMs", SystemClock.elapsedRealtime())
                 .put("permissionsChecked", permissions)
+                .put("helperSession", if (active) recovery?.fingerprint() else null)
                 .put("keyboardRouting", active && ShellPanelClient.isConnected)
                 .put("mediaControl", active && context.checkSelfPermission(DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL) == android.content.pm.PackageManager.PERMISSION_GRANTED)
                 .put("playbackAudio", active && requestAudio && DesktopAudioAccess.hasPermission(context))
@@ -133,6 +137,21 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             }
             lease = DelegatedDesktopAccess.begin { stop.countDown() }
             DexPrefs(context).useDelegated = true
+            val token = activationToken ?: DisplayHelperRendezvous.newToken().also { activationToken = it }
+            // Direct instrumentation entry can issue a token for a later authorized repair, but cannot spawn a shell itself.
+            try {
+                val ticks = File("/proc/self/stat").readText().substringAfterLast(')').trim().split(Regex("\\s+"))[19].toLong()
+                val bootCount = Settings.Global.getInt(context.contentResolver, Settings.Global.BOOT_COUNT)
+                val record = DisplayHelperRendezvous(Process.myUid(), Process.myPid(), ticks, bootCount, SystemClock.elapsedRealtime(),
+                    panelReady && requestScreen && DelegatedPanelAccess.usesShellBackend(), token)
+                val output = recoveryFile.startWrite()
+                try {
+                    android.system.Os.fchmod(output.fd, 0x180) // 0600, readable through the authorized run-as launcher.
+                    output.write(record.encode().toByteArray(Charsets.US_ASCII))
+                    recoveryFile.finishWrite(output)
+                    recovery = record
+                } catch (error: Throwable) { recoveryFile.failWrite(output); throw error }
+            } catch (_: Exception) { AppLog.i("ACTIVATION: не удалось сохранить данные восстановления клавиатуры", false) }
             ready = true
             writeHeartbeat(true)
             PhoneActivationStatus.clearPriorFailure(context)
@@ -143,6 +162,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             while (!stop.await(5, TimeUnit.SECONDS)) {
                 check(DelegatedDesktopAccess.hasPermissions(context)) { "Desktop permissions were revoked" }
                 activationToken?.let(ShellPanelClient::reconnect)
+                DelegatedInputGateway.refreshImeRoutes(ShellPanelClient.imeConnection)
                 writeHeartbeat(true)
             }
         } catch (error: Throwable) {
@@ -156,6 +176,11 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             DelegatedPanelAccess.restoreAll()
             ShellPanelClient.close()
             writeHeartbeat(false)
+            recovery?.let { record ->
+                runCatching {
+                    if (recoveryFile.readFully().toString(Charsets.US_ASCII) == record.encode()) recoveryFile.delete()
+                }
+            }
             DelegatedPanelAccess.unsupportedThisActivation = false
             // A failed adoption must not drop another package's active delegation.
             if (adoptedHere) runCatching { automation?.dropShellPermissionIdentity() }

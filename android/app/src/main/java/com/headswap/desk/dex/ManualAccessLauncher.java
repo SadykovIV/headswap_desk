@@ -16,7 +16,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.LinkOption;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
-import java.security.SecureRandom;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -59,12 +58,14 @@ public final class ManualAccessLauncher {
                 int uid = packageUid();
                 String runAsUid = run(5000, "run-as", ManualAccessPolicy.PACKAGE, "--user", Integer.toString(uid / 100000), "id", "-u").trim();
                 check(runAsUid.equals(Integer.toString(uid)), "Нельзя безопасно прочитать статус этого APK через run-as. Используйте подготовленную debug-сборку HeadSwap.");
-                activate(uid, options);
-                try {
-                    String opened = run(5000, "am", "start", "--user", "current", "--display", "0", "-n", ManualAccessPolicy.ACTIVITY);
-                    if (opened.contains("Error:") || opened.contains("Exception")) throw new IOException("Activity launch rejected");
-                } catch (Exception ignored) {
-                    System.out.println("Доступ включён. Откройте HeadSwap на телефоне вручную.");
+                boolean newActivation = activate(uid, options);
+                if (newActivation) {
+                    try {
+                        String opened = run(5000, "am", "start", "--user", "current", "--display", "0", "-n", ManualAccessPolicy.ACTIVITY);
+                        if (opened.contains("Error:") || opened.contains("Exception")) throw new IOException("Activity launch rejected");
+                    } catch (Exception ignored) {
+                        System.out.println("Доступ включён. Откройте HeadSwap на телефоне вручную.");
+                    }
                 }
                 System.out.println("HEADSWAP_READY\nГотово. Можно отключить компьютер и подключить телефон к CarLife.\n"
                     + "Повторная активация нужна после перезагрузки, обновления, принудительной остановки или потери доступа.");
@@ -88,20 +89,20 @@ public final class ManualAccessLauncher {
         return uid;
     }
 
-    private static void activate(int uid, ManualAccessPolicy.Options options) throws Exception {
+    private static boolean activate(int uid, ManualAccessPolicy.Options options) throws Exception {
         JSONObject active = heartbeat(uid, null);
         if (active != null) {
             requireCapabilities(active, options);
-            System.out.println("Доступ уже работает. Служба не перезапускалась.");
-            return;
+            ensureKeyboard(uid, active);
+            System.out.println("Доступ работает в текущем сеансе.");
+            return false;
         }
+        // A known live instrumentation with a delayed heartbeat must not be replaced under an active projection.
+        check(liveRecovery(uid) == null, "Действующий сеанс пока не подтвердил состояние. Повторите активацию после его ответа.");
         if (options.audio) System.out.println("Запрошен временный маршрут USB-звука: музыка и подсказки в CarLife, без микрофона.");
         if (options.screen) System.out.println("Запрошен временный доступ к панели и системной диагностике (DUMP) для чтения времени активности экрана телефона. Перед выключением панели HeadSwap откроет свой экран для двойного касания.");
-        byte[] random = new byte[16]; new SecureRandom().nextBytes(random);
-        StringBuilder hex = new StringBuilder(32);
-        for (byte b : random) hex.append(String.format(java.util.Locale.ROOT, "%02x", b & 255));
-        String token = hex.toString();
-        try { launchDisplayHelper(uid, token, options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend()); }
+        String token = DisplayHelperRendezvous.newToken();
+        try { launchDisplayHelper(uid, token, options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend(), null); }
         catch (Exception error) {
             System.err.println("Не удалось запустить службу клавиатуры на магнитоле: " + error.getClass().getSimpleName());
         }
@@ -135,7 +136,8 @@ public final class ManualAccessLauncher {
                 JSONObject status = heartbeat(uid, beforeKill);
                 if (status != null) {
                     requireCapabilities(status, options);
-                    return;
+                    ensureKeyboard(uid, status);
+                    return true;
                 }
                 Thread.sleep(500);
             }
@@ -152,7 +154,7 @@ public final class ManualAccessLauncher {
         }
     }
 
-    private static void launchDisplayHelper(int uid, String token, boolean panel) throws Exception {
+    private static void launchDisplayHelper(int uid, String token, boolean panel, DisplayHelperRendezvous owner) throws Exception {
         String paths = run(5000, "pm", "path", ManualAccessPolicy.PACKAGE);
         String apk = null;
         for (String line : paths.split("\\r?\\n")) {
@@ -162,18 +164,55 @@ public final class ManualAccessLauncher {
             }
         }
         check(apk != null && new File(apk).isFile(), "Не найден установленный APK");
-        ProcessBuilder helper = new ProcessBuilder("/system/bin/setsid", "/system/bin/nohup",
-            "/system/bin/app_process", "/", ShellPanelHelper.class.getName(), Integer.toString(uid), token,
-            panel ? "ime-and-panel" : "ime");
+        String[] command = ShellImeSupervisor.command(uid, token, panel);
+        if (owner != null) { // The first recovery worker must pin the old owner just like subsequent supervised workers.
+            command = java.util.Arrays.copyOf(command, command.length + 2);
+            command[command.length - 2] = Integer.toString(owner.pid);
+            command[command.length - 1] = Long.toString(owner.processTicks);
+        }
+        ProcessBuilder helper = new ProcessBuilder(command);
         helper.environment().put("CLASSPATH", apk);
         File devNull = new File("/dev/null");
         helper.redirectInput(devNull).redirectOutput(devNull).redirectError(devNull).start();
     }
 
-    private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {
-        if (!Boolean.TRUE.equals(status.opt("keyboardRouting"))) {
-            System.out.println("Рабочий стол доступен. Для клавиатуры на магнитоле завершите доступ в HeadSwap и снова активируйте приложение.");
+    private static DisplayHelperRendezvous liveRecovery(int uid) {
+        try {
+            String raw = run(3000, "run-as", ManualAccessPolicy.PACKAGE, "--user", Integer.toString(uid / 100000),
+                    "cat", DisplayHelperRendezvous.RUN_AS_PATH);
+            DisplayHelperRendezvous record = DisplayHelperRendezvous.parse(raw);
+            if (record == null || record.uid != uid || record.elapsed > SystemClock.elapsedRealtime()) return null;
+            int boot = Integer.parseInt(run(3000, "settings", "get", "global", "boot_count").trim());
+            return record.matchesOwner(uid, identity(record.pid), boot) ? record : null;
+        } catch (Exception unavailable) { return null; } // Never echo the private record.
+    }
+
+    private static void ensureKeyboard(int uid, JSONObject status) throws Exception {
+        if (Boolean.TRUE.equals(status.opt("keyboardRouting"))) return;
+        DisplayHelperRendezvous record = liveRecovery(uid);
+        check(record != null && record.matchesHeartbeat(number(status.opt("pid")), number(status.opt("elapsedRealtimeMs")),
+                status.optString("helperSession")), "Не удалось подтвердить активный сеанс клавиатуры. Обновите или заново активируйте HeadSwap.");
+        System.out.println("Восстанавливаю клавиатуру текущего сеанса…");
+        long launched = SystemClock.elapsedRealtime();
+        launchDisplayHelper(uid, record.token, record.panel, record);
+        long deadline = launched + 18_000;
+        while (SystemClock.elapsedRealtime() < deadline) {
+            JSONObject current = heartbeat(uid, launched);
+            if (current != null) {
+                check(record.matchesHeartbeat(number(current.opt("pid")), number(current.opt("elapsedRealtimeMs")),
+                        current.optString("helperSession")), "Активный сеанс изменился во время восстановления клавиатуры.");
+                if (Boolean.TRUE.equals(current.opt("keyboardRouting"))) {
+                    DisplayHelperRendezvous live = liveRecovery(uid);
+                    check(live != null && record.fingerprint().equals(live.fingerprint()), "Сеанс клавиатуры уже завершён.");
+                    return;
+                }
+            }
+            Thread.sleep(400);
         }
+        throw new IOException("Действующий сеанс не подтвердил восстановление клавиатуры. Повторите активацию.");
+    }
+
+    private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {
         check(Boolean.TRUE.equals(status.opt("mediaControl")),
             "Работает предыдущая активация без управления музыкой. Завершите доступ в HeadSwap и активируйте его снова. Текущие права не изменены.");
         check(!options.audio || Boolean.TRUE.equals(status.opt("playbackAudio")),
@@ -278,7 +317,8 @@ public final class ManualAccessLauncher {
 
     private static String safe(String text) {
         if (text == null || text.isEmpty()) return "ошибка Android";
-        String clean = text.replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", "?").trim();
+        String clean = text.replaceAll("(?i)\\b[0-9a-f]{32,}\\b", "[скрыто]")
+                .replaceAll("[\\p{Cntrl}&&[^\\n\\t]]", "?").trim();
         return clean.length() > 600 ? clean.substring(clean.length() - 600) : clean;
     }
 }
