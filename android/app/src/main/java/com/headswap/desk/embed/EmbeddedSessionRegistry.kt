@@ -1,19 +1,12 @@
 package com.headswap.desk.embed
 
 import android.os.IBinder
-import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
-import android.view.ViewConfiguration
-import com.headswap.desk.CarLifeState
 import com.headswap.desk.aa.DesktopGeometryPolicy
-import com.headswap.desk.cluster.ShellManeuverSample
-import com.headswap.desk.cluster.YandexGuidanceCard
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
 import com.headswap.desk.dex.DesktopTouchState
-import com.headswap.desk.ime.ImeDismissTap
-import com.headswap.desk.ime.TapOutsideImeAccessibility
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.ExecutionException
@@ -25,12 +18,9 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
-        val mode: Int, val density: Int, val compactMapSymbols: Boolean, val shizuku: Boolean)
-    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean,
-        var density: Int) {
+        val mode: Int, val density: Int, val compactMapSymbols: Boolean)
+    private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean) {
         lateinit var death: IBinder.DeathRecipient
-        @Volatile var displayId = -1
-        val dismissTap = ImeDismissTap()
         @Volatile var linked = false
         @Volatile var packageName: String? = null
         var closing: CompletableFuture<Unit>? = null // Guarded by lock.
@@ -44,11 +34,11 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
-        density: Int, compactMapSymbols: Boolean, shizuku: Boolean = false) = synchronized(lock) {
+        density: Int, compactMapSymbols: Boolean) = synchronized(lock) {
         require(displayId > 0)
         DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols, shizuku)
+        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols)
     }
 
     fun renderConfig(parentId: Int, ownDesktop: Boolean): IntArray = synchronized(lock) {
@@ -59,35 +49,6 @@ internal object EmbeddedSessionRegistry {
 
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
         id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
-    }
-
-    private data class GuidanceTarget(val parent: Parent, val displayId: Int, val child: Lease?, val pkg: String?)
-
-    /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
-    private fun guidanceTargets(): List<GuidanceTarget> {
-        if (!CarLifeState.running) return emptyList()
-        val active = parent?.takeIf { it.remote.asBinder().isBinderAlive } ?: return emptyList()
-        val current = leases.values.filter { it.parent === active }
-        val foreground = current.filter { it.fullscreen }.ifEmpty { current }
-        return foreground.mapNotNull { lease ->
-            val pkg = lease.packageName
-            if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in YandexGuidanceCard.PACKAGES) null
-            else GuidanceTarget(active, lease.displayId, lease, pkg)
-        }.sortedBy { it.child?.handle } + GuidanceTarget(active, active.displayId, null, null)
-    }
-
-    fun guidanceDisplayIds(): List<Int> = synchronized(lock) { guidanceTargets().map { it.displayId } }
-
-    /** Called on a HUD worker, outside the input queue. Revalidate identity after crossing Binder. */
-    fun readShizukuGuidance(displayId: Int): ShellManeuverSample {
-        val target = synchronized(lock) { guidanceTargets().find { it.parent.shizuku && it.displayId == displayId } }
-            ?: return ShellManeuverSample.Unavailable
-        val result = try { ShellManeuverSample.decode(target.parent.remote.readShizukuGuidance(displayId)) }
-        catch (_: android.os.RemoteException) { return ShellManeuverSample.Unavailable }
-        catch (_: RuntimeException) { return ShellManeuverSample.Unavailable }
-        if (result is ShellManeuverSample.Card && target.pkg != null && result.packageName != target.pkg)
-            return ShellManeuverSample.Unavailable
-        return synchronized(lock) { if (target in guidanceTargets()) result else ShellManeuverSample.Unavailable }
     }
 
     /** Reject new operations immediately; retained leases can still acknowledge producer release. */
@@ -117,7 +78,7 @@ internal object EmbeddedSessionRegistry {
                 EmbeddedGatewayPolicy.requireFullscreenCaller(active.mode, uid, android.os.Process.myUid())
                 if (leases.values.any { it.fullscreen }) throw FullscreenSlotBusyException()
             } else EmbeddedGatewayPolicy.requireCanAllocate(leases.values.count { !it.fullscreen })
-            Lease(nextHandle.incrementAndGet(), uid, active, token, fullscreen, density).also { leases[it.handle] = it }
+            Lease(nextHandle.incrementAndGet(), uid, active, token, fullscreen).also { leases[it.handle] = it }
         }
         lease.death = IBinder.DeathRecipient {
             cleanup.execute { runCatching { close(lease) }.onFailure { Log.w("HeadSwapEmbed", "Companion cleanup pending", it) } }
@@ -129,7 +90,6 @@ internal object EmbeddedSessionRegistry {
                 val id = if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, density)
                 else it.createChildDisplay(surface, token, width, height, density)
                 check(id > 0 && id != requestedParent) { "Приложение не получило отдельный дисплей" }
-                lease.displayId = id
             }
             synchronized(lock) {
                 check(parent === lease.parent && leases[lease.handle] === lease && token.isBinderAlive) {
@@ -154,11 +114,7 @@ internal object EmbeddedSessionRegistry {
     fun resize(uid: Int, handle: Int, width: Int, height: Int, density: Int) {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         val lease = active(uid, handle)
-        activeCall(lease) {
-            it.resizeChildDisplay(lease.token, width, height, density)
-            lease.density = density
-            lease.dismissTap.reset()
-        }
+        activeCall(lease) { it.resizeChildDisplay(lease.token, width, height, density) }
     }
     fun launch(uid: Int, handle: Int, packageName: String, className: String) {
         EmbeddedGatewayPolicy.requireComponent(packageName, className)
@@ -166,35 +122,17 @@ internal object EmbeddedSessionRegistry {
         activeCall(lease) {
             it.launchChildApp(lease.token, packageName, className)
             lease.packageName = packageName
-            lease.dismissTap.reset()
         }
     }
     fun touch(uid: Int, handle: Int, action: Int, x: Float, y: Float) {
         val lease = active(uid, handle)
-        activeCall(lease) { remote ->
-            val dismiss = dismissOnUp(lease, action, 1, x, y)
-            remote.injectChildTouch(lease.token, if (dismiss) 3 else action, x, y)
-            if (dismiss) remote.dismissChildIme(lease.token)
-        }
+        activeCall(lease) { it.injectChildTouch(lease.token, action, x, y) }
     }
     fun touchPoints(uid: Int, handle: Int, action: Int, actionIndex: Int, pointerIds: IntArray,
         xs: FloatArray, ys: FloatArray) {
         DesktopTouchState.validate(action, actionIndex, pointerIds, xs, ys)
         val lease = active(uid, handle)
-        activeCall(lease) { remote ->
-            val dismiss = dismissOnUp(lease, action, pointerIds.size, xs[0], ys[0])
-            remote.injectChildTouchPoints(lease.token, if (dismiss) 3 else action, actionIndex, pointerIds, xs, ys)
-            if (dismiss) remote.dismissChildIme(lease.token)
-        }
-    }
-    // Called only on the parent's serial worker. A disambiguated outside tap is consumed,
-    // so the same UP cannot both activate a map control and close the keyboard.
-    private fun dismissOnUp(lease: Lease, action: Int, count: Int, x: Float, y: Float): Boolean {
-        val pkg = lease.packageName ?: return false
-        return lease.dismissTap.consumeUp(action, count, x, y, SystemClock.uptimeMillis(), lease.density * 8f / 160,
-            ViewConfiguration.getLongPressTimeout().toLong()) {
-            TapOutsideImeAccessibility.classify(lease.displayId, pkg, x, y) == TapOutsideImeAccessibility.Hit.OUTSIDE
-        }
+        activeCall(lease) { it.injectChildTouchPoints(lease.token, action, actionIndex, pointerIds, xs, ys) }
     }
     fun back(uid: Int, handle: Int) {
         val lease = active(uid, handle)

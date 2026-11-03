@@ -15,6 +15,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--serial", required=True)
     parser.add_argument("--adb", default=os.environ.get("ADB", "adb"))
+    parser.add_argument("--reconnect", action="store_true",
+                        help="Test IME routing on the same virtual display before and after an authenticated reconnect")
     args = parser.parse_args()
     if not re.fullmatch(r"emulator-\d+", args.serial):
         parser.error("Select a disposable Android emulator")
@@ -28,7 +30,7 @@ def main():
     api = int(shell("getprop ro.build.version.sdk"))
     shell("input keyevent KEYCODE_WAKEUP")
     shell("wm dismiss-keyguard")
-    options = ["-e", "probe", "panel"]
+    options = ["-e", "probe", "panel-reconnect" if args.reconnect else "panel"]
     if api < 33:
         parser.error("HeadSwap requires Android 13 or later")
     # This target instrumentation replaces the normal HeadSwap process. Give that new
@@ -39,12 +41,15 @@ def main():
     uid = int(shell(f"run-as {PACKAGE} id -u"))
     token = secrets.token_hex(16)
     apk = package_path.removeprefix("package:")
+    helper_mode = "ime" if args.reconnect else "ime-and-panel"
     shell(f"CLASSPATH={shlex.quote(apk)} /system/bin/setsid /system/bin/nohup /system/bin/app_process / "
-          f"{PACKAGE}.dex.ShellPanelHelper {uid} {token} </dev/null >/dev/null 2>&1 &")
+          f"{PACKAGE}.dex.ShellPanelHelper {uid} {token} {helper_mode} </dev/null >/dev/null 2>&1 &")
     options.extend(["-e", "panel_token", token])
     result = shell(shlex.join(["am", "instrument", "--no-hidden-api-checks", "-w", *options, COMPONENT]), timeout=80)
     print(result)
-    return 0 if "INSTRUMENTATION_CODE: -1" in result and "blanked=1" in result and "restored=2" in result else 1
+    expected = ("imeHiddenBefore=true", "imeHiddenAfter=true") if args.reconnect else (
+        "blanked=1", "restored=2")
+    return 0 if "INSTRUMENTATION_CODE: -1" in result and all(item in result for item in expected) else 1
 
 
 if __name__ == "__main__":

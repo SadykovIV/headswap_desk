@@ -34,7 +34,6 @@ import com.headswap.desk.aa.DesktopVideoSelection
 import com.headswap.desk.aa.DesktopVideoGeometry
 import com.headswap.desk.cluster.ClusterMediaSource
 import com.headswap.desk.cluster.ClusterNavigationSource
-import com.headswap.desk.cluster.CarLifeForegroundGuidance
 import com.headswap.desk.dex.DexConnector
 import com.headswap.desk.dex.ShizukuDexConnector
 import com.headswap.desk.dex.DelegatedDexConnector
@@ -88,7 +87,6 @@ class BridgeService : Service() {
     private var session: CarLifeSession? = null
     private var clusterMedia: ClusterMediaSource? = null
     private var clusterNavigation: ClusterNavigationSource? = null
-    private var foregroundGuidance: CarLifeForegroundGuidance? = null
     private var host: BridgeHost? = null
     private var phoneIdleTimer: com.headswap.desk.dex.CarLifePhoneIdleTimer? = null
     private val desktopAudio by lazy { DesktopAudioCapture(applicationContext) }
@@ -966,11 +964,7 @@ class BridgeService : Service() {
             }
         }
         if (config.metaNavi) {
-            // Older Android's task-specific Assist only supplies notification-independent
-            // app extras, without the view structure needed to read the maneuver.
-            val foreground = if (android.os.Build.VERSION.SDK_INT >= 36) CarLifeForegroundGuidance(applicationContext) else null
-            foregroundGuidance = foreground
-            clusterNavigation = ClusterNavigationSource(applicationContext, foreground?.let { it::request }) { hint ->
+            clusterNavigation = ClusterNavigationSource(applicationContext) { hint ->
                 if (!stopRequested && session === owner) owner.onClusterNavigation(hint)
             }.also { source ->
                 runCatching { source.start() }.onFailure { AppLog.e("CLUSTER: navigation source unavailable", it) }
@@ -983,8 +977,6 @@ class BridgeService : Service() {
         runCatching { clusterNavigation?.close() }.onFailure { AppLog.e("CLUSTER: navigation source cleanup", it) }
         clusterMedia = null
         clusterNavigation = null
-        foregroundGuidance?.close()
-        foregroundGuidance = null
     }
 
     /** DeX uses the existing CarLife video pipeline; Android Auto certificates are not involved. */

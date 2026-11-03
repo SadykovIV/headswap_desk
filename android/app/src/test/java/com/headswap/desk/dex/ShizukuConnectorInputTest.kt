@@ -48,8 +48,6 @@ class ShizukuConnectorInputTest {
                 contacts.put(Contacts(action, actionIndex, pointerIds.toList(), xs.toList(), ys.toList()))
             }
             override fun injectChildBack(childToken: IBinder?) = error("Unexpected child key")
-            override fun dismissChildIme(childToken: IBinder?) = error("Unexpected keyboard dismissal")
-            override fun readShizukuGuidance(displayId: Int): Array<String>? = error("Unexpected navigation query")
             override fun closeChildDisplay(childToken: IBinder?) = error("Unexpected child close")
             override fun childTaskState(childToken: IBinder?, packageName: String?): Int = error("Unexpected child inspection")
             override fun childProducerLifetime(childToken: IBinder?): IBinder = error("Unexpected lifetime query")

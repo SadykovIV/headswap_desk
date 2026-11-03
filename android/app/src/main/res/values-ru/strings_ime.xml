@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="ime_outside_label">HeadSwap — скрытие клавиатуры на магнитоле</string>
-    <string name="ime_outside_description">Позволяет скрыть клавиатуру касанием вне поля ввода на экране магнитолы. HeadSwap проверяет расположение окон и полей ввода на своём виртуальном дисплее. Введённый текст не читается и не сохраняется. Отключить функцию можно здесь же.</string>
-    <string name="ime_outside_setup">Скрывать клавиатуру тапом вне поля</string>
-    <string name="ime_outside_hint">Для этой функции включите службу «HeadSwap — скрытие клавиатуры на магнитоле» в специальных возможностях Android. Аппаратная кнопка «Назад» работает и без этой службы.</string>
-</resources>

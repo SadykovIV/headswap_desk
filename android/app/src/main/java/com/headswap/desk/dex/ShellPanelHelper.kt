@@ -9,8 +9,6 @@ import android.util.Log
 import android.view.Display
 import android.view.SurfaceControl
 import androidx.annotation.Keep
-import com.headswap.desk.cluster.ShellManeuverSample
-import com.headswap.desk.cluster.ShellYandexGuidance
 import dalvik.system.InMemoryDexClassLoader
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -21,8 +19,6 @@ import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.ByteBuffer
 import java.util.zip.ZipFile
-import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Authenticated app_process helper. IME policy is confined to the app's trusted virtual
@@ -53,62 +49,66 @@ object ShellPanelHelper {
 
     private fun listen(uid: Int, token: String, allowPanel: Boolean) {
         val deadline = SystemClock.elapsedRealtime() + 25_000
+        var owner: Pair<Int, String>? = null
         ServerSocket().use { server ->
             server.bind(InetSocketAddress(RemotePanelWire.loopback, RemotePanelWire.port(token)), 4)
-            while (SystemClock.elapsedRealtime() < deadline) {
-                server.soTimeout = (deadline - SystemClock.elapsedRealtime()).coerceIn(1, 1000).toInt()
+            server.soTimeout = 1000
+            while (true) {
+                val pinned = owner
+                if (pinned == null && SystemClock.elapsedRealtime() >= deadline) return
+                if (pinned != null && startTicks(pinned.first) != pinned.second) return
                 val peer = try { server.accept() } catch (_: SocketTimeoutException) { continue }
                 peer.use { socket ->
                     socket.soTimeout = 1000
                     socket.tcpNoDelay = true
                     val input = DataInputStream(socket.getInputStream())
                     val output = DataOutputStream(socket.getOutputStream())
-                    val valid = try { authenticate(uid, token, input, output) }
-                    catch (_: Exception) { false }
-                    if (valid) {
-                        server.close() // one activation owner; the socket EOF identifies its process death
-                        serve(socket, input, output, uid, allowPanel)
-                        return
+                    val id = try { authenticate(uid, token, input, output, pinned) } catch (_: Exception) { null }
+                    if (id != null) {
+                        owner = id
+                        try {
+                            if (serve(socket, input, output, uid, allowPanel)) return
+                        } catch (_: java.io.IOException) { /* The owner can reconnect after a network change. */ }
                     }
                 }
             }
         }
     }
 
-    private fun authenticate(uid: Int, token: String, input: DataInputStream, output: DataOutputStream): Boolean {
+    // Field 22 in /proc/PID/stat distinguishes a restarted app from our activation owner.
+    private fun startTicks(pid: Int) = runCatching {
+        File("/proc/$pid/stat").readText().substringAfterLast(')').trim().split(' ').getOrNull(19)
+            ?.takeIf { it.toLongOrNull() != null }
+    }.getOrNull()
+
+    private fun authenticate(uid: Int, token: String, input: DataInputStream, output: DataOutputStream,
+        pinned: Pair<Int, String>?): Pair<Int, String>? {
         val pid = input.readInt()
-        if (pid <= 1 || pid == Process.myPid()) return false
+        if (pid <= 1 || pid == Process.myPid()) return null
+        val owner = pid to (startTicks(pid) ?: return null)
+        if (pinned != null && owner != pinned) return null
         val client = ByteArray(RemotePanelWire.NONCE_BYTES).also(input::readFully)
         val server = RemotePanelWire.nonce()
         output.write(server); output.write(RemotePanelWire.proof(token, 1, pid, client, server)); output.flush()
         val proof = ByteArray(RemotePanelWire.MAC_BYTES).also(input::readFully)
-        if (!RemotePanelWire.validProof(RemotePanelWire.proof(token, 2, pid, client, server), proof)) return false
+        if (!RemotePanelWire.validProof(RemotePanelWire.proof(token, 2, pid, client, server), proof)) return null
         // The HMAC identity is independently pinned to HeadSwap's current main process, never a
         // companion, :service process, different app user, or PID named solely by the client.
         val status = File("/proc/$pid/status").useLines { lines -> lines.firstOrNull { it.startsWith("Uid:") } }
-        val uids = status?.substringAfter(':')?.trim()?.split(Regex("\\s+")) ?: return false
-        if (uids.size != 4 || uids.any { it.toIntOrNull() != uid }) return false
+        val uids = status?.substringAfter(':')?.trim()?.split(Regex("\\s+")) ?: return null
+        if (uids.size != 4 || uids.any { it.toIntOrNull() != uid }) return null
         val cmdline = File("/proc/$pid/cmdline").inputStream().use { stream ->
             val bytes = ByteArray(128)
             val n = stream.read(bytes)
             if (n <= 0) "" else String(bytes, 0, n, Charsets.UTF_8).substringBefore('\u0000')
         }
-        if (cmdline != ManualAccessPolicy.PACKAGE) return false
+        if (cmdline != ManualAccessPolicy.PACKAGE) return null
         output.writeByte(RemotePanelWire.OK); output.flush()
-        return true
+        return owner
     }
 
-    private fun serve(socket: Socket, input: DataInputStream, output: DataOutputStream, ownerUid: Int, allowPanel: Boolean) {
+    private fun serve(socket: Socket, input: DataInputStream, output: DataOutputStream, ownerUid: Int, allowPanel: Boolean): Boolean {
         val panel by lazy { check(allowPanel); PhysicalPanel() }
-        val guidance = Executors.newSingleThreadExecutor { Thread(it, "headswap-hud-card").apply { isDaemon = true } }
-        val reading = AtomicBoolean()
-        fun acknowledge(value: Int) = synchronized(output) { output.writeByte(value); output.flush() }
-        fun reply(id: Int, sample: ShellManeuverSample) = synchronized(output) {
-            output.writeByte(RemotePanelWire.GUIDANCE_REPLY)
-            output.writeInt(id)
-            ShellGuidanceWire.write(output, sample)
-            output.flush()
-        }
         socket.soTimeout = 350
         var deadline = 0L
         fun restore() {
@@ -120,24 +120,9 @@ object ShellPanelHelper {
             while (true) {
                 if (deadline != 0L && SystemClock.elapsedRealtime() >= deadline) restore()
                 val op = try { input.read() } catch (_: SocketTimeoutException) { continue }
-                if (op < 0) return
+                if (op < 0) return false
+                if (op == RemotePanelWire.END_ACTIVATION) return true
                 try {
-                    if (op == RemotePanelWire.READ_GUIDANCE) {
-                        val id = input.readInt()
-                        val displayId = input.readInt()
-                        if (displayId <= 0 || !reading.compareAndSet(false, true)) {
-                            reply(id, ShellManeuverSample.Unavailable)
-                        } else guidance.execute {
-                            try {
-                                val sample = try { ShellYandexGuidance.read(displayId, ownerUid, ownerUid / 100000) }
-                                catch (_: Exception) { ShellManeuverSample.Unavailable }
-                                catch (_: LinkageError) { ShellManeuverSample.Unavailable }
-                                reading.set(false)
-                                reply(id, sample)
-                            } catch (_: java.io.IOException) { /* activation ended */ }
-                        }
-                        continue
-                    }
                     if (op == RemotePanelWire.LOCAL_IME || op == RemotePanelWire.IME_VISIBLE) {
                         val target = input.readLong()
                         val reply = try {
@@ -150,7 +135,7 @@ object ShellPanelHelper {
                         } catch (e: Exception) {
                             Log.w(TAG, "Local IME unavailable for display $target", e); RemotePanelWire.UNAVAILABLE
                         } catch (e: LinkageError) { Log.w(TAG, "Local IME API unavailable", e); RemotePanelWire.UNAVAILABLE }
-                        acknowledge(reply)
+                        output.writeByte(reply); output.flush()
                         continue
                     }
                     check(allowPanel) { "Управление физической панелью не запрашивалось" }
@@ -163,7 +148,7 @@ object ShellPanelHelper {
                             catch (e: Exception) { Log.w(TAG, "Panel preparation unavailable", e); false }
                             catch (e: LinkageError) { Log.w(TAG, "Panel API unavailable", e); false }
                             if (!available) {
-                                acknowledge(RemotePanelWire.UNAVAILABLE); continue
+                                output.writeByte(RemotePanelWire.UNAVAILABLE); output.flush(); continue
                             }
                         }
                         RemotePanelWire.OFF -> {
@@ -180,15 +165,14 @@ object ShellPanelHelper {
                         RemotePanelWire.RESTORE -> restore()
                         else -> error("Неизвестный запрос панели")
                     }
-                    acknowledge(RemotePanelWire.OK)
+                    output.writeByte(RemotePanelWire.OK); output.flush()
                 } catch (error: Exception) {
                     Log.w(TAG, "Panel request failed", error)
-                    runCatching { acknowledge(RemotePanelWire.FAILED) }
-                    return
+                    runCatching { output.writeByte(RemotePanelWire.FAILED); output.flush() }
+                    return false
                 }
             }
         } finally {
-            guidance.shutdownNow()
             // Also reset on socket failure, app exit, or a hung app that stopped renewing.
             // Power follows the current logical display state, including OFF and DOZE.
             for (attempt in 0..2) {

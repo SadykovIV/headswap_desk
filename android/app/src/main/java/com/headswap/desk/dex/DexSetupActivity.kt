@@ -599,14 +599,7 @@ class DexSetupActivity : Activity() {
                     .onFailure { showState("Доступ к уведомлениям", "Откройте в настройках телефона раздел «Доступ к уведомлениям» и выберите HeadSwap.") }
             }
         }
-        text(densitySection, "Для подсказок разрешите HeadSwap доступ к уведомлениям. Во время CarLife ближайший манёвр и расстояние берутся из уведомления Яндекса или из карточки Яндекс Карт и Навигатора на ГУ. Маршрут и содержимое экрана телефона не сохраняются. Вывод на приборную панель и HUD зависит от магнитолы.", 13f)
-        button(densitySection, getString(com.headswap.desk.R.string.ime_outside_setup)) {
-            try { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
-            catch (_: android.content.ActivityNotFoundException) {
-                android.widget.Toast.makeText(this, getString(com.headswap.desk.R.string.ime_outside_hint), android.widget.Toast.LENGTH_LONG).show()
-            }
-        }
-        text(densitySection, getString(com.headswap.desk.R.string.ime_outside_hint), 13f)
+        text(densitySection, "Для подсказок разрешите HeadSwap доступ к уведомлениям. Во время CarLife HeadSwap передаёт направление и расстояние, когда Яндекс публикует их в навигационном уведомлении. Вывод на приборную панель и HUD зависит от магнитолы.", 13f)
         usbAudioChoice = CheckBox(this).apply {
             text = "Передавать звук по USB"
             tintChoice(this)

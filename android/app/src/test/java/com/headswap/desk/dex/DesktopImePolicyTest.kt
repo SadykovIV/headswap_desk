@@ -4,24 +4,6 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DesktopImePolicyTest {
-    @Test fun optionalOutsideTapConsumesOneCancelAndNeverNavigatesTwice() {
-        val gate = ChildImeDismissGate()
-        assertFalse(gate.takeCancelledTap())
-        gate.onTouch(0); gate.onTouch(3)
-        assertTrue(gate.takeCancelledTap())
-        assertFalse(gate.takeCancelledTap())
-        assertFalse(gate.shouldDismiss(null, 100))
-        assertFalse(gate.shouldDismiss(false, 100))
-        assertTrue(gate.shouldDismiss(true, 100)); gate.markDismissed(100)
-        gate.onTouch(0); gate.onTouch(3)
-        assertTrue(gate.takeCancelledTap())
-        assertFalse(gate.shouldDismiss(true, 200))
-        assertTrue(gate.shouldDismiss(true, 601))
-        gate.onTouch(0); gate.onTouch(1)
-        assertFalse(gate.takeCancelledTap())
-        assertTrue(gate.shouldDismiss(true, 250))
-    }
-
     @Test fun hardwareBackOnlyTargetsAnUnambiguousVisibleOwnedChild() {
         val parent = 3
         assertEquals(5, DesktopImePolicy.backTarget(parent, mapOf(4 to false, 5 to true, 6 to false)))

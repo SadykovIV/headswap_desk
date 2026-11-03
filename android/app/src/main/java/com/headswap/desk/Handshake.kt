@@ -5,6 +5,21 @@ import com.headswap.desk.aa.FpsSetting
 /** Исходящее CMD-сообщение: тип и тело (null = пустое). */
 class OutCmd(val type: Int, val body: ByteArray?)
 
+/** The scheduler and module producers must enqueue their CMDs in the same order as their state updates. */
+internal class SessionModuleStatus(private val sendCmd: (Int, ByteArray?) -> Unit) {
+    private val latest = HashMap<Int, Int>()
+
+    @Synchronized fun sendSingle(module: Int, status: Int) {
+        latest[module] = status
+        sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(module, status))
+    }
+
+    @Synchronized fun sendList(huMajor: Int) {
+        val cmd = Handshake.moduleStatus(huMajor, latest)
+        sendCmd(cmd.type, cmd.body)
+    }
+}
+
 /**
  * Ответ на HU_AUTHEN_REQUEST, как PrivateKeyManager (Baidu CarLife 8.6.7): randomValue после versionVerify
  * подписывается (RSA/ECB/PKCS1Padding, ENCRYPT_MODE с приватным ключом), результат в Base64 NO_WRAP.
@@ -121,7 +136,8 @@ object Handshake {
         return out
     }
 
-    fun moduleStatus(huMajor: Int) = OutCmd(Msg.MODULE_STATUS, Msgs.moduleStatusList(huMajor))
+    fun moduleStatus(huMajor: Int, statuses: Map<Int, Int> = emptyMap()) =
+        OutCmd(Msg.MODULE_STATUS, Msgs.moduleStatusList(huMajor, statuses))
 
     /**
      * Ответ на STATISTIC_INFO (CarlifeConnectHsgHandler :434-499): MD_AUTHEN_RESULT{true}, затем запрос

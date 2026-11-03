@@ -435,6 +435,7 @@ class AaBridgeCore(
     private var lastHfpConnectMs = NEVER       // ГУ прислало BT_HFP_CONNECTION=connected (дальше AA сам запускает автоплей по BT)
     private var lastPauseKeyMs = NEVER         // когда последний раз слали AA KEYCODE 127
     private var naviSent = false               // MODULE_STATUS NAVI=1 ушёл (держит TTS и/или маршрут)
+    private var naviSubscriptionControlSeen = false // отличаем ожидание первого START от явного STOP
     private var naviEndPending = false           // маршрут кончился, пока NAVI=1 держал TTS: NAVI=0 уйдёт после TTS STOP
     private var ttsNaviHeld = false            // NAVI=1 нужен ради TTS (до stopAllAudio)
     private var routeNaviHeld = false          // NAVI=1 нужен ради маршрута (MetaRelay)
@@ -549,6 +550,7 @@ class AaBridgeCore(
         huDesayG6S = false                    // HU_INFO / STATISTIC_INFO придут заново в этой сессии
         huVw20082120 = false                   // HU_INFO / STATISTIC_INFO придут заново в этой сессии
         huHonda = false                        // STATISTIC_INFO придёт заново в этой сессии
+        naviSubscriptionControlSeen = false
         huVwBt1420 = false                     // HU_INFO придёт заново в этой сессии
         huVw20082138 = false                   // HU_INFO / STATISTIC_INFO придут заново в этой сессии
         vwIdName = null
@@ -719,9 +721,23 @@ class AaBridgeCore(
 
     private fun ago(t: Long): String = if (t == NEVER) "не было" else "${clockMs() - t} мс назад"
 
+    /** Queue DONE under the same lock as route changes. Honda starts TBT only on a subsequent NAVI=1. */
+    @Synchronized
+    fun onCarlifeSubscribeDone(from: CarlifeLink, moduleIds: List<Int>, sendDone: () -> Unit) {
+        sendDone()
+        if (from !== link || !huHonda || MetaRelay.SUB_NAVI !in moduleIds || naviSubscriptionControlSeen) return
+        if (carlifeStarted && meta.routeActive && routeNaviHeld && naviSent &&
+            from.sendModuleStatus(CarlifeAudio.MODULE_NAVI, 1)) {
+            naviRaised()
+            log("BRIDGE Honda: повторяю NAVI=1 после подтверждения поддержки навигации, жду START", false)
+        }
+    }
+
     /** CARLIFE_DATA_SUBSCRIBE_START (on=true) / STOP от ГУ; moduleID подписки: 0 навигация, 2 музыка. */
     @Synchronized
-    fun onCarlifeSubscribe(moduleIds: List<Int>, on: Boolean) {
+    fun onCarlifeSubscribe(moduleIds: List<Int>, on: Boolean, from: CarlifeLink = link) {
+        if (from !== link) return
+        if (MetaRelay.SUB_NAVI in moduleIds) naviSubscriptionControlSeen = true
         for (id in moduleIds) meta.onSubscribe(id, on)
     }
 
@@ -1822,6 +1838,10 @@ class AaBridgeCore(
 
     @Synchronized
     override fun onNavDistance(d: AaNavDistance) = meta.onNavDistance(d)
+
+    @Synchronized fun onMusicSourceSelected(from: CarlifeLink) {
+        if (link === from && huHonda && carlifeStarted) meta.replayActiveMusic()
+    }
 
     @Synchronized fun onDesktopMedia(from: CarlifeLink, status: AaMediaStatus?, metadata: AaMediaMetadata?) {
         if (link === from) meta.onDesktopMedia(status, metadata)

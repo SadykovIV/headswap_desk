@@ -136,6 +136,7 @@ class CarLifeSession(
     // протокол
     @Volatile private var matchSent = false
     private val protocolHandshake = ProtocolHandshake(cfg.screenOn, ::deviceInfo)
+    private val moduleStatus = SessionModuleStatus(::sendCmd)
     private var pendingW = 0
     private var pendingH = 0
     private var pendingFps = FPS
@@ -282,17 +283,17 @@ class CarLifeSession(
         when (state) {
             CallStateSource.RINGING -> {
                 AppLog.i("-> ГУ: звонок входящий: MODULE_STATUS PHONE=1 + TELE_STATE_CHANGE_INCOMING", true)
-                sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_PHONE, 1))
+                sendModuleStatus(MODULE_PHONE, 1)
                 sendCmd(Msg.TELE_STATE_CHANGE_INCOMING, null)
             }
             CallStateSource.OFFHOOK -> {
                 AppLog.i("-> ГУ: звонок разговор/исходящий: MODULE_STATUS PHONE=2 + TELE_STATE_CHANGE_OUTGOING", true)
-                sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_PHONE, 2))
+                sendModuleStatus(MODULE_PHONE, 2)
                 sendCmd(Msg.TELE_STATE_CHANGE_OUTGOING, null)
             }
             else -> {
                 AppLog.i("-> ГУ: звонок закончен: MODULE_STATUS PHONE=0 + TELE_STATE_CHANGE_IDLE + FOREGROUND", true)
-                sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_PHONE, 0))
+                sendModuleStatus(MODULE_PHONE, 0)
                 sendCmd(Msg.TELE_STATE_CHANGE_IDLE, null)
                 sendCmd(Msg.FOREGROUND, null)
             }
@@ -409,9 +410,8 @@ class CarLifeSession(
                 // стартовая пачка сразу, ничего не ждём от ГУ: MATCH, FOREGROUND, SCREEN_ON, MD_INFO
                 mdInfoKey = reply.mdInfoKey
                 for (c in reply.commands) sendCmd(c.type, c.body)
-                val mod = Handshake.moduleStatus(reply.major)
                 try {
-                    sched.schedule({ sendCmd(mod.type, mod.body) }, Handshake.MODULE_STATUS_DELAY_MS, TimeUnit.MILLISECONDS)
+                    sched.schedule({ moduleStatus.sendList(reply.major) }, Handshake.MODULE_STATUS_DELAY_MS, TimeUnit.MILLISECONDS)
                 } catch (_: java.util.concurrent.RejectedExecutionException) {
                     // сессия уже закрывается
                 }
@@ -488,8 +488,11 @@ class CarLifeSession(
                 if (done == null) {
                     AppLog.i("== CARLIFE_DATA_SUBSCRIBE не разобрался, не отвечаю (как Baidu)")
                 } else {
-                    AppLog.i("== CARLIFE_DATA_SUBSCRIBE moduleID=${Msgs.subscribeIds(m.body)}, отвечаю DONE")
-                    sendCmd(Msg.CARLIFE_DATA_SUBSCRIBE_DONE, done)
+                    val ids = Msgs.subscribeIds(m.body)
+                    AppLog.i("== CARLIFE_DATA_SUBSCRIBE moduleID=$ids, отвечаю DONE")
+                    bridge.onCarlifeSubscribeDone(this, if (cfg.metaNavi) ids else emptyList()) {
+                        sendCmd(Msg.CARLIFE_DATA_SUBSCRIBE_DONE, done)
+                    }
                 }
             }
             Msg.CARLIFE_DATA_SUBSCRIBE_START, Msg.CARLIFE_DATA_SUBSCRIBE_STOP -> {
@@ -501,7 +504,7 @@ class CarLifeSession(
                 val pass = ids.filter { (it != SUB_NAVI || cfg.metaNavi) && (it != MetaRelay.SUB_MUSIC || cfg.metaMusic) }
                 AppLog.i("== SUBSCRIBE_${if (on) "START" else "STOP"} moduleID=$ids" +
                     (if (pass.size != ids.size) ", навигация выключена в настройках" else ""))
-                bridge.onCarlifeSubscribe(pass, on)
+                bridge.onCarlifeSubscribe(pass, on, this)
             }
             Msg.VIDEO_ENCODER_JPEG -> {
                 AppLog.i("== ГУ просит JPEG-режим видео: отвечаю ACK, но шлю только H.264")
@@ -563,6 +566,7 @@ class CarLifeSession(
                     val on = bridge.onCarlifeMusicControl(status)
                     AppLog.i("== MODULE_CONTROL MUSIC status=$status, отвечаю MODULE_STATUS MUSIC=${if (on) 1 else 0}", ui = false)
                     sendModuleStatus(CarlifeAudio.MODULE_MUSIC, if (on) 1 else 0)
+                    if (status == 1 && on) bridge.onMusicSourceSelected(this)
                 } else if (module == MODULE_VR) {
                     // Кнопка голоса на ГУ/руле: Baidu на VR=1 открывает голосовой ввод (openVrAndDialog), 0/3 - закрывает
                     val sinceOwn = SystemClock.elapsedRealtime() - lastOwnVrOnMs
@@ -727,7 +731,7 @@ class CarLifeSession(
         val voiceMic = fc.value("VOICE_MIC")
         if (bridge.huMobisNx4c && voiceMic != null) {
             AppLog.i("== VOICE_MIC=$voiceMic: Mobis CCNC, шлю MODULE_STATUS moduleID=$MODULE_MIC statusID=$voiceMic, как Baidu")
-            sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_MIC, voiceMic))
+            sendModuleStatus(MODULE_MIC, voiceMic)
         }
         AppLog.i("== HU FEATURE_CONFIG (${fc.items.size} ключей), btAudio=${fc.huBtAudioSupport} btName=${fc.huBtName} btMAC=${fc.huBtMac}")
         for ((k, v) in fc.items) AppLog.i("   feature $k = $v")
@@ -1036,7 +1040,7 @@ class CarLifeSession(
     /** MODULE_STATUS об одном модуле (NAVI перед TTS, MUSIC при MEDIA INIT/PAUSE), как Baidu ModuleStatusManage. */
     override fun sendModuleStatus(module: Int, status: Int): Boolean {
         if (closed.get()) return false
-        sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(module, status))
+        moduleStatus.sendSingle(module, status)
         return true
     }
 
@@ -1060,12 +1064,12 @@ class CarLifeSession(
             sendCmd(Msg.MIC_RECORD_RECOG_START, null)
             if (cfg.micVrStatus) {
                 lastOwnVrOnMs = SystemClock.elapsedRealtime()
-                sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_VR, 1))
+                sendModuleStatus(MODULE_VR, 1)
             }
         } else {
             AppLog.i("MIC -> ГУ: MIC_RECORD_END${if (cfg.micVrStatus) " + MODULE_STATUS VR=0" else ""}; с ГУ принято $micRxPackets пакетов, $micRxBytes Б")
             sendCmd(Msg.MIC_RECORD_END, null)
-            if (cfg.micVrStatus) sendCmd(Msg.MODULE_STATUS, Msgs.moduleStatusSingle(MODULE_VR, 0))
+            if (cfg.micVrStatus) sendModuleStatus(MODULE_VR, 0)
         }
         return true
     }

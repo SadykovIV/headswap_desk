@@ -598,6 +598,10 @@ class MetaRelay(
         }
     }
 
+    fun replayActiveMusic() {
+        if (playing && musicSubscribed && info != null) replayMusic("выбор музыки на Honda")
+    }
+
     private fun replayMusic(why: String) {
         lastProgressMs = null
         lastProgressAt = NEVER

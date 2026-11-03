@@ -31,25 +31,6 @@ internal object DesktopImePolicy {
     }
 }
 
-/** A dismissal consumes one CANCEL. A second outside tap during the IME exit animation cannot
- * navigate the app. Delivering a real tap to a field allows the next keyboard to be dismissed. */
-internal class ChildImeDismissGate {
-    private var cancelled = false
-    private var settleUntil = 0L
-
-    fun onTouch(action: Int) {
-        cancelled = action == 3 // ACTION_CANCEL
-        if (action == 1) settleUntil = 0L // A real tap may open a different editor immediately.
-    }
-
-    fun takeCancelledTap(): Boolean = cancelled.also { cancelled = false }
-    fun shouldDismiss(visible: Boolean?, now: Long): Boolean {
-        if (visible == false) settleUntil = 0L
-        return visible == true && now >= settleUntil
-    }
-    fun markDismissed(now: Long) { settleUntil = now + 500 } // Bound coalescing even if the IME reopens without a touch.
-}
-
 /** Runs exclusively as shell. No method accepts a policy, an arbitrary command, or display 0. */
 @SuppressLint("PrivateApi", "BlockedPrivateApi")
 internal object ShellDisplayIme {
@@ -66,7 +47,7 @@ internal object ShellDisplayIme {
     private val getPolicy by lazy { wmType.getMethod("getDisplayImePolicy", Int::class.javaPrimitiveType) }
     private val setPolicy by lazy { wmType.getMethod("setDisplayImePolicy", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType) }
 
-    fun requireOwned(id: Int, ownerUid: Int) {
+    private fun requireOwned(id: Int, ownerUid: Int) {
         require(id > 0)
         val info = checkNotNull(displayInfo.invoke(displayManager, id)) { "Виртуальный дисплей закрыт" }
         val cls = info.javaClass

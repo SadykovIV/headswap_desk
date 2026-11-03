@@ -3,7 +3,6 @@ package com.headswap.desk.dex
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
-import com.headswap.desk.cluster.ShellManeuverSample
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.IOException
@@ -13,9 +12,6 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 /** Main instrumentation process only. Blocking loopback I/O stays on the worker, never Android's UI thread. */
 internal object ShellPanelClient {
@@ -30,24 +26,45 @@ internal object ShellPanelClient {
         work(10_000) {
             val until = SystemClock.elapsedRealtime() + 7_000
             while (true) {
-                val s = Socket()
-                try {
-                    s.connect(InetSocketAddress(RemotePanelWire.loopback, RemotePanelWire.port(token)), 300)
-                    val session = Session(s)
-                    session.authenticate(token)
-                    synchronized(this) {
-                        check(ticket == generation) { "Активация панели завершена" }
-                        connection = session
-                    }
-                    session.startReader()
-                    break
-                } catch (error: Exception) {
-                    runCatching { s.close() }
-                    if (error !is java.net.ConnectException || SystemClock.elapsedRealtime() >= until) throw error
+                try { open(token, ticket); break }
+                catch (e: java.net.ConnectException) {
+                    if (SystemClock.elapsedRealtime() >= until) throw e
                     Thread.sleep(70)
                 }
             }
         }
+    }
+
+    /** Called on the activation heartbeat, including when the phone returns from standby. */
+    fun reconnect(token: String) {
+        if (isConnected) return
+        val ticket = synchronized(this) { generation }
+        try { work(2_500) { if (!isConnected) open(token, ticket) } }
+        catch (_: IOException) { /* Retry on the next heartbeat of this activation. */ }
+    }
+
+    private fun open(token: String, ticket: Long) {
+        val socket = Socket()
+        try {
+            socket.connect(InetSocketAddress(RemotePanelWire.loopback, RemotePanelWire.port(token)), 300)
+            val session = Session(socket)
+            session.authenticate(token)
+            synchronized(this) {
+                check(ticket == generation) { "Активация панели завершена" }
+                connection = session
+            }
+            session.startReader {
+                if (synchronized(this) { generation == ticket && connection === session }) {
+                    Log.w("HeadSwapDesk", "Display helper disconnected; restoring the activation channel")
+                    executor.execute {
+                        if (synchronized(this) { generation == ticket && connection === session }) {
+                            try { open(token, ticket) }
+                            catch (_: Exception) { /* The activation heartbeat will retry. */ }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) { socket.close(); throw e }
     }
 
     fun prepare(physicalId: Long) {
@@ -55,9 +72,6 @@ internal object ShellPanelClient {
     }
     fun power(on: Boolean) = command(if (on) RemotePanelWire.RESTORE else RemotePanelWire.OFF)
     fun refresh() = command(RemotePanelWire.RENEW)
-    /** HUD worker only. A slow third-party window never holds up panel renewals or IME routing. */
-    fun readGuidance(displayId: Int): ShellManeuverSample =
-        connection?.takeIf { it.alive && displayId > 0 }?.readGuidance(displayId) ?: ShellManeuverSample.Unavailable
     fun enableLocalIme(displayId: Int): Boolean = imeRequest(RemotePanelWire.LOCAL_IME, displayId) == RemotePanelWire.OK
     fun imeVisible(displayId: Int): Boolean? = when (imeRequest(RemotePanelWire.IME_VISIBLE, displayId)) {
         RemotePanelWire.OK -> true
@@ -75,7 +89,7 @@ internal object ShellPanelClient {
         generation++
         val s = connection
         connection = null
-        s?.shutdown()
+        s?.endActivation()
     }
 
     private fun command(op: Int, target: Long? = null): Int {
@@ -97,7 +111,6 @@ internal object ShellPanelClient {
         try { return task.get(limit, TimeUnit.MILLISECONDS) }
         catch (e: Exception) {
             task.cancel(true)
-            close()
             throw IOException("Служба панели не подтвердила запрос: ${e.cause?.message ?: e.message ?: e.javaClass.simpleName}", e)
         }
     }
@@ -106,8 +119,6 @@ internal object ShellPanelClient {
         private val input = DataInputStream(socket.getInputStream())
         private val output = DataOutputStream(socket.getOutputStream())
         private val ack = ArrayBlockingQueue<Int>(1)
-        private val nextQuery = AtomicInteger()
-        private val guidance = ConcurrentHashMap<Int, CompletableFuture<ShellManeuverSample>>()
         @Volatile var alive = true
             private set
 
@@ -124,38 +135,15 @@ internal object ShellPanelClient {
             check(input.readUnsignedByte() == RemotePanelWire.OK) { "Служба панели не подтвердила процесс приложения" }
             socket.soTimeout = 0
         }
-        fun startReader() {
+        fun startReader(onClosed: () -> Unit) {
             Thread({
                 try {
                     while (alive) {
                         val result = input.readUnsignedByte()
-                        if (result == RemotePanelWire.GUIDANCE_REPLY) {
-                            val id = input.readInt()
-                            val sample = ShellGuidanceWire.read(input)
-                            guidance.remove(id)?.complete(sample)
-                        } else check(ack.offer(result))
+                        check(ack.offer(result))
                     }
-                } catch (_: Exception) { } finally { shutdown() }
+                } catch (_: Exception) { } finally { shutdown(); onClosed() }
             }, "headswap-panel-replies").apply { isDaemon = true; start() }
-        }
-        fun readGuidance(displayId: Int): ShellManeuverSample {
-            val id = nextQuery.incrementAndGet()
-            val result = CompletableFuture<ShellManeuverSample>()
-            guidance[id] = result
-            try {
-                synchronized(output) {
-                    if (!alive) return ShellManeuverSample.Unavailable
-                    output.writeByte(RemotePanelWire.READ_GUIDANCE)
-                    output.writeInt(id)
-                    output.writeInt(displayId)
-                    output.flush()
-                }
-                return result.get(950, TimeUnit.MILLISECONDS)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-            } catch (_: Exception) { /* missing card or ended activation */ }
-            finally { guidance.remove(id) }
-            return ShellManeuverSample.Unavailable
         }
         fun call(op: Int, target: Long?, responseMs: Long): Int {
             check(alive)
@@ -171,10 +159,17 @@ internal object ShellPanelClient {
                 op == RemotePanelWire.IME_VISIBLE && reply == RemotePanelWire.HIDDEN) { "Служба панели отклонила операцию" }
             return reply
         }
+        fun endActivation() {
+            try {
+                synchronized(output) {
+                    if (alive) { output.writeByte(RemotePanelWire.END_ACTIVATION); output.flush() }
+                }
+            } catch (_: IOException) { /* peer already lost */ }
+            finally { shutdown() }
+        }
         fun shutdown() {
             alive = false
             runCatching { socket.close() }
-            guidance.values.forEach { it.complete(ShellManeuverSample.Unavailable) }
             ack.offer(RemotePanelWire.FAILED)
         }
     }

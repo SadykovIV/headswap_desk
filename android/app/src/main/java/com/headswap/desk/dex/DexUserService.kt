@@ -20,9 +20,6 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
 import androidx.annotation.Keep
-import com.headswap.desk.cluster.ShellManeuverSample
-import com.headswap.desk.cluster.ShellYandexGuidance
-import com.headswap.desk.cluster.YandexGuidanceCard
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.util.concurrent.CountDownLatch
@@ -78,7 +75,6 @@ class DexUserService private constructor(private val context: Context, private v
         var linked = false
         var touch = EmbeddedTouchState(width, height)
         val contacts = DesktopTouchState()
-        val imeDismiss = ChildImeDismissGate()
         var downTime = 0L
         var launchedPackage: String? = null
         var taskStateAt = 0L
@@ -234,7 +230,6 @@ class DexUserService private constructor(private val context: Context, private v
                 ensureChildActive(parent, child)
                 if (event.action == MotionEvent.ACTION_DOWN) child.downTime = SystemClock.uptimeMillis()
                 injectContacts(checkNotNull(child.display).display.displayId, child.downTime, event)
-                child.imeDismiss.onTouch(event.action)
             }
         }
     }
@@ -279,7 +274,6 @@ class DexUserService private constructor(private val context: Context, private v
                 DesktopImePolicy.backTarget(parentId, queries.mapValues { runCatching(it.value).getOrNull() })
             }
             active.backTarget = children[target]?.token ?: active.token
-            children[target]?.imeDismiss?.markDismissed(SystemClock.uptimeMillis())
             try { injectKeyInto(active, action, KeyEvent.KEYCODE_BACK, target) }
             catch (e: Exception) { active.backTarget = null; keyDownTimes.remove(KeyEvent.KEYCODE_BACK); throw e }
         } else {
@@ -412,26 +406,7 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(INPUT_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
-            child.imeDismiss.markDismissed(SystemClock.uptimeMillis())
             sendChildBack(parent, child)
-        }
-    }
-
-    override fun dismissChildIme(childToken: IBinder) {
-        enforceClient()
-        serialized(INPUT_TIMEOUT_MS) {
-            val (parent, child) = requireChild(childToken)
-            if (!child.imeDismiss.takeCancelledTap()) return@serialized
-            val id = checkNotNull(child.display).display.displayId
-            val query = checkNotNull(runtime).childImeVisibilityQuery(id)
-            val visible = DesktopReadDeadline.call({ observations.execute(it); true }, 450, { null }) {
-                runCatching(query).getOrNull()
-            }
-            val now = SystemClock.uptimeMillis()
-            if (child.imeDismiss.shouldDismiss(visible, now)) {
-                child.imeDismiss.markDismissed(now)
-                sendChildBack(parent, child)
-            }
         }
     }
 
@@ -488,45 +463,13 @@ class DexUserService private constructor(private val context: Context, private v
         }
     }
 
-    private data class GuidanceLease(val parent: Session, val child: ChildSession?, val revision: Long, val pkg: String?)
-
-    private fun guidanceLease(id: Int): GuidanceLease? = DesktopReadDeadline.call(handler::post, 150L, { null }) {
-        val active = session ?: return@call null
-        if (id <= 0 || active.epoch != generation.get() || !active.token.isBinderAlive) return@call null
-        val parentDisplay = active.display?.display?.takeIf { it.isValid } ?: return@call null
-        if (parentDisplay.displayId == id) return@call GuidanceLease(active, null, 0L, null)
-        val children = active.children.values
-        val child = children.singleOrNull { it.display?.display?.let { d -> d.isValid && d.displayId == id } == true }
-            ?: return@call null
-        if (!child.token.isBinderAlive || child.launchedPackage !in YandexGuidanceCard.PACKAGES ||
-            (!child.fullscreen && children.any { it.fullscreen })) return@call null
-        GuidanceLease(active, child, child.revision, child.launchedPackage)
-    }
-
-    override fun readShizukuGuidance(displayId: Int): Array<String>? {
-        enforceClient()
-        if (delegated) return null
-        val before = guidanceLease(displayId) ?: return null
-        // Read on this Binder thread, never on the display/input handler. Shizuku's virtual
-        // displays were created by its shell UID; the app UID determines the target Android user.
-        val identity = Binder.clearCallingIdentity()
-        val result = try { ShellYandexGuidance.read(displayId, Process.myUid(), clientUid / 100000) }
-        finally { Binder.restoreCallingIdentity(identity) }
-        if (before != guidanceLease(displayId) || (result is ShellManeuverSample.Card &&
-                before.pkg != null && before.pkg != result.packageName)) return null
-        return result.encode()
-    }
-
     private fun injectChildTouchEvent(child: ChildSession, event: EmbeddedTouchState.Event) {
         val now = SystemClock.uptimeMillis()
         if (event.action == MotionEvent.ACTION_DOWN) child.downTime = now
         val motion = MotionEvent.obtain(child.downTime, now, event.action, event.x, event.y,
             if (event.action == MotionEvent.ACTION_DOWN || event.action == MotionEvent.ACTION_MOVE) 1f else 0f,
             1f, 0, 1f, 1f, 0, 0).apply { source = InputDevice.SOURCE_TOUCHSCREEN }
-        try {
-            checkNotNull(runtime).inject(motion, checkNotNull(child.display).display.displayId)
-            child.imeDismiss.onTouch(event.action)
-        }
+        try { checkNotNull(runtime).inject(motion, checkNotNull(child.display).display.displayId) }
         finally { motion.recycle() }
     }
 

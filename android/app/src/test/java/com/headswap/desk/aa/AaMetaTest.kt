@@ -233,6 +233,9 @@ class AaMetaTest {
 
         fun start() = core.onCarlifeStart()
 
+        fun desktopTurn(meters: Int, from: MetaLink = link) = core.onDesktopNavigation(from,
+            AaNavTurn(AaMeta.T_RIGHT, "Elm", "Android", null, null), AaNavDistance(meters, 12))
+
         /** Доставить ответные SUBSCRIBE_START; число раундов ограничено, чтобы цикл перевзвода был виден, а не вис. */
         fun pumpSubscribe(maxRounds: Int = 10): Int {
             var rounds = 0
@@ -282,6 +285,124 @@ class AaMetaTest {
         assertEquals(listOf(MetaRelay.ACTION_SHOW, MetaRelay.ACTION_END, MetaRelay.ACTION_SHOW), r.link.turns.map { it.action })
         assertEquals(AaMeta.T_LEFT, r.link.turns.last().nextTurn)
         assertEquals(0, r.link.turns.last().remainDistance)
+    }
+
+    @Test fun hondaEarlyRouteReannouncesNaviAfterSupportAckAndShowsLatestTurnOnlyOnStart() {
+        val r = Rig()
+        r.core.onHuStatistic("20772124")
+        r.start()
+        r.desktopTurn(160)
+        assertEquals(listOf(1), r.link.navi())
+        assertTrue(r.link.turns.isEmpty())
+
+        // This HU responds to NAVI=1 only once it knows the phone supports navigation.
+        r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_NAVI)) {
+            assertEquals("ACK must precede the second NAVI=1", listOf(1), r.link.navi())
+            r.link.huResubscribes = true
+        }
+        assertEquals(listOf(1, 1), r.link.navi())
+        r.now += MetaRelay.SUB_WAIT_MS + 1
+        r.desktopTurn(80)
+        r.core.refreshDesktopNavigation(r.link)
+        assertTrue("A support ACK alone cannot authorize a SHOW", r.link.turns.isEmpty())
+
+        assertEquals(1, r.pumpSubscribe())
+        assertEquals(listOf(MetaRelay.ACTION_SHOW), r.link.turns.map { it.action })
+        assertEquals(80, r.link.turns.single().remainDistance)
+        assertEquals(AaMeta.T_RIGHT, r.link.turns.single().nextTurn)
+        assertEquals(listOf(1, 1), r.link.navi())
+    }
+
+    @Test fun hondaRouteStartingAfterSupportAckRaisesNaviOnlyOnce() {
+        val r = Rig()
+        r.core.onHuStatistic("20772124")
+        r.start()
+        r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_NAVI)) { r.link.huResubscribes = true }
+        assertTrue(r.link.navi().isEmpty())
+        r.desktopTurn(160)
+        assertTrue(r.link.turns.isEmpty())
+        assertEquals(1, r.pumpSubscribe())
+        assertEquals(listOf(1), r.link.navi())
+        assertEquals(MetaRelay.ACTION_SHOW, r.link.turns.single().action)
+    }
+
+    @Test fun hondaSupportAckDoesNotClaimAnIdleOrTtsOnlyNaviModule() {
+        val r = Rig()
+        r.core.onHuStatistic("20772124")
+        r.start()
+        r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_NAVI)) {}
+        assertTrue(r.link.navi().isEmpty())
+
+        r.core.onAudioData(M.CH_AUDIO_SPEECH, ByteArray(640), 0)
+        assertEquals(listOf(1), r.link.navi())
+        r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_NAVI)) {}
+        assertEquals(listOf(1), r.link.navi())
+        assertTrue(r.link.turns.isEmpty())
+    }
+
+    @Test fun hondaLateSupportAckHonorsAnEarlierNavigationStartOrExplicitStop() {
+        for (started in listOf(true, false)) {
+            val r = Rig()
+            r.core.onHuStatistic("20772124")
+            r.start()
+            r.desktopTurn(160)
+            r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_NAVI), started, r.link)
+            r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_NAVI)) {}
+            assertEquals("START=$started", listOf(1), r.link.navi())
+            val expected = if (started) listOf(MetaRelay.ACTION_SHOW) else emptyList()
+            assertEquals("START=$started", expected, r.link.turns.map { it.action })
+        }
+    }
+
+    @Test fun reannouncementRequiresNavigationSupportAndAHondaHeadUnit() {
+        for (channel in listOf("20772124", "20082138")) {
+            val r = Rig()
+            r.core.onHuStatistic(channel)
+            r.start()
+            r.desktopTurn(160)
+            r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_MUSIC), true, r.link)
+            r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_MUSIC)) {}
+            assertEquals(listOf(1), r.link.navi())
+            r.core.onCarlifeSubscribeDone(r.link, listOf(MetaRelay.SUB_MUSIC, MetaRelay.SUB_NAVI)) {}
+            assertEquals(channel, if (channel == "20772124") listOf(1, 1) else listOf(1), r.link.navi())
+            assertTrue(r.link.turns.isEmpty())
+        }
+    }
+
+    @Test fun staleSubscriptionControlsCannotChangeTheReplacementLink() {
+        val r = Rig()
+        val nav = listOf(MetaRelay.SUB_NAVI)
+        r.core.onCarlifeSubscribe(nav, false, r.link)
+        r.core.onCarlifeClosed(r.link)
+        val replacement = MetaLink()
+        r.core.attach(replacement)
+        r.core.onHuStatistic("20772124")
+        r.start()
+        r.desktopTurn(160, replacement)
+        r.core.onCarlifeSubscribeDone(r.link, nav) {}
+        r.core.onCarlifeSubscribe(nav, true, r.link)
+        r.core.onCarlifeSubscribe(nav, false, r.link)
+        assertTrue(r.link.navi().isEmpty())
+        assertEquals(listOf(1), replacement.navi())
+        assertTrue(replacement.turns.isEmpty())
+
+        r.core.onCarlifeSubscribeDone(replacement, nav) {}
+        assertEquals(listOf(1, 1), replacement.navi())
+        r.core.onCarlifeSubscribe(nav, true, replacement)
+        assertEquals(MetaRelay.ACTION_SHOW, replacement.turns.single().action)
+    }
+
+    @Test fun hondaSelectingMusicReplaysTheCurrentTitleOnlyWhileSubscribed() {
+        val r = Rig()
+        r.start()
+        r.core.onHuStatistic("20772124")
+        r.core.onDesktopMedia(r.link, AaMediaStatus(AaMeta.STATE_PLAYING, "player", 10, null, null, null),
+            AaMediaMetadata("Current", "Artist", "Album", null, null, 100, null))
+        r.core.onMusicSourceSelected(r.link)
+        assertEquals(listOf("Current", "Current"), r.link.infos.map { it.song })
+        r.core.onCarlifeSubscribe(listOf(MetaRelay.SUB_MUSIC), false)
+        r.core.onMusicSourceSelected(r.link)
+        assertEquals(2, r.link.infos.size)
     }
 
     @Test fun desktopSessionSwitchNeverReplaysAStaleTrackOrProgress() {

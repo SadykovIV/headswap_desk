@@ -344,6 +344,30 @@ class ProtocolTest {
     }
 
     @Test
+    fun delayedModuleListPreservesUpdatesSentSinceGreeting() {
+        val sent = mutableListOf<List<Pair<Int, Int>>>()
+        val modules = SessionModuleStatus { type, body ->
+            assertEquals(Msg.MODULE_STATUS, type)
+            val fields = PbReader.parse(body!!)!!
+            val entries = PbReader.all(fields, 2).map {
+                val entry = PbReader.parse(it.data!!)!!
+                PbReader.int(entry, 1)!! to PbReader.int(entry, 2)!!
+            }
+            assertEquals(entries.size, PbReader.int(fields, 1))
+            sent.add(entries)
+        }
+        // NAVI and MUSIC can already be on when the 500 ms handshake timer fires.
+        val updates = listOf(2 to 1, 3 to 1, 1 to 2, 4 to 1, 4 to 0, 6 to 1, 8 to 1)
+        for ((module, status) in updates) modules.sendSingle(module, status)
+        modules.sendList(1)
+        modules.sendList(2)
+
+        val v1 = listOf(1 to 2, 2 to 1, 3 to 1, 4 to 0, 6 to 1)
+        val v2 = v1 + listOf(8 to 1, 9 to 0)
+        assertEquals(updates.map { listOf(it) } + listOf(v1, v2), sent)
+    }
+
+    @Test
     fun subscribeDoneMirrorsRequest() {
         // запрос из живого лога: cnt=1 {moduleID=0}
         assertArrayEquals(hex("08 01 12 04 08 00 10 01"), Msgs.subscribeDone(hex("08 01 12 02 08 00")))

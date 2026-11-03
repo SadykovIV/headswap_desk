@@ -603,12 +603,12 @@ object Msgs {
 
     /**
      * CarlifeModuleStatusList для MODULE_STATUS (ModuleStatusManage.sendCarlifeModuleListStatus, :158-221):
-     * модули 1,2,3,4,6 всегда, 8 и 9 только если у ГУ major >= 2; статус у всех 0.
+     * модули 1,2,3,4,6 всегда, 8 и 9 только если у ГУ major >= 2. Исходный статус каждого модуля — 0.
      */
-    fun moduleStatusList(huMajor: Int): ByteArray {
+    fun moduleStatusList(huMajor: Int, statuses: Map<Int, Int> = emptyMap()): ByteArray {
         val ids = if (huMajor >= 2) intArrayOf(1, 2, 3, 4, 6, 8, 9) else intArrayOf(1, 2, 3, 4, 6)
         val w = PbWriter().int32(1, ids.size)
-        for (id in ids) w.bytes(2, PbWriter().int32(1, id).int32(2, 0).toByteArray())
+        for (id in ids) w.bytes(2, PbWriter().int32(1, id).int32(2, statuses[id] ?: 0).toByteArray())
         return w.toByteArray()
     }
 

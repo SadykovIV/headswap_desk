@@ -139,6 +139,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             // USB detach and producer/service shutdown must never count this latch down.
             while (!stop.await(5, TimeUnit.SECONDS)) {
                 check(DelegatedDesktopAccess.hasPermissions(context)) { "Desktop permissions were revoked" }
+                activationToken?.let(ShellPanelClient::reconnect)
                 writeHeartbeat(true)
             }
         } catch (error: Throwable) {
