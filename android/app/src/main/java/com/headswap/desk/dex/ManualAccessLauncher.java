@@ -187,11 +187,14 @@ public final class ManualAccessLauncher {
                 s.equals(component + ".cluster.ClusterNavigationListener") ||
                 s.equals(component + ManualAccessPolicy.PACKAGE + ".cluster.ClusterNavigationListener"));
             if (!approved) return false;
-            // Read only AaPrefs.metaNavi. Like SharedPreferences.getBoolean, use its
-            // enabled default for a missing entry. An unreadable preference fails closed.
-            String flag = run(3000, "run-as", ManualAccessPolicy.PACKAGE, "--user", user, "sh", "-c",
-                "f=shared_prefs/aa.xml; if [ -f \"$f\" ]; then grep -F 'name=\"metaNavi\"' \"$f\" || [ $? -eq 1 ]; fi").trim();
-            return flag.isEmpty() || flag.matches("<boolean\\s+name=\"metaNavi\"\\s+value=\"true\"\\s*/>");
+            // SharedPreferences restores the backup first if its last write was interrupted.
+            byte[] prefs = readCommand(3000, HudActivationPreference.MAX_BYTES, true,
+                "run-as", ManualAccessPolicy.PACKAGE, "--user", user, "sh", "-c",
+                "if [ ! -e shared_prefs ]; then printf '<map/>'; exit; fi; " +
+                "[ -d shared_prefs ] && [ -x shared_prefs ] || exit 1; " +
+                "f=shared_prefs/aa.xml; if [ -e \"$f.bak\" ]; then f=$f.bak; fi; " +
+                "if [ -f \"$f\" ]; then exec cat \"$f\"; fi; [ ! -e \"$f\" ] && printf '<map/>'");
+            return HudActivationPreference.enabled(prefs);
         } catch (Exception unavailable) { return false; }
     }
 
@@ -282,11 +285,15 @@ public final class ManualAccessLauncher {
     }
 
     private static String run(long timeoutMs, String... command) throws Exception {
+        return new String(readCommand(timeoutMs, COMMAND_LIMIT, false, command), StandardCharsets.UTF_8);
+    }
+
+    private static byte[] readCommand(long timeoutMs, int limit, boolean privateOutput, String... command) throws Exception {
         java.lang.Process process = new ProcessBuilder(command).redirectErrorStream(true).start();
         final byte[][] bytes = new byte[1][];
         final Exception[] failure = new Exception[1];
         Thread reader = new Thread(() -> {
-            try { bytes[0] = boundedRead(process.getInputStream(), COMMAND_LIMIT); }
+            try (InputStream input = process.getInputStream()) { bytes[0] = boundedRead(input, limit); }
             catch (Exception error) { failure[0] = error; }
         }, "headswap-manual-command");
         reader.setDaemon(true); reader.start();
@@ -298,9 +305,10 @@ public final class ManualAccessLauncher {
         reader.join(1000);
         check(!reader.isAlive(), "Не завершилось чтение ответа Android.");
         if (failure[0] != null) throw failure[0];
-        String text = new String(bytes[0] == null ? new byte[0] : bytes[0], StandardCharsets.UTF_8);
-        check(process.exitValue() == 0, "Android " + command[0] + ": " + safe(text));
-        return text;
+        byte[] output = bytes[0] == null ? new byte[0] : bytes[0];
+        if (process.exitValue() != 0) throw new IOException(privateOutput ? "Не удалось прочитать настройки HeadSwap."
+            : "Android " + command[0] + ": " + safe(new String(output, StandardCharsets.UTF_8)));
+        return output;
     }
 
     private static byte[] boundedRead(InputStream in, int maximum) throws IOException {
