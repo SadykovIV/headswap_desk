@@ -378,6 +378,19 @@ class DexUserService private constructor(private val context: Context, private v
         }
     }
 
+    override fun trackDesktopChildLaunch(childToken: IBinder, packageName: String) {
+        enforceClient()
+        EmbeddedDisplayPolicy.requirePackage(packageName)
+        serialized(START_TIMEOUT_MS) {
+            val (parent, child) = requireChild(childToken)
+            check(parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP && !child.fullscreen)
+            ensureChildActive(parent, child)
+            child.launchedPackage = packageName
+            child.revision++
+            child.taskStateAt = 0L
+        }
+    }
+
     override fun resizeChildDisplay(childToken: IBinder, width: Int, height: Int, density: Int) {
         enforceClient()
         EmbeddedDisplayPolicy.requireSize(width, height, density)

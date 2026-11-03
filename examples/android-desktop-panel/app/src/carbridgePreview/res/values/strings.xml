@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Тестовая панель HeadSwap для CarBridge</string>
+    <string name="heading">Проверка профиля CarBridge · пример HeadSwap</string>
+</resources>

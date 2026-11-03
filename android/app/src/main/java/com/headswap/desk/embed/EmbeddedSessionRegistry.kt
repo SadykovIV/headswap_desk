@@ -1,6 +1,17 @@
 package com.headswap.desk.embed
 
+import android.app.Activity
+import android.app.ActivityManager
+import android.app.ActivityOptions
+import android.content.ComponentName
+import android.content.Intent
+import android.content.pm.ActivityInfo
+import android.content.pm.PackageManager
 import android.os.IBinder
+import android.os.Process
+import com.headswap.desk.component.DesktopComponentPolicy
+import com.headswap.desk.component.DesktopComponentEntry
+import com.headswap.desk.component.DesktopComponents
 import android.util.Log
 import android.view.Surface
 import com.headswap.desk.AppLog
@@ -189,6 +200,61 @@ internal object EmbeddedSessionRegistry {
             }
         }
     }
+    /** Internal-only: providers never receive this gateway or the child display ID. Start as our
+     * ordinary Activity UID, including when the producer of this particular display runs as shell. */
+    fun launchDesktopComponent(activity: Activity, handle: Int, target: DesktopComponentEntry,
+        decorate: (Intent, Int) -> Unit) {
+        launchHostChild(activity, handle, target.componentName, decorate) {
+            val selected = DesktopComponents.selected(activity)
+            check(selected != null && selected.componentName == target.componentName &&
+                selected.signerSha256 == target.signerSha256 && selected.modeId == target.modeId) {
+                "Компонент рабочего стола изменился"
+            }
+            // A warm provider also opened on the phone keeps its own task there.
+            Intent(DesktopComponents.ACTION).addCategory(Intent.CATEGORY_DEFAULT).addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+    }
+
+    /** A panel request cannot inherit Shizuku's launch permissions. Resolve it at dispatch
+     * on the ordinary host UID, exactly as a public MAIN/LAUNCHER entry in this Android user. */
+    fun launchPanelApp(activity: Activity, handle: Int, target: ComponentName) {
+        launchHostChild(activity, handle, target, { _, _ -> }) {
+            val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(target.packageName)
+            check(activity.packageManager.queryIntentActivities(launcher, 0).any {
+                val info = it.activityInfo
+                info.packageName == target.packageName && info.name == target.className && info.enabled &&
+                    info.applicationInfo.enabled && info.exported && info.permission.isNullOrEmpty() &&
+                    DesktopComponentPolicy.supportsIsolatedTask(info.launchMode, info.documentLaunchMode,
+                        info.flags and ActivityInfo.FLAG_ALLOW_TASK_REPARENTING != 0)
+            }) { "Приложение не поддерживает независимую задачу в окне панели" }
+            launcher.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
+    }
+
+    private fun launchHostChild(activity: Activity, handle: Int, target: ComponentName,
+        decorate: (Intent, Int) -> Unit, resolve: () -> Intent) {
+        val lease = active(Process.myUid(), handle)
+        activeCall(lease) { remote ->
+            val id = lease.displayId
+            EmbeddedGatewayPolicy.requireComponentChild(lease.parent.mode, lease.fullscreen,
+                activity.display?.displayId ?: -1, lease.parent.displayId, id)
+            remote.trackDesktopChildLaunch(lease.token, target.packageName)
+            val context = activity.applicationContext
+            val intent = resolve().setComponent(target).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            check(context.packageManager.hasSystemFeature(PackageManager.FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS) &&
+                context.getSystemService(ActivityManager::class.java).isActivityStartAllowedOnDisplay(context, id, intent)) {
+                "Android не разрешил запуск на дочернем дисплее рабочего стола"
+            }
+            decorate(intent, id)
+            synchronized(lock) {
+                check(parent === lease.parent && leases[handle] === lease && lease.closing == null &&
+                    lease.token.isBinderAlive && !activity.isDestroyed)
+            }
+            context.startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(id).toBundle())
+            lease.packageName = target.packageName
+        }
+    }
+
     fun touch(uid: Int, handle: Int, action: Int, x: Float, y: Float) {
         val lease = active(uid, handle)
         activeCall(lease) { it.injectChildTouch(lease.token, action, x, y) }

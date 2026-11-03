@@ -1,4 +1,7 @@
 pluginManagement {
+    resolutionStrategy.eachPlugin {
+        if (requested.id.id == "com.android.library") useModule("com.android.tools.build:gradle:${requested.version ?: "9.4.1"}")
+    }
     repositories {
         google()
         mavenCentral()
@@ -19,4 +22,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "headswap"
-include(":app")
+include(":app", ":desktop-panel-sdk")
+project(":desktop-panel-sdk").projectDir = file("../sdk/desktop-panel-v1")

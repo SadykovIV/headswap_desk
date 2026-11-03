@@ -2,6 +2,7 @@ package com.headswap.desk.dex
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -36,6 +37,8 @@ import com.headswap.desk.aa.AaPrefs
 import com.headswap.desk.aa.DesktopResolution
 import com.headswap.desk.aa.FpsSetting
 import com.headswap.desk.CarLifeState
+import com.headswap.desk.component.DesktopComponentEntry
+import com.headswap.desk.component.DesktopComponents
 import com.headswap.desk.MainActivity
 import com.headswap.desk.ui.Actions
 import com.headswap.desk.ui.LogShare
@@ -92,8 +95,18 @@ class DexSetupActivity : Activity() {
     }
     private lateinit var desktopChoice: Button
     private lateinit var desktopChoiceHint: TextView
-    private val desktopModes = listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.SAMSUNG_DEX, DesktopModePolicy.DRIVEDECK)
-    private val desktopName: String get() = if (prefs.useDesktopService) DesktopModePolicy.label(prefs.desktopMode) else "DeX"
+    private var selectedPanel: DesktopComponentEntry? = null
+    private val profilePackageChange = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.data?.schemeSpecificPart == selectedPanel?.packageName) {
+                selectedPanel = DesktopComponents.selected(this@DexSetupActivity)
+                renderAccessControls()
+            }
+        }
+    }
+    private val desktopProfileName: String get() = selectedPanel?.takeIf { prefs.desktopMode == DesktopModePolicy.ANDROID_DESKTOP }
+        ?.let(DesktopProfilePicker::name) ?: DesktopModePolicy.label(prefs.desktopMode)
+    private val desktopName: String get() = if (prefs.useDesktopService) desktopProfileName else "DeX"
     private lateinit var setup: LinearLayout
     private lateinit var shizukuSetup: LinearLayout
     private lateinit var shizukuHelp: TextView
@@ -330,6 +343,12 @@ class DexSetupActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        registerReceiver(profilePackageChange, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }, Context.RECEIVER_NOT_EXPORTED)
         visible = true
         Actions.observeUsbConnection(this)
         main.post(refresh)
@@ -350,6 +369,7 @@ class DexSetupActivity : Activity() {
     }
 
     override fun onStop() {
+        unregisterReceiver(profilePackageChange)
         visible = false
         main.removeCallbacks(refresh)
         cancelContinuation()
@@ -360,6 +380,8 @@ class DexSetupActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        selectedPanel = DesktopComponents.selected(this)
+        renderAccessControls()
         navigationChoice.control.isChecked = clusterPrefs.metaNavi
         phoneIdle.onStart()
     }
@@ -428,26 +450,8 @@ class DexSetupActivity : Activity() {
         ui.text(header, "HeadSwap Desktop", 23f, true).layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         ui.button(header, "Настройки") { openSettings(true) }.layoutParams = LinearLayout.LayoutParams(-2, -2)
         val profile = ui.section(home)
-        desktopChoice = ui.button(profile, "Профиль: ${DesktopModePolicy.label(prefs.desktopMode)} ▾") {
-            if (accessChoiceLocked()) {
-                renderAccessControls()
-            } else {
-                val availableModes = desktopModes.filter { it != DesktopModePolicy.SAMSUNG_DEX || SamsungDexCapability.isAvailable(this) }
-                android.app.AlertDialog.Builder(this)
-                    .setTitle("Профиль рабочего стола")
-                    .setSingleChoiceItems(availableModes.map { if (it == DesktopModePolicy.SAMSUNG_DEX) "Samsung DeX · Shizuku" else DesktopModePolicy.label(it) }.toTypedArray(),
-                        availableModes.indexOf(prefs.desktopMode)) { dialog, position ->
-                        dialog.dismiss()
-                        val mode = availableModes.getOrNull(position) ?: return@setSingleChoiceItems
-                        // USB may have connected while this dialog was open.
-                        if (!accessChoiceLocked() && mode != prefs.desktopMode) {
-                            selectDesktopMode(mode)
-                        }
-                        renderAccessControls()
-                    }
-                    .setNegativeButton("Отмена", null)
-                    .show()
-            }
+        desktopChoice = ui.button(profile, "Профиль: $desktopProfileName ▾") {
+            if (!accessChoiceLocked()) DesktopProfilePicker.show(this, prefs.desktopMode, { !accessChoiceLocked() }, ::selectDesktopProfile)
         }.apply { setTextColor(Color.WHITE) }
         desktopChoiceHint = ui.text(profile, "", 13f)
         val connection = ui.section(home, "Подключение к CarLife")
@@ -739,8 +743,16 @@ class DexSetupActivity : Activity() {
             }.setNegativeButton("Отмена", null).show()
     }
 
-    private fun selectDesktopMode(mode: Int) {
-        if (accessChoiceLocked() || mode == prefs.desktopMode) return
+    private fun selectDesktopProfile(mode: Int, entry: DesktopComponentEntry?) {
+        if (accessChoiceLocked()) return
+        if (entry == null) DesktopComponents.clear(this)
+        else if (!DesktopComponents.select(this, entry)) {
+            AlertDialog.Builder(this).setTitle("Компонент изменился")
+                .setMessage("Откройте список профилей заново и проверьте пакет и подпись установленного приложения.")
+                .setPositiveButton("Понятно", null).show()
+            return
+        }
+        selectedPanel = entry
         cancelContinuation()
         prefs.desktopMode = mode
         manualAdbOpen = false
@@ -1061,7 +1073,7 @@ class DexSetupActivity : Activity() {
         adbOptions.visibility = if (desktop) View.GONE else View.VISIBLE
         adbAdvanced.visibility = if (!desktop && manualAdbOpen) View.VISIBLE else View.GONE
         adbOptions.updateText(if (manualAdbOpen) "Скрыть ручной ввод" else "Ввести адрес и порты вручную")
-        desktopChoice.updateText("Профиль: ${DesktopModePolicy.label(prefs.desktopMode)} ▾")
+        desktopChoice.updateText("Профиль: $desktopProfileName ▾")
         desktopChoice.isEnabled = enabled
         desktopChoiceHint.updateText(if (!enabled) "Для смены профиля остановите подключение."
             else when (prefs.desktopMode) {

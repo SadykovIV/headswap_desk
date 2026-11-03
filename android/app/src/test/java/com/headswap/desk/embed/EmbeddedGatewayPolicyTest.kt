@@ -7,6 +7,21 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 class EmbeddedGatewayPolicyTest {
+    @Test fun panelLaunchCanOnlyUseTheHostsDistinctAndroidDesktopChild() {
+        val mode = DesktopModePolicy.ANDROID_DESKTOP
+        EmbeddedGatewayPolicy.requireComponentChild(mode, false, 8, 8, 9)
+        for (badMode in listOf(DesktopModePolicy.DRIVEDECK, DesktopModePolicy.SAMSUNG_DEX))
+            rejected { EmbeddedGatewayPolicy.requireComponentChild(badMode, false, 8, 8, 9) }
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            EmbeddedGatewayPolicy.requireComponentChild(mode, true, 8, 8, 9)
+        }
+        rejected { EmbeddedGatewayPolicy.requireComponentChild(mode, false, 7, 8, 9) }
+        rejected { EmbeddedGatewayPolicy.requireComponentChild(mode, false, 0, 0, 9) }
+        for (child in listOf(-1, 0, 8)) org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            EmbeddedGatewayPolicy.requireComponentChild(mode, false, 8, 8, child)
+        }
+    }
+
     @Test fun settingsLauncherIsEligibleButNeitherDesktopCanEmbedItself() {
         val host = "com.headswap.desk"
         assertTrue(EmbeddedGatewayPolicy.allowsLauncherPackage("com.android.settings", host))

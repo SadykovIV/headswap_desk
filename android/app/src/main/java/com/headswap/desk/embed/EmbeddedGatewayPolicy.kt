@@ -24,6 +24,12 @@ object EmbeddedGatewayPolicy {
             requestedParentDisplayId == ownedParentDisplayId) { "Parent display is not the owned desktop" }
     }
 
+    internal fun requireComponentChild(mode: Int, fullscreen: Boolean, activityDisplay: Int, parent: Int, child: Int) {
+        requireParent(mode, activityDisplay, parent, ownDesktop = true)
+        check(!fullscreen) { "Окно DriveDeck не принадлежит рабочему столу HeadSwap" }
+        EmbeddedDisplayPolicy.requireChildId(child, parent)
+    }
+
     fun requireGeometry(width: Int, height: Int, density: Int) {
         EmbeddedDisplayPolicy.requireSize(width, height, density)
     }

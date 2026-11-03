@@ -1,0 +1,25 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.Material.NoActionBar">
+        <activity
+            android:name=".PanelActivity"
+            android:exported="true"
+            android:resizeableActivity="true">
+            <intent-filter>
+                <action android:name="com.headswap.desk.action.DESKTOP_COMPONENT" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <meta-data android:name="com.headswap.desk.component.API_MAJOR" android:value="1" />
+            <meta-data android:name="com.headswap.desk.component.MODE_ID" android:value="${panelModeId}" />
+            <meta-data android:name="com.headswap.desk.component.PROFILE" android:value="android-desktop" />
+        </activity>
+    </application>
+</manifest>

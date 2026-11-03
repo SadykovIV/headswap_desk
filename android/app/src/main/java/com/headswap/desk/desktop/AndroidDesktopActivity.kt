@@ -1,6 +1,9 @@
 package com.headswap.desk.desktop
 
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.content.ComponentName
 import android.content.Intent
 import android.graphics.Color
@@ -24,11 +27,15 @@ import android.widget.FrameLayout
 import android.widget.ListView
 import android.widget.ImageButton
 import android.widget.BaseAdapter
+import android.widget.Button
 import android.widget.GridView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.TextView
+import com.headswap.desk.component.DesktopComponentEntry
+import com.headswap.desk.component.DesktopComponents
+import com.headswap.desk.component.PanelLaunchSession
 import com.headswap.desk.AppLog
 import com.headswap.desk.R
 import com.headswap.desk.dex.DexState
@@ -61,11 +68,24 @@ class AndroidDesktopActivity : Activity() {
 
     private data class LoadedApps(val entries: List<DesktopAppCatalog.Entry>, val icons: Map<String, Drawable>)
 
+    private lateinit var panelButton: Button
+    private var panelChoice: DesktopComponentEntry? = null
+    private var panelSession: PanelLaunchSession? = null
+    private var panelPlaced = false
+    private var autoOpenPanel = true
+    private var choiceQuery = 0L
+    private var stopObserving: (() -> Unit)? = null
+    private val packageChanges = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.data?.schemeSpecificPart == panelChoice?.packageName) panelChoiceChanged()
+        }
+    }
+
     private val awaitOwnership = object : Runnable {
         override fun run() {
             if (!visible || isDestroyed) return
             when {
-                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); loadApps() }
+                ownsDisplay() -> { layout.visibility = View.VISIBLE; pane.refreshBuffer(); refreshPanelChoice(); loadApps() }
                 currentDisplayId() <= 0 || SystemClock.elapsedRealtime() >= ownershipDeadline -> finish()
                 else -> main.postDelayed(this, 100)
             }
@@ -78,7 +98,20 @@ class AndroidDesktopActivity : Activity() {
         // Render a neutral first frame; reveal the catalog only after the client confirms ownership.
         if (currentDisplayId() <= 0) { finish(); return }
         AppLog.init(this)
+        autoOpenPanel = savedInstanceState?.getBoolean("auto_open_panel", true) ?: true
         buildView()
+        stopObserving = DesktopComponents.observeSelection(this, ::panelChoiceChanged)
+        registerReceiver(packageChanges, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        }, Context.RECEIVER_NOT_EXPORTED)
+    }
+
+    override fun onSaveInstanceState(state: Bundle) {
+        super.onSaveInstanceState(state)
+        state.putBoolean("auto_open_panel", autoOpenPanel)
     }
 
     override fun onResume() {
@@ -108,6 +141,11 @@ class AndroidDesktopActivity : Activity() {
     }
 
     override fun onDestroy() {
+        if (stopObserving != null) {
+            stopObserving?.invoke()
+            unregisterReceiver(packageChanges)
+        }
+        revokePanel()
         main.removeCallbacksAndMessages(null)
         loader.shutdownNow()
         super.onDestroy()
@@ -115,7 +153,7 @@ class AndroidDesktopActivity : Activity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (::pane.isInitialized && ownsDisplay()) pane.home()
+        if (::pane.isInitialized && ownsDisplay()) { autoOpenPanel = false; pane.home() }
     }
 
     @Deprecated("The desktop remains open until its CarLife session ends")
@@ -154,7 +192,7 @@ class AndroidDesktopActivity : Activity() {
             divider = null
             setSelector(android.R.color.transparent)
             contentDescription = "Панель приложений"
-            setOnItemClickListener { _, _, position, _ -> pinnedEntries.getOrNull(position)?.let(::launchApp) }
+            setOnItemClickListener { _, _, position, _ -> pinnedEntries.getOrNull(position)?.let { launchApp(it) } }
             setOnItemLongClickListener { _, row, position, _ ->
                 pinnedEntries.getOrNull(position)?.let { showPinMenu(row, it) }
                 true
@@ -166,15 +204,18 @@ class AndroidDesktopActivity : Activity() {
             if (ownsDisplay()) pane.back()
         }, LinearLayout.LayoutParams(-1, buttonHeight))
         sidebar.addView(navButton("Домой", com.headswap.desk.R.drawable.desktop_home) {
-            if (ownsDisplay()) pane.home()
+            if (ownsDisplay()) { autoOpenPanel = false; pane.home() }
         }, LinearLayout.LayoutParams(-1, buttonHeight))
         layout.addView(sidebar, LinearLayout.LayoutParams(railWidth, -1))
         val workspace = FrameLayout(this)
         layout.addView(workspace, LinearLayout.LayoutParams(0, -1, 1f))
         pane = DesktopAppPane(this, onOpened = {
+            panelPlaced = panelSession != null
             setChildInputFocus(true)
             menu.visibility = View.GONE
         }, onHome = {
+            autoOpenPanel = false
+            revokePanel()
             setChildInputFocus(false)
             menu.visibility = View.VISIBLE
             status.setTextColor(Color.rgb(180, 190, 203))
@@ -207,6 +248,12 @@ class AndroidDesktopActivity : Activity() {
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
         body.addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        panelButton = Button(this).apply {
+            isAllCaps = false
+            visibility = View.GONE
+            setOnClickListener { panelChoice?.let(::openPanel) }
+        }
+        body.addView(panelButton, LinearLayout.LayoutParams(-1, -2))
         grid = GridView(this).apply {
             numColumns = GridView.AUTO_FIT
             columnWidth = dp(156)
@@ -217,7 +264,7 @@ class AndroidDesktopActivity : Activity() {
             clipToPadding = false
             setSelector(android.R.color.transparent)
             adapter = this@AndroidDesktopActivity.adapter
-            setOnItemClickListener { _, _, position, _ -> entries.getOrNull(position)?.let(::launchApp) }
+            setOnItemClickListener { _, _, position, _ -> entries.getOrNull(position)?.let { launchApp(it) } }
             setOnItemLongClickListener { _, card, position, _ ->
                 val entry = entries.getOrNull(position)
                 if (entry != null && ownsDisplay()) {
@@ -358,14 +405,74 @@ class AndroidDesktopActivity : Activity() {
         popup.show()
     }
 
-    private fun launchApp(entry: DesktopAppCatalog.Entry) {
+    private fun refreshPanelChoice() {
+        val generation = ++choiceQuery
+        loader.execute {
+            val choice = runCatching { DesktopComponents.selected(this) }.getOrNull()
+            main.post {
+                if (isDestroyed || !visible || generation != choiceQuery || !ownsDisplay()) return@post
+                panelChoice = choice
+                panelButton.visibility = if (choice != null) View.VISIBLE else View.GONE
+                if (choice != null) {
+                    panelButton.text = "Открыть панель «${choice.label}»"
+                    if (autoOpenPanel) openPanel(choice)
+                }
+                autoOpenPanel = false
+            }
+        }
+    }
+
+    private fun panelChoiceChanged() {
+        choiceQuery++
+        if (panelSession != null) pane.home()
+        panelChoice = null
+        panelButton.visibility = View.GONE
+        if (visible && ownsDisplay()) refreshPanelChoice()
+    }
+
+    private fun openPanel(entry: DesktopComponentEntry) {
+        if (!ownsDisplay()) return
+        autoOpenPanel = false
+        revokePanel()
+        lateinit var session: PanelLaunchSession
+        val current = { !isDestroyed && !isFinishing && panelSession === session && panelPlaced && ownsDisplay() }
+        try {
+            session = PanelLaunchSession(this, entry, current, onCatalog = {
+                pane.ifComponentForeground(entry) { if (current()) pane.home() }
+            }) { target ->
+                pane.ifComponentForeground(entry) {
+                    if (current()) {
+                        val app = entries.firstOrNull { it.packageName == target.packageName && it.className == target.className }
+                            ?: DesktopAppCatalog.Entry(target.packageName, target.className, target.packageName)
+                        launchApp(app, requestedByPanel = true)
+                    }
+                }
+            }
+            panelSession = session
+            status.text = "Открывается ${entry.label}…"
+            pane.openComponent(entry, session::attach)
+        } catch (e: Exception) {
+            pane.home()
+            showError("Компонент «${entry.label}» недоступен")
+        }
+    }
+
+    private fun revokePanel() {
+        panelSession?.revoke()
+        panelSession = null
+        panelPlaced = false
+    }
+
+    private fun launchApp(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false) {
         if (!ownsDisplay()) {
             showError("Подключение рабочего стола ещё не готово или уже завершено")
             return
         }
+        autoOpenPanel = false
+        revokePanel()
         status.text = "Открывается ${entry.label}…"
         status.setTextColor(Color.rgb(180, 190, 203))
-        pane.open(entry)
+        pane.open(entry, requestedByPanel)
     }
 
     private fun currentDisplayId(): Int = display?.displayId ?: -1

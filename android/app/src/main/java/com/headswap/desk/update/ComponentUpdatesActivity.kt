@@ -14,6 +14,8 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import com.headswap.desk.BuildConfig
+import com.headswap.desk.component.DesktopComponents
+import com.headswap.desk.dex.DesktopProfilePicker
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.dex.DesktopSetupViews
 import com.headswap.desk.dex.DesktopModePolicy
@@ -26,6 +28,7 @@ class ComponentUpdatesActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private lateinit var version: TextView
     private lateinit var status: TextView
+    private lateinit var profiles: TextView
     private lateinit var check: Button
     private lateinit var pick: Button
     private lateinit var remote: Button
@@ -63,6 +66,10 @@ class ComponentUpdatesActivity : Activity() {
         val mainApp = ui.section(root, "HeadSwap Desktop")
         ui.text(mainApp, "Основное приложение · ${BuildConfig.VERSION_NAME} (код ${BuildConfig.VERSION_CODE})", 15f)
         ui.button(mainApp, "Проверить обновления HeadSwap Desktop") { Updater.check(this, manual = true) }
+        val thirdParty = ui.section(root, "Независимые профили")
+        ui.text(thirdParty, "Установите APK разработчика через Android. На главном экране откройте «Профиль» и выберите его лаунчер.", 14f)
+        profiles = ui.text(thirdParty, "", 14f)
+        ui.button(thirdParty, "Обновить список профилей") { refreshProfiles() }
         val card = ui.section(root)
         fun button(value: String, click: () -> Unit) = ui.button(card, value, click)
         val componentTitle = ui.text(card, spec.title, 18f, true)
@@ -89,7 +96,17 @@ class ComponentUpdatesActivity : Activity() {
         refresh()
     }
 
-    override fun onResume() { super.onResume(); refresh() }
+    override fun onResume() { super.onResume(); refresh(); refreshProfiles() }
+
+    private fun refreshProfiles() {
+        worker.execute {
+            val entries = DesktopComponents.list(this)
+            val installed = entries.joinToString("\n\n") { "${DesktopProfilePicker.name(it)} · ${it.versionName} (${it.versionCode})\n${it.componentName.flattenToShortString()}" }
+            runOnUiThread {
+                if (!isFinishing && !isDestroyed) profiles.text = installed.ifEmpty { "Совместимые профили пока не установлены." }
+            }
+        }
+    }
     override fun onDestroy() { worker.shutdownNow(); super.onDestroy() }
     override fun onSaveInstanceState(state: Bundle) {
         super.onSaveInstanceState(state)

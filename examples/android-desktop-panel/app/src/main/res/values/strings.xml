@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Демо-панель</string>
+    <string name="heading">Панель Android Desktop</string>
+    <string name="dimensions">Дисплей %1$d · %2$d DPI · %3$d × %4$d px</string>
+    <string name="counter">Нажатий — %1$d</string>
+    <string name="tap_button">Проверить касание</string>
+    <string name="switch_side">Поменять стороны</string>
+    <string name="hide_note">Скрыть заметку</string>
+    <string name="show_note">Показать заметку</string>
+    <string name="apps_title">Мои приложения</string>
+    <string name="app_picker">Открыть приложение</string>
+    <string name="close_picker">Скрыть приложения</string>
+    <string name="stock_catalog">Каталог HeadSwap</string>
+    <string name="status_ready">HeadSwap принимает запросы приложений.</string>
+    <string name="status_missing">Чтобы открывать приложения, выберите эту панель в профиле HeadSwap.</string>
+    <string name="status_rejected">HeadSwap отклонил запрос. Проверьте сеанс и выбранное приложение.</string>
+    <string name="status_expired">Сеанс завершён. Откройте панель заново из HeadSwap.</string>
+    <string name="status_accepted">Запрос принят</string>
+    <string name="no_apps">Доступные ярлыки отсутствуют.</string>
+    <string name="voice_scope">Микрофон и голосовой канал этой панели пока недоступны.</string>
+    <string name="voice_reserved">Хост объявил голосовую возможность. Демо-панель не использует звук.</string>
+    <string name="note">Заметка</string>
+    <string name="note_text">Панель занимает 30% ширины окна. Оставшуюся область приложение использует для основного содержимого.</string>
+</resources>

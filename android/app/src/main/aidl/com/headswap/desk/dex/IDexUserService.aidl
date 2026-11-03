@@ -37,6 +37,8 @@ interface IDexUserService {
     int createFullscreenChildDisplay(in Surface surface, IBinder childToken, int width, int height, int density) = 19;
     /** Protocol 13: bounded foreground manoeuvre from a live owned Shizuku display. */
     @nullable String[] readShizukuGuidance(int displayId) = 21;
+    /** Protocol 14: track the host Activity's own launch in an Android Desktop child, without granting shell launch privileges. */
+    void trackDesktopChildLaunch(IBinder childToken, String packageName) = 22;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }

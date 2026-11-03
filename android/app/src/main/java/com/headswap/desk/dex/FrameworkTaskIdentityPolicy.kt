@@ -8,6 +8,7 @@ internal object FrameworkTaskIdentityPolicy {
     private val prefix = Regex(
         "\\ATaskInfo\\{userId=(0|[1-9][0-9]{0,9}) " +
             "taskId=(0|[1-9][0-9]{0,9}) " +
+            "(?:effectiveUid=(?:-1|0|[1-9][0-9]{0,9}) )?" + // API 37 framework identity prefix.
             "displayId=(0|[1-9][0-9]{0,9}) isRunning=(?:true|false)(?: |\\})"
     )
 

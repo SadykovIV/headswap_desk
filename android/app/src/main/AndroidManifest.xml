@@ -25,6 +25,10 @@
     <!-- без queries на API 30+ пакет Android Auto не виден (проверка установки, запуск настроек) -->
     <queries>
         <intent>
+            <action android:name="com.headswap.desk.action.DESKTOP_COMPONENT" />
+            <category android:name="android.intent.category.DEFAULT" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/vnd.android.package-archive" />
         </intent>

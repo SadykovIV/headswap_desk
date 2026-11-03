@@ -1,21 +1,22 @@
 # RFC. Независимые компоненты рабочего стола HeadSwap Desktop
 
-**Статус на 3 ноября 2026 года — предложение для следующего выпуска.** Имена действий, метаданные и интерфейсы ниже описывают проект контракта. В стабильной версии **0.4.1** распознавания таких модулей нет.
+**Статус на 3 ноября 2026 года — контракт локальной тестовой ветки HeadSwap Desktop 0.5.0.** В стабильной версии **0.4.1** распознавания таких модулей нет. Цель 0.5.0 — управляемое окно внутри Android Desktop. `API_MAJOR=1` обозначает версию контракта. У адаптера CarBridge собственные `versionName` и `versionCode`. Публикация реестра и декларативные карточки относятся к будущим этапам.
 
 ## Граница версии 0.4.1
 
-Автор уже может выпустить APK под своим именем пакета и своим ключом. Если у него есть включённая экспортируемая Activity с `MAIN` и `LAUNCHER`, пользователь устанавливает APK обычным способом и открывает его из списка Android Desktop. HeadSwap запускает приложение в окне ГУ. Это практический способ проверить интерфейс на магнитоле до разработки интеграции. [Выбор приложений](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/DesktopAppCatalog.kt#L16-L30) · [Проверка и запуск Activity](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/DesktopAppPane.kt#L130-L150)
+Автор может выпустить APK под собственным пакетом и ключом. Включённая экспортируемая Activity с `MAIN` и `LAUNCHER` появится в каталоге Android Desktop после установки на телефон. Так можно проверить интерфейс на ГУ до подключения профиля. [Выбор приложений](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/DesktopAppCatalog.kt#L16-L30) · [Запуск Activity](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/DesktopAppPane.kt#L130-L150)
 
-Сегодня HeadSwap выбирает между тремя зафиксированными профилями. В разделе компонентов основной APK обновляется отдельно, а каталог дополнительных APK содержит DriveDeck. Установщик проверяет пакет и подпись HeadSwap даже при выборе файла вручную. Закрытый сервис вложенных окон при каждом вызове сверяет UID именно адаптированного DriveDeck и подпись вызывающего. Для независимых издателей нужен отдельный путь подключения. [Профили](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/dex/DesktopModePolicy.kt#L4-L60) · [Каталог](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/update/ComponentCatalog.kt#L6-L41) · [Проверка APK](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/update/ComponentPackages.kt#L47-L92) · [Авторизация сервиса](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/embed/EmbeddedDisplayService.kt#L12-L32)
+В 0.4.1 три встроенных профиля. Основной APK обновляется отдельно, каталог дополнительных APK содержит DriveDeck. Даже для локального файла установщик проверяет пакет и подпись HeadSwap. Закрытый сервис окон сверяет UID DriveDeck и подпись вызывающего при каждом вызове. [Профили](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/dex/DesktopModePolicy.kt#L4-L60) · [Каталог](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/update/ComponentCatalog.kt#L6-L41) · [Проверка APK](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/update/ComponentPackages.kt#L47-L92) · [Авторизация сервиса](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/embed/EmbeddedDisplayService.kt#L12-L32)
 
-## Этап 1. Независимая оболочка с одной Activity
+## Этап 1. Минимальный хост в проекте 0.5.0
 
-HeadSwap создаёт проекционный дисплей, обслуживает CarLife и решает, когда запускать оболочку. Автор рисует собственный рабочий стол в обычной Activity. Её конфигурация задаёт размеры окна и DPI. Для прототипа достаточно собрать изменяемый по размеру экран без второго USB-сеанса, самостоятельного захвата дисплея и установки в качестве системного `HOME` телефона.
+**CarBridge — отдельный профиль в главном списке рядом с Android Desktop, DriveDeck и Samsung DeX.** Другие установленные адаптеры также появляются там как самостоятельные варианты. У CarBridge и сторонних профилей один внутренний движок — Android Desktop от HeadSwap. Его `AndroidDesktopActivity` владеет родительским дисплеем, компоновкой, боковой панелью, кнопками «Назад», «Домой» и каталогом. Адаптер CarBridge рисует свою стартовую страницу в **дочернем окне**. Хост задаёт геометрию, DPI и жизненный цикл окна. CarLife и системный `HOME` телефона остаются под прежним управлением. DriveDeck и Samsung DeX используют свои штатные точки входа. [Корень и навигация Android Desktop](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/AndroidDesktopActivity.kt#L144-L173) · [Точки входа движков](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/dex/DesktopModePolicy.kt#L40-L60)
 
 Автор объявляет точку входа в манифесте своего APK.
 
 ```xml
 <activity android:name=".HeadUnitDesktopActivity"
+    android:label="CarBridge"
     android:exported="true" android:resizeableActivity="true">
     <intent-filter>
         <action android:name="com.headswap.desk.action.DESKTOP_COMPONENT" />
@@ -23,38 +24,46 @@ HeadSwap создаёт проекционный дисплей, обслужи�
     </intent-filter>
     <meta-data android:name="com.headswap.desk.component.API_MAJOR"
         android:value="1" />
+    <meta-data android:name="com.headswap.desk.component.PROFILE"
+        android:value="android-desktop" />
+    <meta-data android:name="com.headswap.desk.component.MODE_ID"
+        android:value="carbridge" />
 </activity>
 ```
 
-Метаданные размещаются на Activity. Для запуска как обычного приложения в 0.4.1 автор может добавить отдельный фильтр `MAIN`/`LAUNCHER`. Экспортируемую точку входа способен вызвать любой процесс. Оболочка должна безопасно обработать запуск без сеанса и не доверять входящим extras с идентификаторами дисплеев или команд. Сам intent-фильтр никаких привилегий не выдаёт.
+Метаданные размещаются на Activity. `PROFILE=android-desktop` указывает поддерживаемый движок. `MODE_ID=carbridge` связывает запись с профилем CarBridge в главном списке. Для другого модуля `MODE_ID` необязателен. Функции и выпуск APK остаются ответственностью автора. Экспортируемую Activity может вызвать любой процесс. Она должна безопасно обработать автономный запуск и не доверять входящим extras с идентификаторами дисплеев. Вход `MAIN`/`LAUNCHER` позволяет запускать APK как обычное приложение в 0.4.1.
 
 **Порядок работы хоста**
 
-1. HeadSwap добавляет в `<queries>` запрос по `DESKTOP_COMPONENT`. В текущем Android-пользователе хост ищет Activity по этому действию и `DEFAULT`. Проверяет `enabled`, `exported`, целочисленный `API_MAJOR=1`, доступность Activity для хоста и соответствие реестру издателей. Идентификатор записи — пара из пакета и полного имени Activity. [Видимость пакетов Android](https://developer.android.com/training/package-visibility/declaring)
-2. В «Компонентах» пользователь открывает карточку установленной оболочки, видит издателя и версию, затем выбирает «Использовать для Android Desktop». Выбор сохраняется для текущего Android-пользователя. Несколько обнаруженных оболочек могут быть установлены одновременно. Смену активной оболочки хост применяет при следующем подключении.
-3. Перед запуском хост повторно проверяет Activity, подписанта и живую сессию. Он самостоятельно получает принадлежащий этой сессии положительный ID внешнего дисплея и запускает явный `ComponentName` на нём. Если дисплей исчез, цель перестала быть доступной либо Activity оказалась на телефоне, попытка считается неудачной. На действующем внешнем дисплее хост возвращает встроенный Android Desktop. После падения нет бесконечных попыток перезапуска. [Правила Android для запуска на нескольких дисплеях](https://source.android.com/docs/core/display/multi_display/activity-launch)
+1. Хост объявляет `<queries>` для `DESKTOP_COMPONENT` и `DEFAULT`. Для текущего Android-пользователя проверяются `enabled`, `exported`, доступность Activity хосту, `API_MAJOR=1`, `PROFILE=android-desktop`, пакет и полное имя Activity. Общий UID, неизвестный профиль или некорректный `MODE_ID` исключают кандидата. [Видимость пакетов Android](https://developer.android.com/training/package-visibility/declaring)
+2. Автор передаёт пользователю APK и отдельно публичный отпечаток сертификата. После установки пользователь открывает **главный выбор профиля**, нажимает CarBridge или профиль другого автора и перед подтверждением сверяет пакет и отпечатки. Для CarBridge без установленного адаптера выбор недоступен. Одноимённые кандидаты показываются отдельно. Хост запоминает полный `ComponentName`, серийный номер Android-пользователя и набор SHA-256 текущих подписантов. Выбор можно сбросить. Новый сертификат требует нового подтверждения. [SigningInfo](https://developer.android.com/reference/android/content/pm/SigningInfo)
+3. Корень создаёт окно через `DesktopAppPane` / `EmbeddedSessionRegistry`, проверяет профиль, поколение сеанса, подписанта, разрешения и принадлежность дисплея. Цель — явный `ComponentName`, дисплей — дочерний ID, отличный от нуля и родительского. Модуль не получает ID родителя. При падении модуля хост освобождает его слот и показывает каталог. «Домой» ведёт туда же, «Назад» действует внутри активного окна. [Путь запуска 0.4.1](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/desktop/DesktopAppPane.kt#L130-L150) · [Правила запуска Android](https://source.android.com/docs/core/display/multi_display/activity-launch)
 
-Для проверки реализации discovery на тестовом телефоне разработчик может перечислить Activity, объявившие фильтр.
+Проверить регистрацию Activity на тестовом телефоне можно командой
 
 ```sh
 adb -s "$SERIAL" shell cmd package query-activities --brief --user current \
   -a com.headswap.desk.action.DESKTOP_COMPONENT -c android.intent.category.DEFAULT
 ```
 
-Это проверяет манифест провайдера. Положительный результат сам по себе не активирует компонент в HeadSwap 0.4.1. В будущей реализации хост должен использовать `ActivityManager.isActivityStartAllowedOnDisplay` там, где доступна проверка, передать `ActivityOptions.setLaunchDisplayId` и проверить итоговое размещение задачи. Если Android повторно использовал телефонную задачу, хост фиксирует отказ и оставляет телефонное приложение под управлением пользователя. Для штатного входа профиля желательно выделить отдельную Activity с собственной task affinity и обычным режимом запуска. [ActivityOptions](https://developer.android.com/reference/android/app/ActivityOptions#setLaunchDisplayId(int))
+Команда проверяет фильтр манифеста. Для точки входа допустимы `standard` или `singleTop` с `documentLaunchMode="none"` и `allowTaskReparenting="false"`. Подойдут значения по умолчанию. Так адаптер может открыть отдельную задачу, даже если его приложение запущено на телефоне. Хост задаёт дочерний дисплей через `ActivityOptions.setLaunchDisplayId` либо эквивалент backend и сверяет фактическое размещение. Если экран не совпал, хост оставляет каталог доступным, не перемещая и не закрывая телефонную задачу. [ActivityOptions](https://developer.android.com/reference/android/app/ActivityOptions#setLaunchDisplayId(int))
 
-## Как доставлять и обновлять компоненты
+**Запуск приложения из панели.** Хост вкладывает в Intent выбранной панели `Bundle` под ключом `com.headswap.desk.extra.DESKTOP_SESSION` с временным Binder `session`. По нажатию ярлыка панель вызывает `IDesktopPanelSession.requestLaunch(packageName, activityName)` с пакетом и полным именем класса. Хост сверяет UID выбранного издателя, доверие, активное окно и доступность публичной `MAIN`/`LAUNCHER` Activity. Ответ `true` означает принятие запроса к обработке. Произвольные Intent, ввод и идентификаторы дисплеев этот API не принимает. При смене панели прежний Binder отзывается. Автономный запуск Activity также обходится без Binder. [Публичный SDK панели](../sdk/desktop-panel-v1/README.md)
 
-Для первого выпуска предлагаем реестр, проверяемый сопровождающими HeadSwap. Автор подаёт пакет, полное имя Activity, публичный отпечаток SHA-256 сертификата подписи APK, диапазон версий API, адрес исходного выпуска, лицензию и способ поддержки. Для каждой сборки реестр фиксирует `versionCode`, минимальный Android, URL, размер и SHA-256 файла. Закрытый ключ остаётся у издателя. Подписанный индекс проверяется встроенным в хост публичным ключом, скачанный APK — по размеру, хешу и сведениям Package Manager. Отпечаток сертификата подтверждает издателя, хеш файла относится только к конкретной сборке.
+## Будущий каталог и доставка обновлений
+
+В локальном тесте 0.5.0 участвуют только уже установленные APK. Для распространения компонентов позже предлагаем подписанный реестр. Автор подаёт пакет, имя Activity, публичный отпечаток сертификата, совместимость, адрес выпуска, лицензию и контакт поддержки. Для каждой сборки реестр фиксирует `versionCode`, минимальный Android, URL, размер и SHA-256 файла. Хост проверяет подпись индекса встроенным публичным ключом, затем сравнивает скачанный APK с записью реестра. Закрытый ключ остаётся у издателя.
 
 Загрузка завершается передачей проверенного файла системному установщику с подтверждением пользователя. Уже установленный APK можно обнаружить и без загрузки. Неизвестная подпись, понижение версии, несовместимый API, несовпадение имени или отзыв издателя оставляют компонент неактивным. Для ротации одиночного ключа нужна новая одобренная запись и подтверждённая Android цепочка подписей от ранее закреплённого сертификата. Для APK с несколькими текущими подписантами проверяется весь набор. При замене или удалении пакета хост отзывает активные разрешения сеанса и заново проверяет запись. [Сведения Android о подписантах и ротации](https://developer.android.com/reference/android/content/pm/SigningInfo)
 
-Минимальная запись реестра для обсуждения показана ниже. Значения в угловых скобках заполняются при выпуске провайдера. Это пример формата для реализации хоста.
+Пример записи будущего реестра для адаптера CarBridge.
 
 ```json
 {
   "schemaVersion": 1,
   "kind": "desktop-ui",
+  "profile": "android-desktop",
+  "modeId": "carbridge",
   "packageName": "com.example.carbridge.headswap",
   "activity": "com.example.carbridge.headswap.HeadUnitDesktopActivity",
   "apiMajor": 1,
@@ -70,17 +79,22 @@ adb -s "$SERIAL" shell cmd package query-activities --brief --user current \
 }
 ```
 
-## Этап 2. Окна приложений и карточка музыки
+## Этап 2. Действия и карточки на рабочем столе хоста
 
-Для оболочки с несколькими приложениями предлагаем декларативную раскладку. Модуль передаёт размеры областей и запрос открытия выбранного пользователем приложения. Хост проверяет цель, выделяет поверхности, размещает приложения и обрабатывает ввод. Цель должна быть доступна самому модулю, включая разрешение на запуск. Идентификатор операции действителен только для UID издателя, Android-пользователя и поколения проекции. Завершение сессии, смерть Binder или замена пакета аннулируют его. Лимит окон, бюджет пикселей и подтверждённое освобождение поверхностей сохраняются. [Ограничения геометрии](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/dex/EmbeddedDisplayPolicy.kt#L5-L48) · [Владение окнами](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/embed/EmbeddedSessionRegistry.kt#L116-L154)
+Раскладка и карточки требуют отдельной реализации SDK после приёмки минимального хоста 0.5.0.
+
+Для кнопки «Открыть навигацию» модуль предлагает текст, действие и цель. HeadSwap размещает кнопку, ждёт нажатия, проверяет доступность цели самому модулю и запускает её в своём слоте. Компоновка и ввод принадлежат хосту. Разрешение ограничено UID издателя, Android-пользователем, профилем и поколением сеанса. Отключение ГУ, смена профиля, смерть Binder или замена APK отзывают его. Сохраняются лимит окон, бюджет пикселей и подтверждённое освобождение поверхностей. [Ограничения геометрии](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/dex/EmbeddedDisplayPolicy.kt#L5-L48) · [Владение окнами](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/java/com/headswap/desk/embed/EmbeddedSessionRegistry.kt#L116-L154)
 
 Карточка музыки запрашивает отдельную возможность в интерфейсе HeadSwap. После разрешения пользователя хост предоставляет название, исполнителя и состояние воспроизведения только на время сеанса. Глобальный доступ к уведомлениям, USB-дескриптор, shell и произвольную инъекцию ввода модуль не получает. Новый контракт версионируется независимо от закрытого AIDL DriveDeck. [Действующий интерфейс DriveDeck](https://github.com/SadykovIV/headswap_desk/blob/v0.4.1/android/app/src/main/aidl/com/headswap/desk/embed/IEmbeddedDisplayGateway.aidl#L5-L27)
 
-## Условия приёмки SDK
+Для микрофона и голосового канала SDK отдельно резервирует `CAP_MICROPHONE_INPUT` и `CAP_VOICE_CHANNEL`. В 0.5.0 оба недоступны. Сначала предстоит согласовать разрешение пользователя, источник, направление потока, аудиофокус и отзыв при блокировке или отключении. [Резерв возможностей](../sdk/desktop-panel-v1/BUILDING.md#резерв-для-микрофона-и-голосового-канала)
 
-- Два отдельно подписанных тестовых APK обнаруживаются и выбираются по отдельности. Обновление проверенного издателя сохраняет выбор. Подмена подписи, несовместимая версия и отключённая Activity дают понятную причину отказа.
+## Условия приёмки по этапам
+
+- **База 0.5.0.** Два APK с одинаковым `MODE_ID=carbridge` и разными ключами доступны для индивидуального выбора. Обновление с прежними сертификатами сохраняет выбор. Сброс доверия, изменённая подпись, несовместимый API и отключённая Activity не могут запустить выбранную панель.
+- CarBridge выбирается непосредственно в главном списке профилей. При его запуске поднимается штатный корень Android Desktop, затем интерфейс CarBridge в дочерней области. Выбор обычного Android Desktop, DriveDeck или Samsung DeX не запускает адаптер. Проверяются тёплая Activity на телефоне и исчезновение дочернего окна во время запуска.
 - Сессия переживает поворот, изменение DPI ГУ, смерть оболочки, удаление пакета и повторный USB-сеанс. Дисплей телефона сохраняет прежний масштаб и системный `HOME`.
-- Тестовый модуль не может использовать чужой идентификатор окна или устаревший Binder, запускать защищённую Activity через полномочия хоста либо читать музыку после отзыва разрешения.
+- **Дополнительный SDK, когда реализован.** Тестовый модуль не может использовать чужой идентификатор окна или устаревший Binder, запускать защищённую Activity через полномочия хоста либо читать музыку после отзыва разрешения.
 - Диагностика показывает пакет, версию API, этап и причину перехода на встроенный рабочий стол. Музыка, маршрут и содержимое окон в экспортируемый отчёт не попадают.
 
 [Работающий пример для 0.4.1](../examples/component-activity/README.md) · [Пилот CarBridge](CARBRIDGE-PILOT.md)
