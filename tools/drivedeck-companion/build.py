@@ -48,14 +48,14 @@ with zipfile.ZipFile(unsigned,'a',compression=zipfile.ZIP_DEFLATED) as z:
     z.write(dex/'classes.dex','classes2.dex')
 aligned=work/'DriveDeck-HeadSwap-0.6.8-aligned.apk'
 run(bt/'zipalign','-f','-p','4',unsigned,aligned)
-final=work/'DriveDeck-HeadSwap-0.6.8-code303.apk'
+final=work/'DriveDeck-HeadSwap-0.6.8-code304.apk'
 run(java,'-jar',bt/'lib/apksigner.jar','sign','--ks',a.keystore,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',final,aligned)
 run(java,'-jar',bt/'lib/apksigner.jar','verify','--verbose','--print-certs',final)
 run(bt/'zipalign','-c','-p','4',final)
 badging=subprocess.check_output([str(bt/'aapt'),'dump','badging',str(final)],text=True)
 (work/'adapted-badging.txt').write_text(badging)
 assert "package: name='ru.drivedeck.headswap'" in badging
-assert "versionCode='303'" in badging
+assert "versionCode='304'" in badging
 manifest=subprocess.check_output([str(bt/'aapt'),'dump','xmltree',str(final),'AndroidManifest.xml'],text=True)
 (work/'adapted-manifest.txt').write_text(manifest)
 for forbidden in ['sharedUserId','android.intent.category.HOME','android.intent.action.BOOT_COMPLETED','VoiceBootReceiver','DiagnosticUploadJob','LauncherAccessibilityService']:

@@ -13,6 +13,10 @@ object EmbeddedGatewayPolicy {
     private val packagePattern = Regex("[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z][A-Za-z0-9_]*)+")
     private val classPattern = Regex("[A-Za-z_$][A-Za-z0-9_$]*(\\.[A-Za-z_$][A-Za-z0-9_$]*)+")
 
+    /** Activity export/permission checks still apply; only the two desktop hosts cannot embed themselves. */
+    fun allowsLauncherPackage(targetPackage: String, headSwapPackage: String): Boolean =
+        targetPackage != headSwapPackage && targetPackage != DesktopModePolicy.DRIVEDECK_PACKAGE
+
     fun requireParent(mode: Int, requestedParentDisplayId: Int, ownedParentDisplayId: Int, ownDesktop: Boolean = false) {
         val requiredMode = if (ownDesktop) DesktopModePolicy.ANDROID_DESKTOP else DesktopModePolicy.DRIVEDECK
         require(mode == requiredMode) { "Parent does not belong to this desktop profile" }

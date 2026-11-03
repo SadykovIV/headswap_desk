@@ -354,10 +354,10 @@ update_files, update_policy = disable_stock_app_updates(root)
 changes.extend(update_files)
 # Manifest: no system UID, HOME, launcher icon/aliases, boot entry or global overlays.
 ET.register_namespace('android','http://schemas.android.com/apk/res/android');a='{http://schemas.android.com/apk/res/android}'
-p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','303')
+p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','304')
 # Apktool's versionInfo overrides manifest attributes during rebuild.
 yml=root/'apktool.yml'
-yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 303', yml.read_text());assert n==1
+yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 304', yml.read_text());assert n==1
 yml.write_text(yml_text);changes.append('apktool.yml')
 for key in ['sharedUserId','sharedUserLabel','sharedUserMaxSdkVersion']:m.attrib.pop(a+key,None)
 remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED','TETHER_PRIVILEGED','WRITE_SETTINGS','MANAGE_APP_OPS_MODES'}

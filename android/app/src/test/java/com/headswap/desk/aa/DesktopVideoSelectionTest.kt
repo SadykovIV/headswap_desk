@@ -61,7 +61,7 @@ class DesktopVideoSelectionTest {
         assertFalse(DesktopGeometryPolicy.accepts(1023, 768))
         assertFalse(DesktopGeometryPolicy.accepts(800, 902))
         assertFalse(DesktopGeometryPolicy.accepts(480, 640))
-        assertEquals(DesktopResolution.R1600_900, DesktopResolution.restore(null))
-        assertEquals(DesktopResolution.R1600_900, DesktopResolution.restore("corrupt"))
+        assertEquals(DesktopResolution.R1280_720, DesktopResolution.restore(null))
+        assertEquals(DesktopResolution.R1280_720, DesktopResolution.restore("corrupt"))
     }
 }

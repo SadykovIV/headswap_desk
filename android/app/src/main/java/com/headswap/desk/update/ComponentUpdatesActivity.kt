@@ -14,6 +14,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.FileProvider
 import com.headswap.desk.CarLifeState
+import com.headswap.desk.dex.DesktopSetupViews
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.DexPrefs
 import java.io.File
@@ -37,33 +38,36 @@ class ComponentUpdatesActivity : Activity() {
         super.onCreate(state)
         spec = DesktopComponent.entries.firstOrNull { it.pkg == state?.getString("component") } ?: spec
         pending = ComponentPackages.restore(this, state?.getString("pending"))
-        val dp = resources.displayMetrics.density
-        val pad = (20 * dp).toInt()
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
+        val ui = DesktopSetupViews(this)
+        val pad = ui.dp(16)
+        val root = ui.column().apply { setPadding(pad, pad, pad, pad) }
         setContentView(ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(ui.background)
             setOnApplyWindowInsetsListener { _, insets ->
                 val bars = insets.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.displayCutout())
                 setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
             }
             addView(root)
         })
-        fun label(value: String, sp: Float) = TextView(this).also {
-            it.text = value; it.textSize = sp; it.setPadding(0, pad / 2, 0, pad / 2); root.addView(it)
+        val header = LinearLayout(this).apply {
+            gravity = android.view.Gravity.CENTER_VERTICAL
+            root.addView(this, LinearLayout.LayoutParams(-1, -2))
         }
-        fun button(value: String, click: () -> Unit) = Button(this).also {
-            it.text = value; it.isAllCaps = false; it.setOnClickListener { click() }; root.addView(it)
-        }
-        label("Компоненты", 26f)
-        val componentTitle = label(spec.title, 20f)
+        ui.button(header, "Назад") { finish() }.layoutParams = LinearLayout.LayoutParams(-2, -2)
+        ui.text(header, "Компоненты HeadSwap Desktop", 22f, true).apply { setPadding(ui.dp(12), 0, 0, 0) }
+        val card = ui.section(root)
+        fun button(value: String, click: () -> Unit) = ui.button(card, value, click)
+        val componentTitle = ui.text(card, spec.title, 18f, true)
         if (DesktopComponent.entries.size > 1) button("Выбрать компонент") {
-            if (!busy) AlertDialog.Builder(this).setTitle("Компоненты")
+            if (!busy) AlertDialog.Builder(this).setTitle("Компоненты HeadSwap Desktop")
                 .setItems(DesktopComponent.entries.map { it.title }.toTypedArray()) { _, index ->
                     spec = DesktopComponent.entries[index]
                     componentTitle.text = spec.title
                     pending = null; available = null; status.text = ""; refresh()
                 }.show()
         }
-        version = label("", 16f)
+        version = ui.text(card, "", 15f)
         check = button("Проверить обновления") { query() }
         remote = button("") {
             val a = available ?: return@button
@@ -74,8 +78,7 @@ class ComponentUpdatesActivity : Activity() {
                 .setType(APK_TYPE), PICK)
         }
         install = button("Продолжить установку") { installPrepared() }
-        status = label(state?.getString("status") ?: "Проверяются только выпуски HeadSwap. Установка — с подтверждением Android.", 15f)
-        button("Готово") { finish() }
+        status = ui.text(card, state?.getString("status") ?: "Проверяются только выпуски HeadSwap. Установка — с подтверждением Android.", 15f)
         refresh()
     }
 

@@ -4,25 +4,25 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class DesktopAccessModeTest {
-    @Test fun newInstallationOffersHeadSwapActivationWithoutShizuku() {
-        assertEquals(DesktopAccessMode.COMPUTER, DesktopAccessMode.restore(null, null))
+    @Test fun androidDesktopsUseHeadSwapOrShizuku() {
+        val allowed = listOf(DesktopAccessMode.COMPUTER, DesktopAccessMode.SHIZUKU)
+        for (profile in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK)) {
+            assertEquals(allowed, DesktopAccessMode.optionsFor(profile))
+            assertEquals(DesktopAccessMode.COMPUTER, DesktopAccessMode.restore(profile, null, null))
+            for (name in listOf("LEGACY_ADB", "UNSUPPORTED", "")) {
+                assertEquals(DesktopAccessMode.COMPUTER, DesktopAccessMode.restore(profile, name, true))
+            }
+            for (mode in allowed) assertEquals(mode, DesktopAccessMode.restore(profile, mode.name, false))
+        }
     }
-    @Test fun explicitChoicesWithoutALegacyFlagArePreserved() {
-        DesktopAccessMode.entries.forEach { mode -> assertEquals(mode, DesktopAccessMode.restore(mode.name, null)) }
-        // A damaged existing choice is not treated as a new installation.
-        assertEquals(DesktopAccessMode.SHIZUKU, DesktopAccessMode.restore("UNSUPPORTED", null))
-    }
-    @Test fun upgradingShizukuInstallationKeepsItsBackend() {
-        assertEquals(DesktopAccessMode.SHIZUKU, DesktopAccessMode.restore(null, true))
-    }
-    @Test fun upgradingPairedLegacyInstallationDoesNotActivateComputerAccess() {
-        assertEquals(DesktopAccessMode.LEGACY_ADB, DesktopAccessMode.restore(null, false))
-    }
-    @Test fun explicitComputerSelectionSurvivesOldPreferenceValue() {
-        assertEquals(DesktopAccessMode.COMPUTER, DesktopAccessMode.restore("COMPUTER", false))
-    }
-    @Test fun unknownSelectionFallsBackToPreviouslySelectedBackend() {
-        assertEquals(DesktopAccessMode.LEGACY_ADB, DesktopAccessMode.restore("UNSUPPORTED", false))
-        assertEquals(DesktopAccessMode.SHIZUKU, DesktopAccessMode.restore("", true))
+
+    @Test fun samsungDexUsesShizukuOrLegacyAdb() {
+        val profile = DesktopModePolicy.SAMSUNG_DEX
+        val allowed = listOf(DesktopAccessMode.SHIZUKU, DesktopAccessMode.LEGACY_ADB)
+        assertEquals(allowed, DesktopAccessMode.optionsFor(profile))
+        for (name in listOf(null, "COMPUTER", "UNSUPPORTED", "")) {
+            assertEquals(DesktopAccessMode.SHIZUKU, DesktopAccessMode.restore(profile, name, null))
+        }
+        for (mode in allowed) assertEquals(mode, DesktopAccessMode.restore(profile, mode.name, false))
     }
 }

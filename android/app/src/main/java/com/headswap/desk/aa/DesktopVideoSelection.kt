@@ -30,9 +30,10 @@ enum class DesktopResolution(val title: String, val width: Int, val height: Int)
     R1024_768("1024 × 768", 1024, 768),
     R1280_720("1280 × 720", 1280, 720),
     R1600_900("1600 × 900", 1600, 900),
-    CUSTOM("Своё разрешение", 1600, 900);
+    CUSTOM("Своё разрешение", 1280, 720);
     companion object {
-        fun restore(value: String?): DesktopResolution = entries.firstOrNull { it.name == value } ?: R1600_900
+        val DEFAULT = R1280_720
+        fun restore(value: String?): DesktopResolution = entries.firstOrNull { it.name == value } ?: DEFAULT
     }
 }
 
@@ -53,7 +54,7 @@ data class NativeDesktopGeometry(override val outW: Int, override val outH: Int)
 
 /** Immutable preference snapshot; first INIT (or START fallback) locks one transport session. */
 class DesktopVideoSelection(val resolution: DesktopResolution, val densityOverride: Int,
-    val customWidth: Int = 1600, val customHeight: Int = 900) {
+    val customWidth: Int = DesktopResolution.DEFAULT.width, val customHeight: Int = DesktopResolution.DEFAULT.height) {
     init {
         if (densityOverride != 0) DesktopGeometryPolicy.requireDensity(densityOverride)
         if (resolution == DesktopResolution.CUSTOM) DesktopGeometryPolicy.requireDimensions(customWidth, customHeight)

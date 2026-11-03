@@ -1,10 +1,20 @@
 package com.headswap.desk.embed
 
 import com.headswap.desk.dex.DesktopModePolicy
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 
 class EmbeddedGatewayPolicyTest {
+    @Test fun settingsLauncherIsEligibleButNeitherDesktopCanEmbedItself() {
+        val host = "com.headswap.desk"
+        assertTrue(EmbeddedGatewayPolicy.allowsLauncherPackage("com.android.settings", host))
+        assertTrue(EmbeddedGatewayPolicy.allowsLauncherPackage("org.example.music", host))
+        assertFalse(EmbeddedGatewayPolicy.allowsLauncherPackage(host, host))
+        assertFalse(EmbeddedGatewayPolicy.allowsLauncherPackage(DesktopModePolicy.DRIVEDECK_PACKAGE, host))
+    }
+
     @Test fun onlyTheHostUidMayOpenFullscreenUnderDriveDeck() {
         EmbeddedGatewayPolicy.requireFullscreenCaller(DesktopModePolicy.DRIVEDECK, 10111, 10111)
         for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.SAMSUNG_DEX)) {

@@ -65,6 +65,9 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         try {
             check(Application.getProcessName() == context.packageName) { "Activation requires the main app process" }
             AppLog.init(context)
+            check(DexPrefs(context).desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
+                "Для доступа HeadSwap выберите профиль Android Desktop или DriveDeck"
+            }
             AppLog.i("ACTIVATION start: audio=$requestAudio screen=$requestScreen", false)
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_USE_ACCESSIBILITY or
                 UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))

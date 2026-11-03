@@ -8,6 +8,8 @@ import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.ApplicationInfo;
+import android.provider.Settings;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.os.Build;
@@ -75,6 +77,10 @@ public final class DisplayOnlyLaunch {
         catch (RuntimeException e) { failure(context, e); }
     }
     private static void open(Context context, Intent intent) {
+        if (intent != null && Settings.ACTION_SETTINGS.equals(intent.getAction())) {
+            openSystemSettings(context, intent);
+            return;
+        }
         Bundle currentDisplay = options(context, intent);
         Activity host = activity(context);
         int parent = displayId(context);
@@ -100,6 +106,39 @@ public final class DisplayOnlyLaunch {
             if (scheduled) return;
         }
         context.startActivity(intent, currentDisplay);
+    }
+    private static void openSystemSettings(Context context, Intent request) {
+        // Only the unqualified root shortcut in DriveDeck's own menu. No private settings screens,
+        // extras, flags or grants are copied into the new request.
+        if (request.getComponent() != null || request.getPackage() != null || request.getSelector() != null
+                || request.getData() != null || request.getType() != null || request.getClipData() != null
+                || request.getExtras() != null || request.getCategories() != null || request.getFlags() != 0) {
+            throw new SecurityException("Допускается только главный экран системных настроек");
+        }
+        if (!hasFullscreenHost(context)) throw new IllegalStateException("Для системных настроек нужен HeadSwap Desktop");
+        final String settings = "com.android.settings";
+        PackageManager pm = context.getPackageManager();
+        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(settings);
+        ActivityInfo entry = null;
+        Intent preferred = pm.getLaunchIntentForPackage(settings);
+        ComponentName first = preferred == null ? null : preferred.getComponent();
+        for (ResolveInfo match : pm.queryIntentActivities(launcher, 0)) {
+            ActivityInfo candidate = match.activityInfo;
+            if (candidate == null || !settings.equals(candidate.packageName) || !candidate.enabled || !candidate.exported
+                    || !candidate.applicationInfo.enabled || (candidate.applicationInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0
+                    || (candidate.permission != null && pm.checkPermission(candidate.permission, context.getPackageName()) != PackageManager.PERMISSION_GRANTED)) continue;
+            if (first != null && candidate.name.equals(first.getClassName())) { entry = candidate; break; }
+            if (entry == null) entry = candidate;
+        }
+        if (entry == null) throw new IllegalStateException("Не найден доступный системный ярлык «Настройки»");
+        // HeadSwap validates that this display is the active DriveDeck parent, even if its dock
+        // navigation buttons are off. It will never fall back to the phone display.
+        SharedPreferences prefs = context.getSharedPreferences("drive_deck", Context.MODE_PRIVATE);
+        Intent host = new Intent().setComponent(FULLSCREEN_HOST)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra("component", new ComponentName(settings, entry.name).flattenToString())
+                .putExtra("back", prefs.getBoolean(BACK, false)).putExtra("home", prefs.getBoolean(HOME, false));
+        context.startActivity(host, options(context, host));
     }
     private static boolean isLauncherRequest(Context context, Intent intent, ComponentName target) {
         if (!Intent.ACTION_MAIN.equals(intent.getAction()) || !intent.hasCategory(Intent.CATEGORY_LAUNCHER)

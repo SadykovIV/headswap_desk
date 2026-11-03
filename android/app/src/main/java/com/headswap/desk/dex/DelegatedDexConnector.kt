@@ -148,7 +148,6 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
             val remote = checkNotNull(service) { "Служба рабочего стола недоступна" }
             val prefs = DexPrefs(context)
             val density = input.density
-            val compactMapSymbols = prefs.compactMapSymbols
             desktopMode = prefs.desktopMode
             check(desktopMode != DesktopModePolicy.SAMSUNG_DEX) { "Для доступа с компьютера выберите Android или DriveDeck" }
             check(DelegatedDesktopAccess.isReady(context)) { "Активируйте доступ с компьютера" }
@@ -183,7 +182,7 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
                 check(!stopping.get() && retiringGeneration != generation) { "Сеанс завершён" }
                 DexState.displayId = id
                 if (desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
-                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols)
+                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density)
                 }
             }
             status("Рабочий стол ${input.width}×${input.height} готов, ожидаю видео…")

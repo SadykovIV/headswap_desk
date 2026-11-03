@@ -41,8 +41,7 @@ class EmbeddedDisplayService : Service() {
         }
 
         override fun launch(handle: Int, packageName: String): Boolean = authorized { uid ->
-            require(packageName !in setOf(this@EmbeddedDisplayService.packageName,
-                DesktopModePolicy.DRIVEDECK_PACKAGE, "com.android.settings")) { "Приложение нельзя встроить" }
+            require(EmbeddedGatewayPolicy.allowsLauncherPackage(packageName, this@EmbeddedDisplayService.packageName)) { "Приложение нельзя встроить" }
             val launcher = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(packageName)
             val candidates = packageManager.queryIntentActivities(launcher, 0)
                 .map { it.activityInfo }.filter { it.packageName == packageName && it.exported && it.enabled && it.applicationInfo.enabled }

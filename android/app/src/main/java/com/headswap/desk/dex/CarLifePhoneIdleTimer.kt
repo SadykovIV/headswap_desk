@@ -77,23 +77,30 @@ internal class CarLifePhoneIdleTimer(
         val now = SystemClock.uptimeMillis()
         val selected = prefs.phoneIdleTimeout
         if (selected != selectedTimeout) {
-            // A choice made in the open session starts a full new interval.
-            disarm()
+            // Start a full interval without dropping the live session's guard.
+            generation++
+            if (armedAt != null) armedAt = now
+            clockFailures = 0
             selectedTimeout = selected
             timeout = selected.effectiveMs(systemTimeout)
             nextProbe = 0
         }
-        if (!eligible()) {
-            disarm()
-        } else if (DexState.phoneScreenOff || DexState.phoneScreenBusy) {
-            // The actual panel lease owns its wake lock. Restoring it starts a fresh idle interval.
-            armedAt = now
-            releaseGuard()
-            nextProbe = now + timeout
+        if (eligible()) {
+            // The request is asynchronous: "busy" can last several seconds before the
+            // panel lease acquires its own wake lock. Keep the unlocked USB session awake
+            // throughout the handoff, recovery and clock retries.
+            guard.acquire(5_000)
+            if (DexState.phoneScreenOff || DexState.phoneScreenBusy) {
+                armedAt = now
+                nextProbe = now + timeout
+            } else {
+                if (armedAt == null) { armedAt = now; nextProbe = now }
+                if (!reading && now >= nextProbe) probe()
+            }
         } else {
-            if (armedAt == null) { armedAt = now; nextProbe = now }
-            if (owned) guard.acquire(5_000)
-            if (!reading && now >= nextProbe) probe()
+            if (armedAt != null) AppLog.i("DESKTOP PANEL TIMER: disarmed; interactive=${power.isInteractive}, " +
+                "keyguard=${keyguard.isKeyguardLocked}, deviceLocked=${keyguard.isDeviceLocked}", false)
+            disarm()
         }
         main.postDelayed(tick, 750)
     }
@@ -115,7 +122,6 @@ internal class CarLifePhoneIdleTimer(
                     clockFailures = (clockFailures + 1).coerceAtMost(4)
                     if (clockOwner === this) clockOwner = null
                     owned = false
-                    releaseGuard()
                     return@post
                 }
                 clockFailures = 0

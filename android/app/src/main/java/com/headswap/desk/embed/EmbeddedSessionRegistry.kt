@@ -3,6 +3,7 @@ package com.headswap.desk.embed
 import android.os.IBinder
 import android.util.Log
 import android.view.Surface
+import com.headswap.desk.AppLog
 import com.headswap.desk.aa.DesktopGeometryPolicy
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
@@ -18,9 +19,10 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
-        val mode: Int, val density: Int, val compactMapSymbols: Boolean)
+        val mode: Int, val density: Int)
     private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean) {
         lateinit var death: IBinder.DeathRecipient
+        var displayId = -1
         @Volatile var linked = false
         @Volatile var packageName: String? = null
         var closing: CompletableFuture<Unit>? = null // Guarded by lock.
@@ -34,17 +36,18 @@ internal object EmbeddedSessionRegistry {
     }
 
     fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
-        density: Int, compactMapSymbols: Boolean) = synchronized(lock) {
+        density: Int) = synchronized(lock) {
         require(displayId > 0)
         DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
-        parent = Parent(owner, remote, displayId, calls, mode, density, compactMapSymbols)
+        parent = Parent(owner, remote, displayId, calls, mode, density)
     }
 
     fun renderConfig(parentId: Int, ownDesktop: Boolean): IntArray = synchronized(lock) {
         val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
         EmbeddedGatewayPolicy.requireParent(active.mode, parentId, active.displayId, ownDesktop)
-        intArrayOf(active.density, if (active.compactMapSymbols) 1 else 0)
+        // DriveDeck code303 expects two ints. Zero selects native buffer size and the exact desktop DPI.
+        intArrayOf(active.density, 0)
     }
 
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
@@ -87,9 +90,10 @@ internal object EmbeddedSessionRegistry {
             token.linkToDeath(lease.death, 0)
             lease.linked = true
             activeCall(lease) {
-                val id = if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, density)
-                else it.createChildDisplay(surface, token, width, height, density)
+                val id = if (fullscreen) it.createFullscreenChildDisplay(surface, token, width, height, lease.parent.density)
+                else it.createChildDisplay(surface, token, width, height, lease.parent.density)
                 check(id > 0 && id != requestedParent) { "Приложение не получило отдельный дисплей" }
+                lease.displayId = id
             }
             synchronized(lock) {
                 check(parent === lease.parent && leases[lease.handle] === lease && token.isBinderAlive) {
@@ -114,14 +118,21 @@ internal object EmbeddedSessionRegistry {
     fun resize(uid: Int, handle: Int, width: Int, height: Int, density: Int) {
         EmbeddedGatewayPolicy.requireGeometry(width, height, density)
         val lease = active(uid, handle)
-        activeCall(lease) { it.resizeChildDisplay(lease.token, width, height, density) }
+        activeCall(lease) { it.resizeChildDisplay(lease.token, width, height, lease.parent.density) }
     }
     fun launch(uid: Int, handle: Int, packageName: String, className: String) {
         EmbeddedGatewayPolicy.requireComponent(packageName, className)
         val lease = active(uid, handle)
         activeCall(lease) {
-            it.launchChildApp(lease.token, packageName, className)
-            lease.packageName = packageName
+            val settings = packageName == "com.android.settings"
+            try {
+                it.launchChildApp(lease.token, packageName, className)
+                lease.packageName = packageName
+                if (settings) AppLog.i("SYSTEM SETTINGS: launch accepted component=$className display=${lease.displayId}", false)
+            } catch (error: Exception) {
+                if (settings) AppLog.e("SYSTEM SETTINGS: launch failed component=$className display=${lease.displayId}", error)
+                throw error
+            }
         }
     }
     fun touch(uid: Int, handle: Int, action: Int, x: Float, y: Float) {

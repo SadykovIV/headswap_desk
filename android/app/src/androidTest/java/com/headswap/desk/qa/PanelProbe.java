@@ -34,6 +34,8 @@ final class PanelProbe {
                 throw new IllegalArgumentException("Start the emulator test with tools/qa/panel_probe.py");
             result.putString("backend", "shell");
             ShellPanelClient.INSTANCE.connect(panelToken);
+            CarLifeIdleGuardProbe.run(test, ui);
+            result.putBoolean("idleGuardHandoff", true);
             DisplayManager displays = context.getSystemService(DisplayManager.class);
             waitForState(ui, displays, Display.STATE_ON);
             PanelPlatform platform = new PanelPlatform(context);

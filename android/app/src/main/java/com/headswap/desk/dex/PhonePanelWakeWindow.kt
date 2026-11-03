@@ -115,6 +115,7 @@ class PhonePanelWakeActivity : Activity() {
     private var owner: PhonePanelWakeWindow? = null
     private var committed = false
     private var checkReady: Runnable? = null
+    private val presentation = if (Build.VERSION.SDK_INT >= 35) PhoneIdleTrustedWindow(this) { checkReady?.run() } else null
 
     private fun eligible(): Boolean {
         val lock = getSystemService(KeyguardManager::class.java)
@@ -159,16 +160,18 @@ class PhonePanelWakeActivity : Activity() {
         view.setBackgroundColor(Color.BLACK)
         view.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         setContentView(view)
-        // The trusted-presentation callback can count a window on the car display as an
-        // occluder of display 0. Verify the actual foreground task and focused window on
-        // the phone after its first committed frame. Never blank underneath a system dialog.
+        // After the first frame, accept local focus or a fully presented phone window
+        // with focus on our car display. A system dialog must still prevent blanking.
         checkReady = object : Runnable {
             override fun run() {
                 view.removeCallbacks(this)
                 if (!request.awaitingSurface(this@PhonePanelWakeActivity) || !committed) return
-                if (eligible() && hasWindowFocus() && view.isShown && view.isAttachedToWindow &&
+                if (!hasWindowFocus() && Build.VERSION.SDK_INT >= 35) presentation?.observe()
+                val ownsFocus = hasWindowFocus() || (Build.VERSION.SDK_INT >= 35 && presentation?.ownsRemoteFocus() == true)
+                if (eligible() && ownsFocus && view.isShown && view.isAttachedToWindow &&
                     view.windowVisibility == View.VISIBLE && !isInMultiWindowMode && !isInPictureInPictureMode &&
                     PhonePanelWakeWindow.topOnPhone(this@PhonePanelWakeActivity) == componentName) {
+                    if (Build.VERSION.SDK_INT >= 35) presentation?.close()
                     request.presented(this@PhonePanelWakeActivity)
                 } else {
                     view.postDelayed(this, 120)
@@ -208,6 +211,7 @@ class PhonePanelWakeActivity : Activity() {
     override fun onPause() { owner?.lost(this); super.onPause() }
     override fun onStop() { owner?.lost(this); super.onStop() }
     override fun onDestroy() {
+        if (Build.VERSION.SDK_INT >= 35) presentation?.close()
         checkReady = null
         owner?.lost(this)
         super.onDestroy()

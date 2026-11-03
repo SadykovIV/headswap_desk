@@ -21,8 +21,8 @@ import android.widget.TextView
 import android.widget.Toast
 import com.headswap.desk.R
 import com.headswap.desk.dex.DesktopModePolicy
+import com.headswap.desk.embed.EmbeddedGatewayPolicy
 import com.headswap.desk.embed.EmbeddedSessionRegistry
-import com.headswap.desk.shared.DesktopRenderPolicy
 import kotlin.math.roundToInt
 
 /** Signature-protected launcher for one full-screen DriveDeck app on its active HU display. */
@@ -86,9 +86,9 @@ class DriveDeckFullscreenActivity : Activity() {
     }
 
     private fun openTarget(intent: Intent) {
-        val policy = config() ?: run { finish(); return }
+        if (config() == null) { finish(); return }
         val component = ComponentName.unflattenFromString(intent.getStringExtra("component").orEmpty())
-        if (component == null || component.packageName in setOf(packageName, DesktopModePolicy.DRIVEDECK_PACKAGE, "com.android.settings")) {
+        if (component == null || !EmbeddedGatewayPolicy.allowsLauncherPackage(component.packageName, packageName)) {
             finish(); return
         }
         // Only accept exactly the exported MAIN+LAUNCHER component from DriveDeck's app picker.
@@ -102,8 +102,8 @@ class DriveDeckFullscreenActivity : Activity() {
         target = component
         val backEnabled = intent.getBooleanExtra("back", false)
         val homeEnabled = intent.getBooleanExtra("home", false)
-        if (!backEnabled && !homeEnabled && (!DesktopRenderPolicy.isMap(component.packageName) || policy[1] == 0)) {
-            // With no extra controls or map correction, let Android launch the app natively.
+        if (!backEnabled && !homeEnabled) {
+            // The native parent display already uses the selected desktop DPI.
             if (!tryNativeLaunch()) goHome()
             return
         }

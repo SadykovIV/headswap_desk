@@ -28,14 +28,27 @@ class DexPrefs(context: Context) {
     var usbPlaybackAudio: Boolean
         get() = prefs.getBoolean("desktop_usb_playback_audio", true)
         set(value) { prefs.edit().putBoolean("desktop_usb_playback_audio", value).apply() }
-    /** Existing installations keep their choice; loss of access never switches a backend. */
+    private fun backendKey(profile: Int) =
+        if (profile == DesktopModePolicy.SAMSUNG_DEX) "dex_access_backend" else "desktop_access_backend"
+
     var accessMode: DesktopAccessMode
-        get() = DesktopAccessMode.restore(prefs.getString("access_backend", null),
-            if (prefs.contains("use_shizuku")) prefs.getBoolean("use_shizuku", true) else null)
-        set(value) { prefs.edit().putString("access_backend", value.name).apply() }
+        get() {
+            val profile = desktopMode
+            val saved = prefs.getString(backendKey(profile), null) ?: prefs.getString("access_backend", null)
+            val legacy = if (prefs.contains("use_shizuku")) prefs.getBoolean("use_shizuku", true) else null
+            return DesktopAccessMode.restore(profile, saved, legacy)
+        }
+        set(value) {
+            val profile = desktopMode
+            require(value in DesktopAccessMode.optionsFor(profile)) { "Этот способ доступа недоступен для выбранного профиля" }
+            prefs.edit().putString(backendKey(profile), value.name).apply()
+        }
     var useShizuku: Boolean
         get() = accessMode == DesktopAccessMode.SHIZUKU
-        set(value) { accessMode = if (value) DesktopAccessMode.SHIZUKU else DesktopAccessMode.LEGACY_ADB }
+        set(value) {
+            accessMode = if (value) DesktopAccessMode.SHIZUKU
+                else DesktopAccessMode.optionsFor(desktopMode).single { it != DesktopAccessMode.SHIZUKU }
+        }
     var useDelegated: Boolean
         get() = accessMode == DesktopAccessMode.COMPUTER
         set(value) {
@@ -45,8 +58,10 @@ class DexPrefs(context: Context) {
     val useDesktopService: Boolean get() = accessMode != DesktopAccessMode.LEGACY_ADB
     /** Called on the setup worker before instrumentation deliberately restarts this package. */
     internal fun persistActivationSelection(audio: Boolean, screen: Boolean): Boolean {
-        if (!useDelegated || usbPlaybackAudio != audio || desktopPanelControl != screen) return false
-        return prefs.edit().putString("access_backend", DesktopAccessMode.COMPUTER.name)
+        val profile = desktopMode
+        if (profile == DesktopModePolicy.SAMSUNG_DEX || !useDelegated ||
+            usbPlaybackAudio != audio || desktopPanelControl != screen) return false
+        return prefs.edit().putString(backendKey(profile), DesktopAccessMode.COMPUTER.name)
             .putBoolean("desktop_usb_playback_audio", audio)
             .putBoolean("desktop_panel_control", screen).commit()
     }
@@ -64,7 +79,7 @@ class DexPrefs(context: Context) {
         }
     /** Pre-unification values, in order of precedence when the new setting is absent. */
     var shizukuDensity: Int
-        get() = prefs.getInt("shizuku_density", prefs.getInt("density", 160)).coerceIn(120, 320)
+        get() = prefs.getInt("shizuku_density", prefs.getInt("density", 128)).coerceIn(120, 320)
         set(value) { require(value in 120..320); prefs.edit().putInt("shizuku_density", value).apply() }
     var desktopResolution: DesktopResolution
         get() = DesktopResolution.restore(prefs.getString("desktop_resolution", null))
@@ -74,7 +89,7 @@ class DexPrefs(context: Context) {
         val width = parts?.takeIf { it.size == 2 }?.get(0)?.toIntOrNull()
         val height = parts?.takeIf { it.size == 2 }?.get(1)?.toIntOrNull()
         return if (width != null && height != null && DesktopGeometryPolicy.accepts(width, height)) width to height
-            else 1600 to 900
+            else DesktopResolution.DEFAULT.width to DesktopResolution.DEFAULT.height
     }
     val customDesktopWidth: Int get() = customDesktopSize().first
     val customDesktopHeight: Int get() = customDesktopSize().second
@@ -95,12 +110,9 @@ class DexPrefs(context: Context) {
             if (it == 0) 0 else it.coerceIn(DesktopGeometryPolicy.MIN_DENSITY, DesktopGeometryPolicy.MAX_DENSITY)
         }
         set(value) { if (value != 0) DesktopGeometryPolicy.requireDensity(value); prefs.edit().putInt("desktop_density", value).apply() }
-    var compactMapSymbols: Boolean
-        get() = prefs.getBoolean("compact_map_symbols", true)
-        set(value) { prefs.edit().putBoolean("compact_map_symbols", value).apply() }
-    /** Direct desktop has an independent 30 fps default; upstream AA preferences are unchanged. */
+    /** Desktop frame rate is stored independently of the Android Auto preference. */
     var desktopFps: FpsSetting
-        get() = prefs.getString("desktop_fps", null).let { name -> FpsSetting.entries.firstOrNull { it.name == name } ?: FpsSetting.FPS30 }
+        get() = prefs.getString("desktop_fps", null).let { name -> FpsSetting.entries.firstOrNull { it.name == name } ?: FpsSetting.FPS15 }
         set(value) { prefs.edit().putString("desktop_fps", value.name).apply() }
     /** UI hint only; a successful live probe is still required before starting projection. */
     var hasPaired: Boolean

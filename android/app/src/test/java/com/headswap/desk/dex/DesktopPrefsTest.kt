@@ -33,14 +33,14 @@ class DesktopPrefsTest {
         } as SharedPreferences
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = prefs
     }
-    @Test fun upgradeRetainsOldGeometryAndDpiButDesktopFpsIsIndependentFromAaDefault() {
-        val context = MemoryPrefs()
-        context.values["shizuku_density"] = 128
-        val prefs = DexPrefs(context)
-        assertEquals(DesktopResolution.R1600_900, prefs.desktopResolution)
+    @Test fun freshDesktopUsesFixed720pAt15FpsAnd128Dpi() {
+        val prefs = DexPrefs(MemoryPrefs())
+        val video = prefs.desktopVideoSelection()
+        assertEquals(DesktopResolution.R1280_720, prefs.desktopResolution)
+        assertEquals(1280, video.initialGeometry().outW)
+        assertEquals(720, video.initialGeometry().outH)
         assertEquals(128, prefs.desktopDensity)
-        assertEquals(FpsSetting.FPS30, prefs.desktopFps)
-        assertEquals(FpsSetting.FPS15, FpsSetting.DEFAULT)
+        assertEquals(FpsSetting.FPS15, prefs.desktopFps)
     }
     @Test fun legacyAdbAndDesktopUseTheSameDpiEvenWhenOldPreferencesDisagree() {
         val context = MemoryPrefs()
@@ -83,7 +83,7 @@ class DesktopPrefsTest {
         assertEquals("1920 × 1080", restored.desktopResolutionLabel)
         assertEquals(96, restored.desktopDensity)
         assertEquals(FpsSetting.FPS60, restored.desktopFps)
-        assertEquals(160, restored.shizukuDensity)
+        assertEquals(128, restored.shizukuDensity)
         val snapshot = restored.desktopVideoSelection()
         restored.setCustomDesktopSize(1024, 768)
         restored.desktopDensity = 640
@@ -101,20 +101,48 @@ class DesktopPrefsTest {
         assertEquals(720, prefs.customDesktopHeight)
         for (bad in listOf("1921x1080", "1920x1080x1", "bad", "999999999999x720", "640x900")) {
             context.values["desktop_custom_size"] = bad
-            assertEquals(1600, prefs.customDesktopWidth)
-            assertEquals(900, prefs.customDesktopHeight)
+            assertEquals(1280, prefs.customDesktopWidth)
+            assertEquals(720, prefs.customDesktopHeight)
         }
     }
-    @Test fun freshInstallDefaultsToHeadSwapButBothLegacyChoicesSurvive() {
+    @Test fun migrateOldBackendOnlyForProfilesThatSupportIt() {
         val context = MemoryPrefs()
-        assertEquals(DesktopAccessMode.COMPUTER, DexPrefs(context).accessMode)
-        context.values["use_shizuku"] = true
-        assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
+        val prefs = DexPrefs(context)
+        assertEquals(DesktopAccessMode.COMPUTER, prefs.accessMode)
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        assertEquals(DesktopAccessMode.SHIZUKU, prefs.accessMode)
         context.values["use_shizuku"] = false
-        assertEquals(DesktopAccessMode.LEGACY_ADB, DexPrefs(context).accessMode)
+        assertEquals(DesktopAccessMode.LEGACY_ADB, prefs.accessMode)
+        prefs.desktopMode = DesktopModePolicy.DRIVEDECK
+        assertEquals(DesktopAccessMode.COMPUTER, prefs.accessMode)
         context.values["access_backend"] = "SHIZUKU"
-        assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
+        assertEquals(DesktopAccessMode.SHIZUKU, prefs.accessMode)
+        context.values["access_backend"] = "COMPUTER"
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        assertEquals(DesktopAccessMode.SHIZUKU, prefs.accessMode)
     }
+
+    @Test fun samsungAndAndroidDesktopsKeepSeparateChoicesAcrossRestarts() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        prefs.useShizuku = false
+        assertEquals(DesktopAccessMode.LEGACY_ADB, prefs.accessMode)
+        assertFalse(prefs.persistActivationSelection(audio = true, screen = true))
+        assertThrows(IllegalArgumentException::class.java) { prefs.useDelegated = true }
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        assertThrows(IllegalArgumentException::class.java) { prefs.accessMode = DesktopAccessMode.LEGACY_ADB }
+        prefs.useShizuku = true
+        prefs.desktopMode = DesktopModePolicy.DRIVEDECK
+        assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
+        prefs.useShizuku = false
+        assertTrue(prefs.persistActivationSelection(audio = true, screen = true))
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        assertEquals(DesktopAccessMode.LEGACY_ADB, DexPrefs(context).accessMode)
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        assertEquals(DesktopAccessMode.COMPUTER, DexPrefs(context).accessMode)
+    }
+
     @Test fun firstActivationOffersAudioAndPanelAndPreservesIndependentOptOutsAfterUpdate() {
         val context = MemoryPrefs()
         val fresh = DexPrefs(context)
