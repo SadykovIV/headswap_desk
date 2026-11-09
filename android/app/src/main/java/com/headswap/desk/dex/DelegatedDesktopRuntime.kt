@@ -123,9 +123,6 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
         inputGateway.setPhonePanelOff(parentId, checkNotNull(inputLeases[parentId]) { "Рабочий стол уже закрыт" }, off)
     }
 
-    override fun focusedDisplay(parentId: Int, children: Set<Int>): Int = DesktopInputTarget.resolve(
-        parentId, children, inputGateway.focusedDisplay(parentId, checkNotNull(inputLeases[parentId])))
-
     override fun childTaskState(id: Int, packageName: String) = childTaskQuery(id, packageName)()
     override fun childImeVisibilityQuery(id: Int): () -> Boolean? {
         val token = inputLeases[id] ?: return { null }

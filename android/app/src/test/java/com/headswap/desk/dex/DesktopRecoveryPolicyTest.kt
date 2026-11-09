@@ -4,6 +4,22 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DesktopRecoveryPolicyTest {
+    @Test fun wirelessRecoveryDoesNotRequireUsbOrInheritAnOldUsbStop() {
+        for (usbStopped in listOf(false, true)) for (accessory in listOf(false, true)) {
+            assertTrue(DesktopRecoveryPolicy.transportEligible("tcp6", true, usbStopped, accessory))
+            assertFalse(DesktopRecoveryPolicy.transportEligible("tcp6", false, usbStopped, accessory))
+        }
+    }
+
+    @Test fun usbRecoveryStillRequiresItsOwnLivePermittedAccessory() {
+        assertTrue(DesktopRecoveryPolicy.transportEligible("usb-aoa", true, false, true))
+        assertFalse(DesktopRecoveryPolicy.transportEligible("usb-aoa", false, false, true))
+        assertFalse(DesktopRecoveryPolicy.transportEligible("usb-aoa", true, true, true))
+        assertFalse(DesktopRecoveryPolicy.transportEligible("usb-aoa", true, false, false))
+        for (kind in listOf("tcp-debug", "unknown", ""))
+            assertFalse(DesktopRecoveryPolicy.transportEligible(kind, true, false, true))
+    }
+
     @Test fun twoHelperDeathsCanRecoverButRepeatedSuccessDoesNotRenewTheBudget() {
         val policy = DesktopRecoveryPolicy()
         policy.newConnection()

@@ -163,7 +163,8 @@ class AaTranscoder(
         if (directSurface || !tuning.contains("nogl")) {
             // декодер -> GL-реле -> Surface энкодера: реле перерисовывает последний кадр на статике (>= 10 fps)
             try {
-                relay = GlRelay(surface!!, width, height, REDRAW_IDLE_MS, log, srcWidth, srcHeight, crop, target, limitHighFps = directSurface).also { it.start() }
+                relay = GlRelay(surface!!, width, height, REDRAW_IDLE_MS, log, srcWidth, srcHeight, crop, target,
+                    limitHighFps = directSurface, preserveSourceTimestamps = directSurface).also { it.start() }
             } catch (e: Exception) {
                 if (directSurface) {
                     // Direct input depends on GL for pacing and idle redraw. Never silently
@@ -576,8 +577,9 @@ class AaTranscoder(
         val gatedWin = gatedNow - lastGated
         lastGated = gatedNow
         val queueNote = if (threaded) ", очередь кормления макс ${queue.resetMaxPending()}" else ""
-        if (directSurface) return "Surface: одно кодирование за %.1f с, выход энкодера %d (%.1f fps), повторов GL %d, задержано гейтом fps %d, потеряно %d; задержка энкодера %.1f мс"
-            .format(sec, outN, outN / sec, repeats, gatedWin, drop, encMs)
+        if (directSurface) return "Surface: одно кодирование за %.1f с, выход энкодера %d (%.1f fps), повторов GL %d, задержано гейтом fps %d, потеряно %d; возраст кадра на выходе %.1f мс"
+            .format(sec, outN, outN / sec, repeats, gatedWin, drop, encMs) +
+            "; sourcePTS fallback=${r?.sourceTimeFallbacks ?: 0} rejected=${r?.sourceTimeRejected ?: 0} monotonic=${r?.sourceTimeClamps ?: 0}"
         return ("транскод за %.1f с: вход AA %d, декодировано %d, выход энкодера %d (%.1f fps), повторов (перерисовок GL) %d, задержано гейтом fps %d, потеряно %d; задержка декодер %.1f мс + энкодер %.1f мс = %.1f мс"
             .format(sec, inN, dec, outN, outN / sec, repeats, gatedWin, drop, decMs, encMs, decMs + encMs)) + queueNote
     }

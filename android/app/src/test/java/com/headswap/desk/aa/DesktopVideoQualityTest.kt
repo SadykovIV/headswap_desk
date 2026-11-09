@@ -5,6 +5,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DesktopVideoQualityTest {
+    @Test fun reducedHuFrameRateIsAppliedWithoutTheLegacyAaTenFpsFloor() {
+        for (requested in listOf(3, 5, 9, 10, 30, 60)) {
+            assertEquals(requested, DesktopVideoQuality.frameRateChangeTarget(requested))
+            assertEquals(minOf(requested, 20), DesktopVideoQuality.chooseFps(FpsSetting.AUTO, requested, 20))
+            val dynamic = DesktopFrameRatePolicy().apply { reset(30) }
+            val target = DesktopVideoQuality.frameRateChangeTarget(requested, 20)
+            dynamic.update(0, 0.0, target)
+            assertTrue(dynamic.current <= target)
+        }
+        assertEquals(20, DesktopVideoQuality.frameRateChangeTarget(60, 20))
+    }
     @Test fun receiverEncoderTargetCannotOverrideSelectedOrThermalBitrate() {
         val selected = DesktopVideoQuality.bitratePolicy(BitrateProfile.USB, 1_000_000)
         assertEquals(1_000_000, DesktopVideoQuality.encoderBitrate(selected, 3_840_000))

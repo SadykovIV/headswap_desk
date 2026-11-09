@@ -3,6 +3,7 @@ package com.headswap.desk.qa;
 import android.app.Activity;
 import android.os.Bundle;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.widget.TextView;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
@@ -20,6 +21,14 @@ public final class HardwareInputFixture extends Activity {
     @Override public boolean onKeyDown(int code, KeyEvent event) { record("down="+code); return true; }
     @Override public boolean onKeyUp(int code, KeyEvent event) { record("up="+code); return true; }
     @Override public void onBackPressed() { record("back"); }
+    @Override public void onWindowFocusChanged(boolean focused) {
+        super.onWindowFocusChanged(focused);
+        if (view != null) record("focus=" + focused);
+    }
+    @Override public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) record("touchdown");
+        return super.dispatchTouchEvent(event);
+    }
     private void record(String value) {
         events.append(value).append('\n');
         view.setText("display="+getDisplay().getDisplayId()+"\n"+events);

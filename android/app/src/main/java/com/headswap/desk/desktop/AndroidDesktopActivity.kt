@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -76,6 +77,96 @@ class AndroidDesktopActivity : Activity() {
     private lateinit var rail: ListView
     private lateinit var railDrag: DesktopRailDrag
     private var pinMenu: PopupMenu? = null
+    private var categoryChoice: AlertDialog? = null
+    private var requestedChildFocus = false
+    private var modalFocusDestroyed = false
+    private val modalFocusOwners = java.util.Collections.newSetFromMap(
+        java.util.IdentityHashMap<AlertDialog, Boolean>())
+    private lateinit var backButton: ImageButton
+    private lateinit var homeButton: ImageButton
+    private val knobFocus = DesktopKnobFocus()
+    private data class KnobTarget(val item: DesktopKnobFocus.Item, val select: () -> Unit, val click: () -> Unit)
+    private val hardwareUi = object : DesktopHardwareUi.Sink {
+        override fun hasModal(): Boolean = ownedHardwareDialog() != null
+        override fun captureBack(): DesktopHardwareUi.BackTarget? {
+            if (!visible || isDestroyed || !ownsDisplay() || pinMenu != null) return null
+            val dialog = ownedHardwareDialog()
+            val targetOwner = pane.captureBackOwner()
+            val musicOwner = musicPane.captureBackOwner()
+            val wasDashboard = dashboard
+            val wasTargetVisible = targetVisible
+            val wasProfileExposed = profileExposed
+            val wasMenuShown = menu.isShown
+            val session = panelSession
+            return object : DesktopHardwareUi.BackTarget {
+                override val modal = dialog != null
+                @Suppress("DEPRECATION")
+                override fun dispatch(): Boolean {
+                    if (!visible || isDestroyed || !ownsDisplay()) return false
+                    if (dialog != null) {
+                        if (!dialog.isShowing || ownedHardwareDialog() !== dialog) return false
+                        dialog.onBackPressed()
+                    } else {
+                        // A new modal may have appeared while the service was checking IME.
+                        if (ownedHardwareDialog() != null || pinMenu != null ||
+                            dashboard != wasDashboard || targetVisible != wasTargetVisible ||
+                            profileExposed != wasProfileExposed || menu.isShown != wasMenuShown ||
+                            panelSession !== session || !targetOwner() || !musicOwner()) return false
+                        this@AndroidDesktopActivity.onBackPressed()
+                    }
+                    return true
+                }
+            }
+        }
+        override fun rotate(delta: Int): Boolean {
+            if (delta == 0) return false
+            ownedHardwareDialog()?.let { dialog ->
+                val list = dialog.listView != null
+                val code = if (list) {
+                    if (delta > 0) KeyEvent.KEYCODE_DPAD_DOWN else KeyEvent.KEYCODE_DPAD_UP
+                } else KeyEvent.KEYCODE_TAB
+                val meta = if (!list && delta < 0) KeyEvent.META_SHIFT_ON else 0
+                repeat(kotlin.math.abs(delta.toLong()).coerceAtMost(8).toInt()) {
+                    if (dialog.isShowing) dispatchDialogKey(dialog, code, meta)
+                }
+                return true
+            }
+            if (!catalogTakesHardware()) return false
+            val direction = if (delta > 0) DesktopKnobFocus.Move.NEXT else DesktopKnobFocus.Move.PREVIOUS
+            repeat(kotlin.math.abs(delta.toLong()).coerceAtMost(8).toInt()) { moveKnob(direction) }
+            return true
+        }
+        override fun key(code: Int): Boolean {
+            ownedHardwareDialog()?.let { dialog ->
+                // Keep Back in the service's single double-Back sequence. Do not let even an
+                // unhandled DPAD edge escape this modal and move the app behind it.
+                if (code !in DIALOG_KEYS) return false
+                dispatchDialogKey(dialog, code)
+                return true
+            }
+            if (!hardwareAvailable()) return false
+            if (code == 65538 || code == KeyEvent.KEYCODE_MUSIC) {
+                if (dashboard) return false // The selected component owns its navigation/music controls.
+                openHardwareCategory(if (code == 65538) Intent.CATEGORY_APP_MAPS else Intent.CATEGORY_APP_MUSIC)
+                return true
+            }
+            if (!catalogTakesHardware()) return false
+            val direction = when (code) {
+                KeyEvent.KEYCODE_DPAD_UP -> DesktopKnobFocus.Move.UP
+                KeyEvent.KEYCODE_DPAD_DOWN -> DesktopKnobFocus.Move.DOWN
+                KeyEvent.KEYCODE_DPAD_LEFT -> DesktopKnobFocus.Move.LEFT
+                KeyEvent.KEYCODE_DPAD_RIGHT -> DesktopKnobFocus.Move.RIGHT
+                else -> null
+            }
+            if (direction != null) { moveKnob(direction); return true }
+            if (code !in setOf(KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER)) return false
+            val targets = knobTargets()
+            val selected = knobFocus.activate(targets.map { it.item })
+            if (selected != null) targets.firstOrNull { it.item.id == selected }?.click?.invoke()
+            else showKnobSelection(targets)
+            return true
+        }
+    }
     private val pins by lazy { DesktopPins(this) }
     private var pinnedEntries: List<DesktopAppCatalog.Entry> = emptyList()
     private val main = Handler(Looper.getMainLooper())
@@ -151,6 +242,7 @@ class AndroidDesktopActivity : Activity() {
         if (!::grid.isInitialized) return
         if (currentDisplayId() <= 0) { finish(); return }
         visible = true
+        DesktopHardwareUi.register(currentDisplayId(), hardwareUi)
         if (dashboard) updateTargetGuidance()
         if (!ownsDisplay()) {
             layout.visibility = View.INVISIBLE
@@ -167,6 +259,9 @@ class AndroidDesktopActivity : Activity() {
 
     override fun onPause() {
         visible = false
+        DesktopHardwareUi.unregister(currentDisplayId(), hardwareUi)
+        knobFocus.touch()
+        paintKnobFocus()
         if (dashboard) targetGuidance.show(false)
         if (::railDrag.isInitialized) railDrag.cancel()
         pinMenu?.dismiss()
@@ -180,8 +275,10 @@ class AndroidDesktopActivity : Activity() {
             stopObserving?.invoke()
             unregisterReceiver(packageChanges)
         }
-        confirmMove?.dismiss()
-        phoneConfirmation?.dismiss()
+        modalFocusDestroyed = true
+        modalFocusOwners.toList().forEach { it.dismiss() }
+        modalFocusOwners.clear()
+        DesktopHardwareUi.unregister(currentDisplayId(), hardwareUi)
         revokePanel()
         main.removeCallbacksAndMessages(null)
         loader.shutdownNow()
@@ -203,6 +300,8 @@ class AndroidDesktopActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) DesktopHardwareUi.interruptBack(currentDisplayId())
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) { knobFocus.touch(); paintKnobFocus() }
         if (!dashboard && ::railDrag.isInitialized && railDrag.handle(event) { super.dispatchTouchEvent(it) }) return true
         return super.dispatchTouchEvent(event)
     }
@@ -241,12 +340,14 @@ class AndroidDesktopActivity : Activity() {
         }
         railDrag = DesktopRailDrag(layout, rail, ::dropOnRail, ::showPinMenu)
         sidebar.addView(rail, LinearLayout.LayoutParams(-1, 0, 1f))
-        sidebar.addView(navButton("Назад", com.headswap.desk.R.drawable.desktop_back) {
+        backButton = navButton("Назад", com.headswap.desk.R.drawable.desktop_back) {
             if (ownsDisplay()) pane.back()
-        }, LinearLayout.LayoutParams(-1, buttonHeight))
-        sidebar.addView(navButton("Домой", com.headswap.desk.R.drawable.desktop_home) {
+        }
+        sidebar.addView(backButton, LinearLayout.LayoutParams(-1, buttonHeight))
+        homeButton = navButton("Домой", com.headswap.desk.R.drawable.desktop_home) {
             if (ownsDisplay()) { autoOpenPanel = false; pane.home() }
-        }, LinearLayout.LayoutParams(-1, buttonHeight))
+        }
+        sidebar.addView(homeButton, LinearLayout.LayoutParams(-1, buttonHeight))
         layout.addView(sidebar, LinearLayout.LayoutParams(railWidth, -1))
         workspace = FrameLayout(this)
         layout.addView(workspace, LinearLayout.LayoutParams(0, -1, 1f))
@@ -264,6 +365,8 @@ class AndroidDesktopActivity : Activity() {
             if (dashboard && (r - l != oldR - oldL || b - t != oldB - oldT)) layoutDashboard()
         }
         pane = DesktopAppPane(this, onOpened = {
+            knobFocus.touch()
+            paintKnobFocus()
             if (!dashboard) panelPlaced = panelSession != null
             setChildInputFocus(true)
             menu.visibility = View.GONE
@@ -337,11 +440,34 @@ class AndroidDesktopActivity : Activity() {
     }
 
     private fun setChildInputFocus(open: Boolean) {
-        if (Build.VERSION.SDK_INT == Build.VERSION_CODES.TIRAMISU) {
-            // Android 13 has one focused display. The rail stays touchable without
-            // taking keyboard focus from the editor during a forwarded gesture.
+        requestedChildFocus = open
+        applyChildInputFocus()
+    }
+
+    private fun applyChildInputFocus() {
+        if (!modalFocusDestroyed && Build.VERSION.SDK_INT == Build.VERSION_CODES.TIRAMISU) {
+            // Android 13 has one focused display. Keep the rail touchable without stealing
+            // the child editor's focus, but a real modal must temporarily own keyboard input.
             val flag = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-            window.setFlags(if (open) flag else 0, flag)
+            val yieldToChild = requestedChildFocus && modalFocusOwners.isEmpty()
+            window.setFlags(if (yieldToChild) flag else 0, flag)
+        }
+    }
+
+    private fun showHardwareDialog(dialog: AlertDialog, onDismiss: (AlertDialog) -> Unit = {}): AlertDialog {
+        check(!modalFocusDestroyed)
+        modalFocusOwners.add(dialog)
+        try {
+            applyChildInputFocus() // Must precede addWindow; API33 inherits the parent's focusability.
+            dialog.setOnDismissListener {
+                if (modalFocusOwners.remove(dialog)) applyChildInputFocus()
+                onDismiss(dialog)
+            }
+            dialog.show()
+            return dialog
+        } catch (failure: Throwable) {
+            if (modalFocusOwners.remove(dialog)) applyChildInputFocus()
+            throw failure
         }
     }
 
@@ -557,16 +683,16 @@ class AndroidDesktopActivity : Activity() {
         if (!dashboard) { pane.open(entry, requestedByPanel); return }
         if (owner?.profileChrome != true || session == null) return
         val current = { visible && dashboard && !isDestroyed && !isFinishing && panelPlaced &&
-            panelSession === session && CarLifeState.running && !CarLifeState.wirelessSession && ownsDisplay() }
+            panelSession === session && CarLifeState.running && ownsDisplay() }
         pane.open(entry, requestedByPanel, DesktopAppPane.DashboardLaunch(owner, allowTaskMove, current) {
             if (!current() || confirmMove?.isShowing == true) return@DashboardLaunch
-            confirmMove = AlertDialog.Builder(this).setTitle("Открыть на головном устройстве?")
+            confirmMove = showHardwareDialog(AlertDialog.Builder(this).setTitle("Открыть на головном устройстве?")
                 .setMessage("«${entry.label}» может использовать уже открытое на телефоне окно. Разрешить перенос на ГУ?")
                 .setPositiveButton("Открыть на ГУ") { _, _ ->
                     musicPane.ifComponentForeground(owner) {
                         if (current()) launchApp(entry, requestedByPanel, allowTaskMove = true)
                     }
-                }.setNegativeButton("Выбрать другое") { _, _ -> if (current()) { showTarget(); pane.home() } }.show()
+                }.setNegativeButton("Выбрать другое") { _, _ -> if (current()) { showTarget(); pane.home() } }.create())
         })
     }
 
@@ -638,7 +764,7 @@ class AndroidDesktopActivity : Activity() {
 
     private fun requestPhoneScreen(provider: DesktopComponentEntry, current: () -> Boolean) {
         val prefs = DexPrefs(this)
-        fun available(): Boolean = current() && dashboard && profileExposed && CarLifeState.running && !CarLifeState.wirelessSession &&
+        fun available(): Boolean = current() && dashboard && profileExposed && CarLifeState.running &&
             BridgeService.alive && DesktopConnectionState.aliveForIdleTimer(SystemClock.elapsedRealtime()) &&
             prefs.desktopPanelControl && !DexState.phoneScreenBusy
         if (!available() || phoneConfirmation?.isShowing == true) return
@@ -650,7 +776,7 @@ class AndroidDesktopActivity : Activity() {
             curtain -> "Затемнить экран телефона?"
             else -> "Погасить экран телефона?"
         }
-        phoneConfirmation = AlertDialog.Builder(this).setTitle(title)
+        phoneConfirmation = showHardwareDialog(AlertDialog.Builder(this).setTitle(title)
             .setMessage("Запрос от панели «${provider.label}».")
             .setNegativeButton("Отмена", null).setPositiveButton("Да") { _, _ ->
                 musicPane.ifComponentForeground(provider) {
@@ -662,10 +788,144 @@ class AndroidDesktopActivity : Activity() {
                         }
                     }
                 }
-            }.show()
+            }.create())
     }
 
     private fun catalogHint() = if (dashboard) "Выберите приложение для второго окна." else CATALOG_HINT
+
+    private fun ownedHardwareDialog(): AlertDialog? {
+        if (!visible || isDestroyed || !ownsDisplay()) return null
+        return listOf(phoneConfirmation, confirmMove, categoryChoice).firstOrNull { it?.isShowing == true }
+    }
+
+    private fun dispatchDialogKey(dialog: AlertDialog, code: Int, meta: Int = 0) {
+        val now = SystemClock.uptimeMillis()
+        // Capture one owner for both halves: dismissing DOWN may not redirect UP elsewhere.
+        val down = dialog.dispatchKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0, meta))
+        val up = dialog.dispatchKeyEvent(KeyEvent(now, SystemClock.uptimeMillis(), KeyEvent.ACTION_UP, code, 0, meta))
+        // Direct Dialog dispatch does not run ViewRootImpl's unhandled focus-navigation stage.
+        // Reproduce that stage only within this owned dialog, never in an underlying app.
+        if (down || up || !dialog.isShowing) return
+        val direction = when (code) {
+            KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
+            KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
+            KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
+            KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
+            KeyEvent.KEYCODE_TAB -> if (meta and KeyEvent.META_SHIFT_ON != 0) View.FOCUS_BACKWARD else View.FOCUS_FORWARD
+            else -> return
+        }
+        val decor = dialog.window?.decorView ?: return
+        val focused = decor.findFocus()
+        if (focused == null) decor.requestFocusFromTouch()
+        else focused.focusSearch(direction)?.takeIf { candidate ->
+            generateSequence(candidate as View?) { it.parent as? View }.any { it === decor }
+        }?.requestFocusFromTouch()
+    }
+
+    private val DIALOG_KEYS = setOf(KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_CENTER,
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER)
+
+    private fun hardwareAvailable() = visible && !isDestroyed && ownsDisplay() &&
+        pinMenu == null && categoryChoice?.isShowing != true && confirmMove?.isShowing != true && phoneConfirmation?.isShowing != true
+
+    private fun catalogTakesHardware() = hardwareAvailable() && menu.isShown && (!dashboard || targetVisible)
+
+    private fun moveKnob(direction: DesktopKnobFocus.Move) {
+        val targets = knobTargets()
+        knobFocus.move(targets.map { it.item }, direction)
+        showKnobSelection(targets)
+    }
+
+    private fun showKnobSelection(targets: List<KnobTarget>) {
+        targets.firstOrNull { it.item.id == knobFocus.selected }?.select?.invoke()
+        paintKnobFocus()
+    }
+
+    /** Build focus order from our model, so scrolling/recycled rows cannot skip applications. */
+    private fun knobTargets(): List<KnobTarget> = buildList {
+        fun button(id: String, view: View) {
+            if (!view.isShown || !view.isEnabled) return
+            val point = IntArray(2); view.getLocationOnScreen(point)
+            add(KnobTarget(DesktopKnobFocus.Item(id, point[0] + view.width / 2, point[1] + view.height / 2),
+                { view.requestFocus() }, { view.performClick() }))
+        }
+        fun rows(view: android.widget.AbsListView, values: List<DesktopAppCatalog.Entry>, prefix: String, columns: Int) {
+            if (!view.isShown || values.isEmpty()) return
+            val point = IntArray(2); view.getLocationOnScreen(point)
+            val first = view.getChildAt(0)
+            val rowHeight = first?.height?.takeIf { it > 0 } ?: dp(if (prefix == "app:") 144 else 62)
+            val gap = if (view === grid) grid.verticalSpacing else 0
+            val originY = (first?.top ?: view.paddingTop) - view.firstVisiblePosition / columns * (rowHeight + gap)
+            val width = (view.width - view.paddingLeft - view.paddingRight) / columns
+            values.forEachIndexed { position, entry ->
+                val id = prefix + entry.key
+                add(KnobTarget(DesktopKnobFocus.Item(id,
+                    point[0] + view.paddingLeft + position % columns * width + width / 2,
+                    point[1] + originY + position / columns * (rowHeight + gap) + rowHeight / 2), {
+                    // Selection also scrolls an off-screen row into view. Rendering uses stable IDs.
+                    view.setSelection(position)
+                }, { launchApp(entry) }))
+            }
+        }
+        button("panel", panelButton)
+        rows(grid, entries, "app:", grid.numColumns.coerceAtLeast(1))
+        rows(rail, pinnedEntries, "rail:", 1)
+        button("back", backButton)
+        button("home", homeButton)
+    }
+
+    private fun paintKnob(view: View, id: String) {
+        view.foreground = if (knobFocus.visible && knobFocus.selected == id) GradientDrawable().apply {
+            setColor(Color.TRANSPARENT)
+            setStroke(dp(3).coerceAtLeast(2), Color.rgb(84, 215, 147))
+            cornerRadius = dp(12).toFloat()
+        } else null
+    }
+
+    private fun paintKnobFocus() {
+        if (!::grid.isInitialized) return
+        for (i in 0 until grid.childCount) entries.getOrNull(grid.firstVisiblePosition + i)?.let {
+            paintKnob(grid.getChildAt(i), "app:" + it.key)
+        }
+        for (i in 0 until rail.childCount) pinnedEntries.getOrNull(rail.firstVisiblePosition + i)?.let {
+            paintKnob(rail.getChildAt(i), "rail:" + it.key)
+        }
+        paintKnob(panelButton, "panel"); paintKnob(backButton, "back"); paintKnob(homeButton, "home")
+    }
+
+    /** Android-defined application categories, with explicit user choice if there is no default. */
+    private fun openHardwareCategory(category: String) {
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(category)
+        val choices = DesktopAppCatalog.select(packageManager.queryIntentActivities(intent, 0).mapNotNull {
+            val info = it.activityInfo ?: return@mapNotNull null
+            if (!info.permission.isNullOrBlank() && checkSelfPermission(info.permission) != android.content.pm.PackageManager.PERMISSION_GRANTED)
+                return@mapNotNull null
+            if (!info.enabled || !info.applicationInfo.enabled || !info.exported) return@mapNotNull null
+            // Category aliases may be different from the public launcher Activity. The child
+            // contract deliberately accepts launcher entries only; resolve that same app's
+            // declared launcher instead of widening the privileged launch surface.
+            entries.firstOrNull { entry -> entry.packageName == info.packageName && entry.className == info.name }
+                ?: packageManager.getLaunchIntentForPackage(info.packageName)?.component?.let { launcher ->
+                    entries.firstOrNull { entry -> entry.packageName == launcher.packageName && entry.className == launcher.className }
+                }
+        }, packageName)
+        val resolved = packageManager.resolveActivity(intent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo
+        val selected = choices.singleOrNull() ?: choices.firstOrNull { it.packageName == resolved?.packageName && it.className == resolved?.name }
+            ?: choices.filter { it.packageName == resolved?.packageName }.singleOrNull()
+        if (selected != null) { launchApp(selected); return }
+        if (choices.isEmpty()) {
+            pane.home()
+            showError("Нет приложения для этой кнопки ГУ. Выберите его в списке приложений.")
+            return
+        }
+        categoryChoice = showHardwareDialog(AlertDialog.Builder(this)
+            .setTitle(if (category == Intent.CATEGORY_APP_MAPS) "Навигация" else "Музыка")
+            .setItems(choices.map { it.label }.toTypedArray()) { _, index -> if (ownsDisplay()) launchApp(choices[index]) }
+            .setNegativeButton("Отмена", null).create()) { dismissed ->
+                if (categoryChoice === dismissed) categoryChoice = null
+            }
+    }
 
     private fun currentDisplayId(): Int = display?.displayId ?: -1
     private fun ownsDisplay(): Boolean = DesktopAppCatalog.ownsDisplay(currentDisplayId(), DexState.displayId) &&
@@ -693,6 +953,7 @@ class AndroidDesktopActivity : Activity() {
             val entry = getItem(position)
             setAppIcon(icon, entry)
             icon.contentDescription = entry.label
+            paintKnob(icon, "rail:" + entry.key)
             // The ListView handles taps and scrolls; a tooltip would consume the row touch.
             return icon
         }
@@ -734,6 +995,7 @@ class AndroidDesktopActivity : Activity() {
             setAppIcon(card.getChildAt(0) as ImageView, entry)
             (card.getChildAt(1) as TextView).text = entry.label
             card.contentDescription = entry.label
+            paintKnob(card, "app:" + entry.key)
             return card
         }
     }

@@ -35,10 +35,13 @@ class DesktopHardwareInputTest {
     }
 
     @Test fun focusCanOnlySelectOwnedLiveParentOrChild() {
-        val children = setOf(8, 12)
-        assertEquals(12, DesktopInputTarget.resolve(5, children, 12))
-        for (focus in listOf(null, 0, -1, 99)) assertEquals(5, DesktopInputTarget.resolve(5, children, focus))
-        assertEquals(5, DesktopInputTarget.resolve(5, emptySet(), 12))
+        val parent = Any(); val first = Any(); val second = Any()
+        val children = mapOf(first to 8, second to 12)
+        assertEquals(12, DesktopInputTarget.resolve(5, parent, children, second))
+        assertEquals(5, DesktopInputTarget.resolve(5, parent, children, parent))
+        assertEquals(5, DesktopInputTarget.resolve(5, parent, children, Any()))
+        // Closing a child, even if Android reuses its numeric display ID, invalidates its token.
+        assertEquals(5, DesktopInputTarget.resolve(5, parent, mapOf(Any() to 12), second))
     }
 
     @Test fun assistantWithPartialTaskVisibilityCannotReuseSingletonOrPhoneTask() {

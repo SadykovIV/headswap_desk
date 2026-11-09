@@ -41,8 +41,10 @@ class GlRelay(
     /** Целевая частота выхода: гейт не отдаёт кадр в энкодер чаще (0 = без ограничения). */
     targetFps: Int = 0,
     limitHighFps: Boolean = false,
+    preserveSourceTimestamps: Boolean = false,
 ) {
     private val gate = FrameGate(targetFps, limitHighFps)
+    private val sourceClock = if (preserveSourceTimestamps) SurfaceFrameClock() else null
     private val thread = HandlerThread("aa-gl-relay")
     private lateinit var handler: Handler
     private var display: EGLDisplay = EGL14.EGL_NO_DISPLAY
@@ -96,6 +98,9 @@ class GlRelay(
     val gated = AtomicLong()
 
     val targetFps: Int get() = gate.targetFps
+    val sourceTimeFallbacks: Long get() = sourceClock?.fallbacks ?: 0
+    val sourceTimeRejected: Long get() = sourceClock?.rejected ?: 0
+    val sourceTimeClamps: Long get() = sourceClock?.monotonicClamps ?: 0
 
     /** Целевая частота на лету, без пересоздания кодека. Любая нить. */
     fun setTargetFps(fps: Int) {
@@ -200,8 +205,10 @@ class GlRelay(
             if (fresh) gated.incrementAndGet()      // повторные отказы tick-а одного кадра не считаем
             return false
         }
+        val sourcePts = sourceClock?.presentationNs(System.nanoTime())
+        if (sourceClock != null && sourcePts == null) return false
         skipped = false
-        draw()
+        draw(sourcePts)
         return true
     }
 
@@ -270,8 +277,18 @@ class GlRelay(
     private fun onFrame() {
         if (released) return
         try {
-            st?.updateTexImage()
-            st?.getTransformMatrix(tm)
+            val texture = st ?: return
+            texture.updateTexImage()
+            texture.getTransformMatrix(tm)
+            sourceClock?.let { clock ->
+                val hadFallback = clock.fallbacks > 0
+                when (clock.latch(texture.timestamp, System.nanoTime())) {
+                    SurfaceFrameClock.Latch.REJECTED -> { haveFrame = false; return }
+                    SurfaceFrameClock.Latch.SAME_BUFFER -> { haveFrame = true; return }
+                    SurfaceFrameClock.Latch.FRESH -> Unit
+                }
+                if (!hadFallback && clock.fallbacks > 0) log("GlRelay: native source timestamp unavailable; using arrival-time fallback")
+            }
             haveFrame = true
             fresh.incrementAndGet()
             lastFreshNs = SystemClock.elapsedRealtimeNanos()
@@ -281,7 +298,7 @@ class GlRelay(
         }
     }
 
-    private fun draw() {
+    private fun draw(sourcePts: Long?) {
         GLES20.glViewport(0, 0, width, height)
         var pos = aPos
         var texAttr = aTex
@@ -318,8 +335,9 @@ class GlRelay(
         GLES20.glEnableVertexAttribArray(texAttr)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         lastDrawNs = SystemClock.elapsedRealtimeNanos()
-        // timestamp кадра для энкодера: монотонное время, как у surface-источников
-        EGLExt.eglPresentationTimeANDROID(display, eglSurface, System.nanoTime())
+        // Native input keeps the source buffer PTS, including time spent waiting for GL/FPS.
+        // AA retains its existing relay-time behavior because decoder timestamps are media time.
+        EGLExt.eglPresentationTimeANDROID(display, eglSurface, sourcePts ?: System.nanoTime())
         EGL14.eglSwapBuffers(display, eglSurface)
     }
 

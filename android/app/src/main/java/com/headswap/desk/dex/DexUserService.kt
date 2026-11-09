@@ -77,6 +77,7 @@ class DexUserService private constructor(private val context: Context, private v
         val contacts = DesktopTouchState()
         var touchDownTime = 0L
         val hardwareBack = DesktopBackSequence()
+        var hardwareTarget: IBinder = token
         var backHomePending = false
         val keyTargets = HashMap<Int, IBinder>()
         var backTarget: IBinder? = null // Keep hardware BACK's UP on the same lease as its DOWN.
@@ -182,7 +183,9 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(INPUT_TIMEOUT_MS) {
             val active = requireSession()
-            if (action == MotionEvent.ACTION_DOWN) active.hardwareBack.reset()
+            if (action == MotionEvent.ACTION_DOWN) {
+                active.hardwareBack.reset()
+            }
             val events = mouse.events(action, x, y, buttons)
             val access = checkNotNull(runtime)
             for (event in events) {
@@ -198,6 +201,7 @@ class DexUserService private constructor(private val context: Context, private v
                     arrayOf(properties), arrayOf(coords), 0, event.buttons, 1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0)
                 try {
                     access.inject(motion, checkNotNull(active.display).display.displayId, event.actionButton)
+                    if (event.action == MotionEvent.ACTION_DOWN) active.hardwareTarget = active.token
                 } finally { motion.recycle() }
             }
         }
@@ -229,12 +233,15 @@ class DexUserService private constructor(private val context: Context, private v
         DesktopTouchState.validate(action, actionIndex, pointerIds, xs, ys)
         serialized(INPUT_TIMEOUT_MS) {
             val active = requireSession()
-            if (action == MotionEvent.ACTION_DOWN) active.hardwareBack.reset()
+            if (action == MotionEvent.ACTION_DOWN) {
+                active.hardwareBack.reset()
+            }
             check(active.desktopMode != DesktopModePolicy.SAMSUNG_DEX) { "DeX uses mouse input" }
             for (event in active.contacts.events(action, actionIndex, pointerIds, xs, ys, active.width, active.height)) {
                 ensureActive(active.epoch)
                 if (event.action == MotionEvent.ACTION_DOWN) active.touchDownTime = SystemClock.uptimeMillis()
                 injectContacts(checkNotNull(active.display).display.displayId, active.touchDownTime, event)
+                if (event.action == MotionEvent.ACTION_DOWN) active.hardwareTarget = active.token
             }
         }
     }
@@ -245,11 +252,13 @@ class DexUserService private constructor(private val context: Context, private v
         DesktopTouchState.validate(action, actionIndex, pointerIds, xs, ys)
         serialized(INPUT_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
+            if (action == MotionEvent.ACTION_DOWN) parent.hardwareBack.reset()
             child.touch.cancel()?.let { injectChildTouchEvent(child, it) }
             for (event in child.contacts.events(action, actionIndex, pointerIds, xs, ys, child.width, child.height)) {
                 ensureChildActive(parent, child)
                 if (event.action == MotionEvent.ACTION_DOWN) child.downTime = SystemClock.uptimeMillis()
                 injectContacts(checkNotNull(child.display).display.displayId, child.downTime, event)
+                if (event.action == MotionEvent.ACTION_DOWN) parent.hardwareTarget = child.token
             }
         }
     }
@@ -270,52 +279,92 @@ class DexUserService private constructor(private val context: Context, private v
 
     override fun showDesktop() {
         enforceClient()
-        serialized(START_TIMEOUT_MS) { launchDesktop(requireSession()) }
+        serialized(START_TIMEOUT_MS) {
+            val active = requireSession()
+            active.hardwareBack.reset()
+            launchDesktop(active)
+        }
+    }
+
+    override fun resetHardwareInput() {
+        enforceClient()
+        serialized(INPUT_TIMEOUT_MS) { requireSession().hardwareBack.reset() }
+    }
+
+    override fun focusHardwareDisplay(displayId: Int) {
+        enforceClient()
+        serialized(INPUT_TIMEOUT_MS) {
+            val active = requireSession()
+            val parent = checkNotNull(active.display).display.displayId
+            val token = if (displayId == parent) active.token else active.children.values.firstOrNull {
+                it.display?.display?.let { display -> display.isValid && display.displayId == displayId } == true
+            }?.token
+            // The assistant's launch and this callback are separated by a Binder queue. A child
+            // closed in between must neither steal another target nor tear down the session.
+            if (token != null) active.hardwareTarget = token
+        }
+    }
+
+    override fun routeHostBack(parentDisplayId: Int, modal: Boolean): Boolean {
+        enforceClient()
+        return serialized(INPUT_TIMEOUT_MS) {
+            val active = requireSession()
+            if (checkNotNull(active.display).display.displayId != parentDisplayId ||
+                active.backTarget != null || active.backHomePending) return@serialized false
+            hardwareBack(active, KeyEvent.ACTION_DOWN, parentModal = modal, localParent = true)
+            hardwareBack(active, KeyEvent.ACTION_UP, parentModal = modal, localParent = true)
+        }
     }
 
     private fun launchDesktop(active: Session) {
         ensureActive(active.epoch)
+        active.hardwareTarget = active.token
         val id = checkNotNull(active.display).display.displayId
         if (delegated) checkNotNull(runtime).launchDesktop(active.desktopMode, id)
         else command(active.epoch, *DesktopModePolicy.homeCommand(active.desktopMode, id, context.packageName))
         ensureActive(active.epoch)
     }
 
-    private fun hardwareBack(active: Session, action: Int) {
+    /** true only for a completed own-parent callback; IME and Home remain service decisions. */
+    private fun hardwareBack(active: Session, action: Int, parentModal: Boolean = false,
+        localParent: Boolean = false): Boolean {
         val now = SystemClock.uptimeMillis()
         if (action == KeyEvent.ACTION_DOWN) {
-            if (active.backTarget != null || active.backHomePending) return
+            if (active.backTarget != null || active.backHomePending) return false
             active.backHomePending = active.hardwareBack.down(now)
-            if (active.backHomePending) return
+            if (active.backHomePending) return false
         } else {
             val home = active.hardwareBack.up(now)
             val consumed = active.backHomePending
             active.backHomePending = false
-            if (home) { launchDesktop(active); return }
-            if (consumed) return
+            if (home) { launchDesktop(active); return false }
+            if (consumed) return false
         }
         val parentId = checkNotNull(active.display).display.displayId
         if (action == KeyEvent.ACTION_DOWN) {
-            if (active.backTarget != null) return
+            if (active.backTarget != null) return false
             val children = active.children.values.mapNotNull { child ->
                 child.display?.display?.takeIf { it.isValid }?.let { it.displayId to child }
             }.toMap()
-            val queries = children.keys.associateWith { checkNotNull(runtime).childImeVisibilityQuery(it) }
+            val queries = if (parentModal) emptyMap() else children.keys.associateWith { checkNotNull(runtime).childImeVisibilityQuery(it) }
             val target = if (queries.isEmpty()) parentId else DesktopReadDeadline.call(
                 { observations.execute(it); true }, 450, { parentId }) {
                 DesktopImePolicy.backTarget(parentId, queries.mapValues { runCatching(it.value).getOrNull() })
             }
             active.backTarget = children[target]?.token ?: active.token
+            if (localParent && target == parentId) return false
             try { injectKeyInto(active, action, KeyEvent.KEYCODE_BACK, target) }
             catch (e: Exception) { active.backTarget = null; keyDownTimes.remove(KeyEvent.KEYCODE_BACK); throw e }
         } else {
-            val token = active.backTarget ?: return
+            val token = active.backTarget ?: return false
             active.backTarget = null
             val target = if (active.token == token) parentId else active.children[token]?.display?.display?.takeIf { it.isValid }?.displayId
             // A closed child cannot redirect half of a gesture into the desktop or a new child.
+            if (localParent && token == active.token) return true
             if (target != null) injectKeyInto(active, action, KeyEvent.KEYCODE_BACK, target)
             else keyDownTimes.remove(KeyEvent.KEYCODE_BACK)
         }
+        return false
     }
 
     private fun hardwareKey(active: Session, action: Int, keycode: Int) {
@@ -325,10 +374,11 @@ class DexUserService private constructor(private val context: Context, private v
         }.toMap()
         if (action == KeyEvent.ACTION_DOWN) {
             if (active.keyTargets.containsKey(keycode)) return
-            val query = checkNotNull(runtime)
-            val target = DesktopReadDeadline.call({ observations.execute(it); true }, 150, { parentId }) {
-                query.focusedDisplay(parentId, children.keys)
-            }
+            // With OWN_FOCUS several displays have focused tasks simultaneously; the first
+            // RunningTask is not necessarily the pane that received HU input. We own every
+            // launch/touch here, so route by that explicit live lease instead of global task order.
+            val target = DesktopInputTarget.resolve(parentId, active.token,
+                children.entries.associate { it.value.token to it.key }, active.hardwareTarget)
             active.keyTargets[keycode] = children[target]?.token ?: active.token
             try { injectKeyInto(active, action, keycode, target) }
             catch (error: Exception) { active.keyTargets.remove(keycode); keyDownTimes.remove(keycode); throw error }
@@ -415,6 +465,7 @@ class DexUserService private constructor(private val context: Context, private v
             else command(parent.epoch, *arguments)
             ensureChildActive(parent, child)
             child.launchedPackage = packageName
+            parent.hardwareTarget = child.token
             child.revision++
             child.taskStateAt = 0L
         }
@@ -428,6 +479,7 @@ class DexUserService private constructor(private val context: Context, private v
             check(parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP && !child.fullscreen)
             ensureChildActive(parent, child)
             child.launchedPackage = packageName
+            parent.hardwareTarget = child.token
             child.revision++
             child.taskStateAt = 0L
         }
@@ -460,10 +512,12 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(INPUT_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
+            if (action == MotionEvent.ACTION_DOWN) parent.hardwareBack.reset()
             child.contacts.cancel()?.let { injectContacts(checkNotNull(child.display).display.displayId, child.downTime, it) }
             for (event in child.touch.events(action, x, y)) {
                 ensureChildActive(parent, child)
                 injectChildTouchEvent(child, event)
+                if (event.action == MotionEvent.ACTION_DOWN) parent.hardwareTarget = child.token
             }
         }
     }
@@ -716,6 +770,7 @@ class DexUserService private constructor(private val context: Context, private v
 
     /** Only worker releases children; keep producer-before-Surface ordering on every path. */
     private fun releaseChild(parent: Session, child: ChildSession) {
+        if (parent.hardwareTarget == child.token) parent.hardwareTarget = parent.token
         if (parent.children[child.token] !== child) return
         parent.children.remove(child.token)
         if (child.display != null) runCatching { cancelChildTouch(child) }
@@ -981,9 +1036,6 @@ class DexUserService private constructor(private val context: Context, private v
             catch (e: Exception) { Log.w(TAG, "Local IME unavailable for HeadSwap display $id", e) }
             catch (e: LinkageError) { Log.w(TAG, "Local IME API unavailable", e) }
         }
-
-        override fun focusedDisplay(parentId: Int, children: Set<Int>): Int =
-            DesktopInputTarget.resolve(parentId, children, DesktopFocusReader.current())
 
         override fun childImeVisibilityQuery(id: Int): () -> Boolean? = { try { ShellDisplayIme.isVisible(id, Process.myUid()) }
             catch (e: Exception) { Log.w(TAG, "Cannot read IME on child $id", e); null }

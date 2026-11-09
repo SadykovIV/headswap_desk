@@ -320,6 +320,14 @@ internal class DesktopAppPane(
             delay, TimeUnit.MILLISECONDS)
     }
 
+    /** Snapshot only our output/request identity; never query another application's UI. */
+    fun captureBackOwner(): () -> Boolean {
+        val serial = request
+        val output = current
+        val entry = wanted
+        return { request == serial && current === output && wanted === entry && output?.retired != true }
+    }
+
     fun back() {
         val entry = wanted ?: return home()
         val output = current ?: return home()

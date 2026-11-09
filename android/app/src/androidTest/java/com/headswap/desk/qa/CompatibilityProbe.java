@@ -23,8 +23,14 @@ public final class CompatibilityProbe extends Instrumentation {
         start();
     }
     @Override public void onStart() {
+        if ("vdm-gates".equals(probe)) { VirtualDeviceGateProbe.run(this); return; }
+        if ("surface-timing".equals(probe)) { SurfaceTimingProbe.run(this); return; }
+        if ("wireless-opt-out".equals(probe)) { WirelessOptOutProbe.run(this); return; }
         if ("branding".equals(probe)) { BrandingProbe.run(this); return; }
         if ("media-artwork".equals(probe)) { MediaArtworkProbe.run(this); return; }
+        if ("wireless-dashboard".equals(probe)) { DesktopKnobProbe.run(this, true); return; }
+        if ("desktop-knob".equals(probe)) { DesktopKnobProbe.run(this); return; }
+        if ("desktop-knob-raw-back".equals(probe)) { DesktopKnobProbe.run(this, false, true); return; }
         if ("hardware-input".equals(probe)) { HardwareInputProbe.run(this); return; }
         if ("pairing-ui".equals(probe)) { PhonePairingUiProbe.run(this); return; }
         if ("notification-shade".equals(probe)) { NotificationShadeProbe.run(this); return; }

@@ -15,10 +15,10 @@ internal object DesktopAssistant {
     private val actions = listOf(Intent.ACTION_ASSIST, Intent.ACTION_VOICE_COMMAND)
 
     /** Called on the phone UI thread, but starts the assistant only on the owned HU display. */
-    fun launch(context: Context, parentId: Int, ownedDisplays: Set<Int>, isCurrent: () -> Boolean) {
-        if (parentId <= 0 || parentId !in ownedDisplays || !isCurrent()) return
+    fun launch(context: Context, parentId: Int, ownedDisplays: Set<Int>, isCurrent: () -> Boolean): Int? {
+        if (parentId <= 0 || parentId !in ownedDisplays || !isCurrent()) return null
         val display = context.getSystemService(android.hardware.display.DisplayManager::class.java).getDisplay(parentId)
-        if (display?.isValid != true || display.displayId != parentId) return
+        if (display?.isValid != true || display.displayId != parentId) return null
         val manager = context.getSystemService(ActivityManager::class.java)
         @Suppress("DEPRECATION")
         val observation = runCatching { manager.getRunningTasks(100) }
@@ -50,7 +50,7 @@ internal object DesktopAssistant {
             try {
                 context.startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(target).toBundle())
                 AppLog.i("DESKTOP VOICE: exported action=$action package=$pkg display=$target", false)
-                return
+                return target
             } catch (error: RuntimeException) {
                 AppLog.i("DESKTOP VOICE: activity unavailable (${error.javaClass.simpleName})", false)
             }
@@ -58,5 +58,6 @@ internal object DesktopAssistant {
         AppLog.i("DESKTOP VOICE: no exported assistant entry available on the owned display", false)
         Toast.makeText(context.createDisplayContext(display),
             "Голосовой вход недоступен. Вызовите Алису в Навигаторе или установите «Яндекс — с Алисой».", Toast.LENGTH_LONG).show()
+        return null
     }
 }

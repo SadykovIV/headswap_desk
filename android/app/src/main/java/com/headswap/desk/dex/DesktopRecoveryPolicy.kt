@@ -29,4 +29,14 @@ internal class DesktopRecoveryPolicy {
 
     /** Stop/detach cancels a queued callback without manufacturing another retry budget. */
     fun cancel() { pending = null; serial++ }
+
+    companion object {
+        /** Source recovery belongs to the active output, not to the USB attachment mechanism. */
+        fun transportEligible(kind: String, connected: Boolean, usbAutoStartStopped: Boolean,
+                              permittedAccessoryPresent: Boolean): Boolean = connected && when (kind) {
+            "usb-aoa" -> !usbAutoStartStopped && permittedAccessoryPresent
+            "tcp6" -> true
+            else -> false
+        }
+    }
 }

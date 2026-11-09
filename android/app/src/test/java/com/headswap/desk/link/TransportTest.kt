@@ -242,6 +242,42 @@ class TransportTest {
     }
 
     @Test
+    fun nativeSessionSerializesOriginalVideoAndAudioTimestampScales() {
+        val packets = ArrayList<Pair<Int, ByteArray>>()
+        val transport = object : CarTransport {
+            override val caps = TransportCaps.TCP6
+            override val label = "wire timestamp fixture"
+            override val rxBytes = 0L
+            override val queuedVideoBytes = 0L
+            override val queuedVideoFrames = 0
+            override val drainBytesPerSec = 0.0
+            override fun queueSize(chan: Int) = 0
+            override fun close() = Unit
+            override fun start(sink: (Int, ByteArray) -> Unit, onWritten: (Int, ByteArray) -> Unit,
+                               onClosed: (String) -> Unit) = Unit
+            override fun send(chan: Int, inner: ByteArray) { packets += chan to inner }
+        }
+        val cfg = SessionConfig(desktopVideo = com.headswap.desk.aa.DesktopVideoSelection(
+            com.headswap.desk.aa.DesktopResolution.R1280_720, 128))
+        val session = CarLifeSession(transport, cfg, AaBridgeCore(log = { _, _ -> }), onClosed = {})
+        try {
+            val beforeMs = System.currentTimeMillis()
+            val capturedUs = System.nanoTime() / 1000
+            assertTrue(session.sendVideoAt(byteArrayOf(0, 0, 0, 1, 0x65, 1), capturedUs))
+            assertTrue(session.sendAudioAt(Ch.MEDIA, 0x00030006, byteArrayOf(1, 2), capturedUs))
+            val afterMs = System.currentTimeMillis()
+            val video = packets.single { it.first == Ch.VIDEO }.second
+            val audio = packets.single { it.first == Ch.MEDIA }.second
+            assertTrue(Wire.u32(video, 4).toLong() in (beforeMs / 1000 - 1)..(afterMs / 1000 + 1))
+            val audioEpoch = Wire.u32(audio, 4).toLong() and 0xffffffffL
+            val expected = beforeMs and 0xffffffffL
+            assertTrue("audio must keep millisecond units", kotlin.math.abs(audioEpoch - expected) < 1000)
+            assertEquals(Msg.VIDEO_DATA, Wire.u32(video, 8))
+            assertEquals(0x00030006, Wire.u32(audio, 8))
+        } finally { session.close("wire timestamp fixture") }
+    }
+
+    @Test
     fun streamDropQueuedRemovesOnlyMatchingMediaData() {
         // писатель не запущен: всё лежит в очереди. h425: из неё уходит только MEDIA_DATA, остальное на месте
         val out = RecordingOut()
@@ -598,6 +634,89 @@ class TransportTest {
                 assertEquals(-1, try { socket.getInputStream().read() } catch (_: java.net.SocketException) { -1 })
             }
         } finally { listener.close(); hu.close() }
+    }
+
+    @Test
+    fun partialAssemblyExpiresAllChannelsThenAcceptsNewEpochInSameListener() {
+        var filterCalls = 0
+        val listener = Tcp6Listener(InetAddress.getLoopbackAddress(), zeroPorts, dataPort = 0,
+            clock = clock, peerOk = { filterCalls++; true }, assemblyTimeoutMs = 350).open()
+        val partial = Hu(connect(listener, listOf(Ch.CMD, Ch.VIDEO, 0)))
+        val ready = AtomicReference<MultiSocketTransport?>()
+        val failure = AtomicReference<Throwable?>()
+        val done = CountDownLatch(1)
+        val waiter = Thread {
+            try { ready.set(listener.await(5000, "retry")) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { done.countDown() }
+        }.apply { start() }
+        var replacement: Hu? = null
+        try {
+            // Read actual socket EOF/reset: the original channels and optional DATA all close.
+            for (socket in partial.socks.values) assertPeerClosed(socket)
+            assertNull(listener.peerAddress)
+            assertEquals("first-peer waiting continues after a failed assembly", 1L, done.count)
+            val fresh = Hu(connect(listener, Tcp6Ports.DEFAULT.keys)).also { replacement = it }
+            assertTrue(done.await(3, TimeUnit.SECONDS))
+            assertNull(failure.get())
+            assertEquals("new epoch must pass peer filtering again", 2, filterCalls)
+            val transport = checkNotNull(ready.get())
+            transport.start({ _, _ -> }, { _, _ -> }, { })
+            val command = Wire.cmdInner(Msg.FOREGROUND, null)
+            transport.send(Ch.CMD, command)
+            assertArrayEquals(command, fresh.readExactly(Ch.CMD, command.size))
+            assertTrue(wl.any { it.startsWith("WL tcp assembly-timeout") && "data=true" in it })
+        } finally {
+            ready.get()?.close(); listener.abort(); partial.close(); replacement?.close(); waiter.join(1000)
+        }
+    }
+
+    @Test
+    fun dataOnlyCannotPinPeerForEntireDiscoveryWindowAndCancellationClosesNextEpoch() {
+        val listener = Tcp6Listener(InetAddress.getLoopbackAddress(), zeroPorts, dataPort = 0,
+            clock = clock, assemblyTimeoutMs = 200).open()
+        val data = Hu(connect(listener, listOf(0)))
+        val failure = AtomicReference<Throwable?>()
+        val done = CountDownLatch(1)
+        val waiter = Thread {
+            try { listener.await(5000, "data-only"); failure.set(AssertionError("Unexpected ready transport")) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { done.countDown() }
+        }.apply { start() }
+        var next: Hu? = null
+        try {
+            assertPeerClosed(data.socks.getValue(0))
+            assertNull(listener.peerAddress)
+            val sockets = Hu(connect(listener, listOf(0, Ch.CMD))).also { next = it }
+            listener.abort()
+            assertTrue(done.await(2, TimeUnit.SECONDS))
+            assertTrue(failure.get() is LinkSetupException)
+            sockets.socks.values.forEach(::assertPeerClosed)
+        } finally { listener.abort(); data.close(); next?.close(); waiter.join(1000) }
+    }
+
+    @Test
+    fun completedTransportSurvivesAssemblyDeadlineAndRetainsOriginalPeerSockets() {
+        val listener = Tcp6Listener(InetAddress.getLoopbackAddress(), zeroPorts, dataPort = null,
+            clock = clock, assemblyTimeoutMs = 350).open()
+        val hu = Hu(connect(listener, Tcp6Ports.DEFAULT.keys))
+        val transport = listener.await(3000, "complete")
+        try {
+            transport.start({ _, _ -> }, { _, _ -> }, { })
+            Thread.sleep(400)
+            // onAccept invokes expiry checking; a handed-off transport must remain untouched.
+            val duplicate = Hu(connect(listener, listOf(Ch.CMD)))
+            try { assertPeerClosed(duplicate.socks.getValue(Ch.CMD)) } finally { duplicate.close() }
+            val command = Wire.cmdInner(Msg.FOREGROUND, null)
+            transport.send(Ch.CMD, command)
+            assertArrayEquals(command, hu.readExactly(Ch.CMD, command.size))
+            assertFalse(wl.any { it.startsWith("WL tcp assembly-timeout") })
+        } finally { transport.close(); listener.abort(); hu.close() }
+    }
+
+    private fun assertPeerClosed(socket: Socket) {
+        socket.soTimeout = 2000
+        assertEquals(-1, try { socket.getInputStream().read() } catch (_: java.net.SocketException) { -1 })
     }
 
     @Test

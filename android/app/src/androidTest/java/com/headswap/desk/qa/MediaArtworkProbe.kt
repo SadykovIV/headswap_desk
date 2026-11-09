@@ -10,8 +10,18 @@ import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.Bundle
 import com.headswap.desk.MetaImages
+import com.headswap.desk.CarLifeSession
+import com.headswap.desk.Ch
+import com.headswap.desk.CmdMsg
+import com.headswap.desk.Msg
+import com.headswap.desk.PbReader
+import com.headswap.desk.SessionConfig
+import com.headswap.desk.Wire
+import com.headswap.desk.aa.AaBridgeCore
 import com.headswap.desk.cluster.ClusterMediaSource
 import com.headswap.desk.cluster.ClusterNowPlaying
+import com.headswap.desk.link.CarTransport
+import com.headswap.desk.link.TransportCaps
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 
@@ -48,7 +58,8 @@ object MediaArtworkProbe {
                 }
                 error("MediaSession update missing")
             }
-            val art = next("Fixture cover").artwork?.copyBytes() ?: error("Missing artwork")
+            val withCover = next("Fixture cover")
+            val art = withCover.artwork?.copyBytes() ?: error("Missing artwork")
             check(art.size in 1 until MetaImages.MAX_BYTES)
             check(art.contentEquals(MetaImages.albumJpeg(art))) { "Bounded JPEG was unnecessarily recompressed" }
             val decoded = BitmapFactory.decodeByteArray(art, 0, art.size) ?: error("Invalid JPEG")
@@ -58,8 +69,12 @@ object MediaArtworkProbe {
             check(!bitmap.isRecycled)
             check(MetaImages.albumJpeg(byteArrayOf(1, 2, 3)) == null)
             session.setMetadata(MediaMetadata.Builder().putString(MediaMetadata.METADATA_KEY_TITLE, "Fixture no cover").build())
-            check(next("Fixture no cover").artwork == null)
+            val withoutCover = next("Fixture no cover")
+            check(withoutCover.artwork == null)
             result.putBoolean("removalPropagated", true)
+            for (caps in listOf(TransportCaps.USB_AOA, TransportCaps.TCP6))
+                verifyWire(caps, withCover, withoutCover, art)
+            result.putString("wire", "USB/TCP6 MEDIA_INFO: title, bounded JPEG and cover removal decoded at simulated HU")
             code = Activity.RESULT_OK
         } catch (failure: Throwable) {
             result.putString("error", android.util.Log.getStackTraceString(failure))
@@ -69,6 +84,47 @@ object MediaArtworkProbe {
             // Metadata may retain the bitmap until its final callback finishes; source is caller-owned.
             ui.dropShellPermissionIdentity()
             probe.finish(code, result)
+        }
+    }
+
+    /** Real session/core/serializer and image conversion; only the physical HU is substituted. */
+    private fun verifyWire(transportCaps: TransportCaps, withCover: ClusterNowPlaying, withoutCover: ClusterNowPlaying, art: ByteArray) {
+        val peer = object : CarTransport {
+            override val caps = transportCaps
+            override val label = "artwork fixture"
+            override val rxBytes = 0L
+            override val queuedVideoBytes = 0L
+            override val queuedVideoFrames = 0
+            override val drainBytesPerSec = 0.0
+            val metadata = LinkedBlockingQueue<CmdMsg>()
+            override fun queueSize(chan: Int) = 0
+            override fun close() = Unit
+            override fun start(sink: (Int, ByteArray) -> Unit, onWritten: (Int, ByteArray) -> Unit,
+                               onClosed: (String) -> Unit) = Unit
+            override fun send(chan: Int, inner: ByteArray) {
+                if (chan == Ch.CMD) Wire.parseCmd(inner)?.takeIf { it.type == Msg.MEDIA_INFO }?.let(metadata::offer)
+            }
+        }
+        val core = AaBridgeCore(log = { _, _ -> })
+        val connection = CarLifeSession(peer, SessionConfig(), core, onClosed = {})
+        try {
+            connection.start()
+            check(connection.outputConnected)
+            core.onCarlifeStart()
+            connection.onClusterMedia(withCover)
+            val packet = peer.metadata.poll(3, TimeUnit.SECONDS) ?: error("${transportCaps.kind}: MEDIA_INFO absent")
+            val fields = checkNotNull(PbReader.parse(packet.body))
+            check(PbReader.str(fields, 2) == withCover.title)
+            val transmitted = PbReader.all(fields, 5).single().data ?: error("JPEG missing from MEDIA_INFO")
+            check(art.contentEquals(transmitted)) { "${transportCaps.kind}: cover changed during transport serialization" }
+            connection.onClusterMedia(withoutCover)
+            val cleared = peer.metadata.poll(3, TimeUnit.SECONDS) ?: error("${transportCaps.kind}: cover clear absent")
+            val clearedFields = checkNotNull(PbReader.parse(cleared.body))
+            check(PbReader.str(clearedFields, 2) == withoutCover.title)
+            check(PbReader.all(clearedFields, 5).single().data?.isEmpty() == true)
+        } finally {
+            connection.close("artwork fixture finished")
+            check(!connection.outputConnected)
         }
     }
 }

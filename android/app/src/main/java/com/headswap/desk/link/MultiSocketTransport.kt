@@ -102,6 +102,8 @@ class Tcp6Listener(
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
     /** Кого пускать при bind на 0.0.0.0: ветка B пускает только адреса из подсетей, куда идёт маяк. */
     private val peerOk: (InetAddress) -> Boolean = { true },
+    /** After the first socket, six channels must arrive together; waiting for the first peer is separate. */
+    private val assemblyTimeoutMs: Long = 15_000L,
 ) {
     private val lock = Object()
     private val servers = LinkedHashMap<Int, ServerSocket>()   // канал -> сервер; DATA_CHAN = порт Data
@@ -109,6 +111,10 @@ class Tcp6Listener(
     private var dataSocket: Socket? = null
     private var peer: InetAddress? = null
     private var closed = false
+    private var handedOff = false
+    private var assemblyStartedMs: Long? = null
+
+    init { require(assemblyTimeoutMs > 0) }
 
     /** Открыть все порты. Не открылся любой из шести: исключение с причиной, всё уже закрыто. */
     fun open(): Tcp6Listener {
@@ -149,13 +155,16 @@ class Tcp6Listener(
     fun await(timeoutMs: Long, label: String): MultiSocketTransport {
         val start = clock()
         synchronized(lock) {
+            check(!handedOff) { "tcp6: transport already handed off" }
             while (!closed && accepted.size < ports.size) {
-                val left = timeoutMs - (clock() - start)
+                expireAssemblyLocked()
+                val now = clock()
+                val left = timeoutMs - (now - start)
                 if (left <= 0) break
-                lock.wait(minOf(left, 250L))
+                val assemblyLeft = assemblyStartedMs?.let { assemblyTimeoutMs - (now - it) }
+                lock.wait(minOf(left, assemblyLeft ?: left, 250L).coerceAtLeast(1))
             }
             if (closed) {
-                dropAccepted()
                 throw LinkSetupException("tcp6: слушатель закрыт до 6/6 (${accepted.size}/${ports.size})")
             }
             if (accepted.size < ports.size) {
@@ -167,6 +176,7 @@ class Tcp6Listener(
                 throw LinkSetupException("tcp6: за ${timeoutMs / 1000} с подключилось $k/${ports.size}, нет ${missing.joinToString(", ")}")
             }
             WLog.ev(WLog.TCP, "ready", "ready" to "${ports.size}/${ports.size}", "peer" to peer?.hostAddress, "ms" to clock() - start)
+            handedOff = true
             return MultiSocketTransport(LinkedHashMap(accepted), ports, "$label, ГУ ${peer?.hostAddress}", { close() }, clock)
         }
     }
@@ -179,7 +189,8 @@ class Tcp6Listener(
         if (closed) return
         closed = true
         for (s in servers.values) quiet { s.close() }
-        // принятые, но не переданные транспорту сокеты закрываются здесь; переданные закрывает транспорт сам
+        // Once handed off, channel sockets belong to the transport; before then this listener owns them.
+        if (!handedOff) dropAccepted()
         dataSocket?.let { quiet { it.close() } }
         lock.notifyAll()
     }
@@ -187,6 +198,21 @@ class Tcp6Listener(
     /** Закрыть и сокеты каналов (подъём не состоялся). */
     private fun dropAccepted() {
         for (s in accepted.values) quiet { s.close() }
+    }
+
+    /** Called under the same lock as acceptance/handoff: a completed set cannot be expired. */
+    private fun expireAssemblyLocked() {
+        val started = assemblyStartedMs ?: return
+        if (closed || handedOff || accepted.size == ports.size || clock() - started < assemblyTimeoutMs) return
+        WLog.ev(WLog.TCP, "assembly-timeout", "ready" to "${accepted.size}/${ports.size}",
+            "data" to (dataSocket != null), "waitedMs" to clock() - started)
+        dropAccepted()
+        accepted.clear()
+        dataSocket?.let { quiet { it.close() } }
+        dataSocket = null
+        peer = null
+        assemblyStartedMs = null
+        lock.notifyAll()
     }
 
     private fun acceptLoop(chan: Int, server: ServerSocket) {
@@ -204,6 +230,7 @@ class Tcp6Listener(
         val addr = s.inetAddress
         val port = s.localPort
         synchronized(lock) {
+            expireAssemblyLocked()
             val reject = when {
                 closed -> "closed"
                 chan == DATA_CHAN && dataSocket != null -> "dup"
@@ -217,7 +244,10 @@ class Tcp6Listener(
                 quiet { s.close() }
                 return
             }
-            if (peer == null) peer = addr
+            if (peer == null) {
+                peer = addr
+                assemblyStartedMs = clock()
+            }
             setOptions(s)
             if (chan == Ch.VIDEO) {
                 // малый буфер отправки: иначе очередь прячется в ядре (до МиБ), запись не блокируется и слив не меряется,
@@ -229,11 +259,12 @@ class Tcp6Listener(
                 dataSocket = s
                 WLog.ev(WLog.TCP, "accept", "chan" to "DATA", "port" to port, "peer" to addr.hostAddress)
                 Thread({ drainData(s) }, "tcp6-data").apply { isDaemon = true }.start()
+                lock.notifyAll()
                 return
             }
             accepted[chan] = s
             WLog.ev(WLog.TCP, "accept", "chan" to chanName(chan), "port" to port, "peer" to addr.hostAddress, "ready" to "${accepted.size}/${ports.size}")
-            if (accepted.size == ports.size) lock.notifyAll()
+            lock.notifyAll()
         }
     }
 

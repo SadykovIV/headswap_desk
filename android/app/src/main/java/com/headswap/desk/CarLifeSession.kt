@@ -91,6 +91,8 @@ class CarLifeSession(
 
     /** Транспорт сессии: usb-aoa, tcp-debug или tcp6. */
     val transportKind: String get() = transport.caps.kind
+    /** A source restart must never revive a closed session or a failed channel. */
+    val outputConnected: Boolean get() = !closed.get() && !transport.outputEndpointLost
 
     /** Воздух (6 сокетов): своя лесенка битрейта, PAUSE-keepalive чаще, WL-строки видео. USB и tcp-debug - как было. */
     private val air = transport.caps == TransportCaps.TCP6
@@ -649,9 +651,9 @@ class CarLifeSession(
         }
     }
 
-    /** Авто: целевой fps транскодера = max(fps ГУ, 10) на лету; фиксированная настройка: только ответ DONE. Passthrough не трогаем (выброс P-кадров ломает поток). */
+    /** Native desktop honors the HU ceiling, including 3..9 FPS. Legacy AA retains its 10 FPS floor and fixed modes. */
     private fun onFrameRateChange(fps: Int) {
-        if (bridge.huMobisNx4c) {
+        if (bridge.huMobisNx4c && cfg.desktopVideo == null) {
             AppLog.i("видео: FRAME_RATE_CHANGE fps=$fps, Mobis CCNC: отвечаю DONE, энкодер держит ${AaBridgeCore.MOBIS_FPS} fps, как Baidu")
             return
         }
@@ -664,8 +666,9 @@ class CarLifeSession(
             AppLog.i("видео: FRAME_RATE_CHANGE fps=$fps, настройка фиксирована на $fixed: отвечаю DONE, частоту не меняю")
             return
         }
-        val wanted = maxOf(fps, Handshake.MIN_APPLIED_FPS)
-        val applied = Handshake.capFps(wanted, huMaxFps())
+        val wanted = if (cfg.desktopVideo != null) fps else maxOf(fps, Handshake.MIN_APPLIED_FPS)
+        val applied = if (cfg.desktopVideo != null) DesktopVideoQuality.frameRateChangeTarget(fps, huMaxFps())
+            else Handshake.capFps(wanted, huMaxFps())
         val old = targetFps
         targetFps = applied
         val capped = thermalThrottle.capFps(if (cfg.desktopVideo != null) minOf(applied, desktopFrameRate.current) else applied)
@@ -711,9 +714,10 @@ class CarLifeSession(
         pendingW = w
         pendingH = h
         pendingFps = fps
-        targetFps = if (mobis) AaBridgeCore.MOBIS_FPS else fps
+        targetFps = if (mobis && cfg.desktopVideo == null) AaBridgeCore.MOBIS_FPS
+            else if (cfg.desktopVideo != null) DesktopVideoQuality.chooseFps(FpsSetting.AUTO, fps, huMaxFps()) else fps
         desktopFrameRate.reset(targetFps)
-        if (mobis) AppLog.i("видео: Mobis CCNC, INIT_DONE fps=$fps, энкодер ${AaBridgeCore.MOBIS_FPS} fps ${AaBridgeCore.MOBIS_BITRATE / 1000} кбит/с VBR")
+        if (mobis) AppLog.i("видео: Mobis CCNC, INIT_DONE fps=$fps, энкодер $targetFps fps, потолок ${AaBridgeCore.MOBIS_BITRATE / 1000} кбит/с VBR")
         videoInited = true
         chosen = "${w}x$h ($why)"
         AppLog.i("== ОТВЕЧАЮ INIT_DONE ${w}x$h fps=$fps ($why; ГУ просит fps=$rf, настройка ${cfg.fpsSetting.name}${if (bridge.transcodeEnabled) "" else ", passthrough: частота не регулируется"})")
@@ -916,7 +920,7 @@ class CarLifeSession(
     }
 
     private fun videoTime(presentationUs: Long? = null): Int = if (cfg.desktopVideo != null)
-        mediaClock.wireTime(presentationUs, System.nanoTime() / 1000) else unixSeconds()
+        mediaClock.wireVideoSeconds(presentationUs, System.nanoTime() / 1000) else unixSeconds()
 
     private fun effectiveEncoderBitrate(): Int {
         val receiverLimit = mobisAaCeiling.current.takeIf { bridge.huMobisNx4c }
@@ -1078,8 +1082,12 @@ class CarLifeSession(
             applyEncoderBitrate()
     }
 
-    /** Потолок fps под ГУ (Pioneer RM56E8B: 15), null = без ограничения. */
-    private fun huMaxFps(): Int? = if (bridge.huPioneerRm56) AaBridgeCore.PIONEER_RM56_MAX_FPS else null
+    /** Native Mobis keeps its compatibility maximum, but an explicit lower HU request still wins. */
+    private fun huMaxFps(): Int? = when {
+        bridge.huPioneerRm56 -> AaBridgeCore.PIONEER_RM56_MAX_FPS
+        cfg.desktopVideo != null && bridge.huMobisNx4c -> AaBridgeCore.MOBIS_FPS
+        else -> null
+    }
 
     /**
      * Mobis CCNC (h242): ГУ уходит в цикл START -> EIO на IDR > ~600 КБ, а IDR qti VBR на движении растёт каждую
@@ -1142,7 +1150,7 @@ class CarLifeSession(
         // Interactive projection cannot replay seconds of stale PCM after a blocked video write.
         // Carry capture time through to the protocol, and expire only DATA, never INIT/STOP.
         if (ageMs >= DESKTOP_AUDIO_MAX_AGE_MS) return false
-        val time = mediaClock.wireTime(capturedAtUs, nowUs)
+        val time = mediaClock.wireAudioMillis(capturedAtUs, nowUs)
         transport.sendTimed(channel, Wire.dataInner(type, time, payload), DESKTOP_AUDIO_MAX_AGE_MS - ageMs)
         return true
     }

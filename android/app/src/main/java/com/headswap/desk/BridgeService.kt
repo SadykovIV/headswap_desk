@@ -95,6 +95,7 @@ class BridgeService : Service() {
     private var clusterNavigation: ClusterNavigationSource? = null
     private var foregroundGuidance: CarLifeForegroundGuidance? = null
     private var unobserveNavigationHints: (() -> Unit)? = null
+    private var unobserveWirelessEnabled: (() -> Unit)? = null
     private var host: BridgeHost? = null
     private var phoneIdleTimer: com.headswap.desk.dex.CarLifePhoneIdleTimer? = null
     private val desktopAudio by lazy { DesktopAudioCapture(applicationContext) }
@@ -227,6 +228,11 @@ class BridgeService : Service() {
         registerReceiver(detachReceiver, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED), Context.RECEIVER_EXPORTED)
         audioDiag.start(this)
         notificationShade = com.headswap.desk.notify.HuNotificationShade(this).also { it.start() }
+        unobserveWirelessEnabled = WirelessPrefs(this).observeEnabled { enabled ->
+            if (!enabled) main.post {
+                if (unobserveWirelessEnabled != null && !WirelessPrefs(this).enabled) onWirelessDisabled()
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -294,15 +300,7 @@ class BridgeService : Service() {
             stopRequested = true
             com.headswap.desk.dex.DesktopMusicPlayback.cancel("explicit Stop")
             cancelDesktopRecovery()
-            wifiBMode = false
-            autoMode = false      // до следующего ACL_CONNECTED
-            autoStarted = false
-            cancelAutoOff()
-            cancelHint()
-            stopCarNet(CarNetEvent.STOP, "stop")
-            CarLifeState.wireless = null
-            btProbe.stop("стоп")
-            cancelLinkWait()
+            cancelWirelessWaiting("стоп")
             val s = session
             if (s != null) {
                 s.close("остановлено пользователем")        // onSessionClosed увидит stopRequested: AA закрывается сразу
@@ -816,6 +814,34 @@ class BridgeService : Service() {
         restartingForCarNet = false
     }
 
+    /** All wireless startup resources have the same owner and cancellation boundary. */
+    private fun cancelWirelessWaiting(reason: String) {
+        wifiBMode = false
+        autoMode = false
+        autoStarted = false
+        usbToAirPending = false
+        main.removeCallbacks(usbToAirTick)
+        getSystemService(NotificationManager::class.java).cancel(USB_TO_AIR_NOTIF_ID)
+        cancelAutoOff()
+        cancelHint()
+        stopCarNet(CarNetEvent.STOP, reason)
+        CarLifeState.wireless = null
+        btProbe.stop(reason)
+        cancelLinkWait()
+    }
+
+    /** Opting out must cancel pending connections immediately without stopping an active USB link. */
+    private fun onWirelessDisabled() {
+        AppLog.i("WIRELESS disabled: cancelling wireless output and startup", false)
+        if (session?.transportKind == TransportCaps.TCP6.kind) {
+            command(Intent(this, BridgeService::class.java).setAction(ACTION_STOP))
+        } else {
+            cancelWirelessWaiting("беспроводное подключение выключено")
+            // A warm desktop, if any, retains its existing grace period and teardown ACK.
+            if (session == null && host == null) finish()
+        }
+    }
+
     private fun startTcp6(kind: String, bind: String, waitMs: Long, beacon: HotspotBeacon?) {
         if (linkWaiting) {
             AppLog.i("сервис: $kind: уже жду ГУ, повторный старт игнорирую")
@@ -1117,13 +1143,15 @@ class BridgeService : Service() {
 
     /** All recovery state belongs to the foreground service, never the setup Activity. */
     private fun canRecoverDesktop(current: CarLifeSession): Boolean = runCatching {
-        alive && !stopRequested && !Actions.isUsbAutoStartStopped() && session === current &&
-            current.transportKind == TransportCaps.USB_AOA.kind && DexPrefs(this).useDesktopService &&
+        alive && !stopRequested && session === current && DexPrefs(this).useDesktopService &&
             DesktopAccess.isReady(this) && getSystemService(PowerManager::class.java).isInteractive &&
             !getSystemService(KeyguardManager::class.java).isDeviceLocked &&
-            getSystemService(UsbManager::class.java).let { usb ->
-                usb.accessoryList.orEmpty().any { Actions.isCompatibleAccessory(it) && usb.hasPermission(it) }
-            }
+            DesktopRecoveryPolicy.transportEligible(current.transportKind, current.outputConnected,
+                usbAutoStartStopped = Actions.isUsbAutoStartStopped(),
+                permittedAccessoryPresent = current.transportKind == TransportCaps.USB_AOA.kind &&
+                    getSystemService(UsbManager::class.java).let { usb ->
+                        usb.accessoryList.orEmpty().any { Actions.isCompatibleAccessory(it) && usb.hasPermission(it) }
+                    })
     }.getOrDefault(false)
 
     private fun onDesktopSourceFailed(owner: BridgeHost, reason: ShizukuDexConnector.Failure) {
@@ -1163,7 +1191,7 @@ class BridgeService : Service() {
         if (host != null || session !== recovery.session || !recovery.owner.isTornDown) return
         // Recheck after the delay: Stop, detach, revoked permission, server death or lock cancels recovery.
         if (!canRecoverDesktop(recovery.session)) {
-            DexState.error = "Восстановление остановлено. Проверьте USB, доступ к рабочему столу и разблокировку телефона"
+            DexState.error = "Восстановление остановлено. Проверьте соединение CarLife, доступ к рабочему столу и разблокировку телефона"
             AppLog.i("DESKTOP recovery cancelled: current session/access no longer eligible", false)
             return
         }
@@ -1270,6 +1298,8 @@ class BridgeService : Service() {
     }
 
     override fun onDestroy() {
+        unobserveWirelessEnabled?.invoke()
+        unobserveWirelessEnabled = null
         try {
             unregisterReceiver(detachReceiver)
         } catch (_: Exception) {

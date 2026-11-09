@@ -11,7 +11,7 @@ import com.headswap.desk.BridgeService
 import com.headswap.desk.BuildConfig
 import com.headswap.desk.CarLifeState
 import com.headswap.desk.dex.DesktopAccess
-import com.headswap.desk.dex.DexPrefs
+import com.headswap.desk.ui.Actions
 
 /** Wireless projection is independent of the short-lived Wi-Fi ADB activation. */
 class WirelessPrefs(context: Context) {
@@ -24,6 +24,14 @@ class WirelessPrefs(context: Context) {
             preferences.edit().putBoolean("enabled", value).apply()
             CarProfile.enableTrigger(app, value)
         }
+
+    fun observeEnabled(changed: (Boolean) -> Unit): () -> Unit {
+        val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "enabled" || key == null) changed(enabled)
+        }
+        preferences.registerOnSharedPreferenceChangeListener(listener)
+        return { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
 }
 
 object WirelessCarLife {
@@ -37,7 +45,7 @@ object WirelessCarLife {
     fun unavailableReason(context: Context): String? = when {
         !BuildConfig.WIRELESS_BETA || !WirelessPrefs(context).enabled -> "Выберите подключение CarLife по Wi-Fi"
         missingPermissions(context).isNotEmpty() -> "Разрешите доступ к устройствам поблизости и локальной сети"
-        DexPrefs(context).useDesktopService && !DesktopAccess.isReady(context) -> "Сначала активируйте доступ HeadSwap на главном экране"
+        !DesktopAccess.isReadyForProjection(context) -> "Сначала подготовьте выбранный способ доступа на главном экране HeadSwap"
         else -> null
     }
 
@@ -59,6 +67,9 @@ object WirelessCarLife {
             return false
         }
         return try {
+            // This method is an explicit UI continuation. A prior Stop must not leave
+            // the main screen saying "stopped" while the settings button starts Wi-Fi.
+            Actions.resumeUsbAutoStart()
             context.startForegroundService(Intent(context, BridgeService::class.java).setAction(BridgeService.ACTION_WIFI_B))
             true
         } catch (error: RuntimeException) {

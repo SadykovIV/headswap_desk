@@ -267,6 +267,12 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
     override fun sendRotary(delta: Int) { DesktopRotaryInput.keys(delta).forEach(::sendKey) }
 
     override fun sendKey(keycode: Int) {
+        if (keycode == 65538 || keycode == android.view.KeyEvent.KEYCODE_MUSIC) {
+            synchronized(hardwareBack) { hardwareBack.reset() }
+            // These are launcher commands. Injecting MUSIC into an arbitrary DeX window
+            // can open the phone's default app; this profile has no owned category picker.
+            return
+        }
         if (keycode !in 0..1000 || !controlReady || stopping.get()) return
         val home = synchronized(hardwareBack) {
             if (keycode == android.view.KeyEvent.KEYCODE_BACK) {

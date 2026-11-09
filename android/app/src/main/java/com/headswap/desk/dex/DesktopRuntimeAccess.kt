@@ -10,7 +10,6 @@ internal interface DesktopRuntimeAccess {
     fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay
     fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay
     fun inject(event: InputEvent, id: Int, actionButton: Int = 0)
-    fun focusedDisplay(parentId: Int, children: Set<Int>): Int = parentId
     fun childTaskState(id: Int, packageName: String): Int
     fun childImeVisibilityQuery(id: Int): () -> Boolean?
     /** Capture backend ownership on the display thread; query Android on a separate worker. */

@@ -1,5 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application>
+        <activity android:name="com.headswap.desk.qa.VirtualDeviceLockFixture" android:exported="true"
+            android:permission="android.permission.DUMP" android:resizeableActivity="true"
+            android:documentLaunchMode="always" android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen" />
         <!-- This component lives in the separate test APK, with a different playback UID. -->
         <activity android:name="com.headswap.desk.qa.MixToneActivity" android:exported="true"
             android:permission="android.permission.DUMP"/>
@@ -9,6 +12,64 @@
             android:permission="android.permission.DUMP" android:resizeableActivity="true" android:documentLaunchMode="always"
             android:enableOnBackInvokedCallback="false">
             <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+        <activity android:name="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true"
+            android:resizeableActivity="true" android:documentLaunchMode="always" />
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget00"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 00">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget01"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 01">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget02"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 02">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget03"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 03">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget04"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 04">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget05"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 05">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget06"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 06">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget07"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 07">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget08"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 08">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget09"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 09">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget10"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 10">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity-alias android:name="com.headswap.desk.qa.KnobTarget11"
+            android:targetActivity="com.headswap.desk.qa.DesktopKnobTarget" android:exported="true" android:label="ZZ QA 11">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity-alias>
+        <activity android:name="com.headswap.desk.qa.DesktopPanelFixture" android:exported="true" android:resizeableActivity="true" android:label="QA Desktop Panel">
+            <intent-filter><action android:name="com.headswap.desk.action.DESKTOP_COMPONENT"/><category android:name="android.intent.category.DEFAULT"/></intent-filter>
+            <meta-data android:name="com.headswap.desk.component.API_MAJOR" android:value="1"/>
+            <meta-data android:name="com.headswap.desk.component.PROFILE" android:value="android-desktop"/>
+            <meta-data android:name="com.headswap.desk.component.MODE_ID" android:value="qa-panel"/>
+            <meta-data android:name="com.headswap.desk.component.DASHBOARD" android:value="true"/>
+            <meta-data android:name="com.headswap.desk.component.PROFILE_CHROME" android:value="true"/>
         </activity>
     </application>
 </manifest>

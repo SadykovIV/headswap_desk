@@ -149,13 +149,6 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         }
     }
 
-    @Synchronized override fun focusedDisplay(parentId: Int, token: IBinder): Int {
-        requireActive(); requireTrustedDisplay(parentId)
-        check(registry.requireDisplay(parentId, token).parent == null)
-        return DesktopInputTarget.resolve(parentId, registry.registeredDisplayIds() - parentId,
-            DesktopFocusReader.current())
-    }
-
     @Synchronized override fun resizeDisplay(displayId: Int, token: IBinder, width: Int, height: Int) {
         requireActive(); requireTrustedDisplay(displayId)
         registry.resize(displayId, token, width, height)

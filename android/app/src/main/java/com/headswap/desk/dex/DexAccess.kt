@@ -29,6 +29,14 @@ internal object AdbClientIdentity {
 
 object DexAccess {
     private var configured = false
+    private val readiness = LegacyAdbReadiness()
+
+    /** UI/transport preflight only. A verified socket is not retained and is not a grant. */
+    internal fun hasVerifiedEndpoint(context: Context): Boolean {
+        val prefs = DexPrefs(context)
+        val address = LocalAddressPolicy.normalizeOrNull(prefs.host) ?: return false
+        return readiness.matches(DexEndpoint(address, prefs.connectPort), prefs.hasPaired)
+    }
 
     @Synchronized
     private fun configure(context: Context) {
@@ -43,6 +51,7 @@ object DexAccess {
 
     /** Keep Android's pairing-code sheet open while entering the code in split-screen. */
     suspend fun pair(context: Context, port: Int, code: String, host: String = "127.0.0.1") = withContext(Dispatchers.IO) {
+        readiness.begin() // Changing the paired identity invalidates all earlier probe results.
         val operation = Operation("pair", host, port)
         operation.environment(context)
         try {
@@ -77,6 +86,7 @@ object DexAccess {
 
     /** Blocking: call from a worker thread. Use the main debugging port, never a pairing port. */
     fun probe(context: Context, port: Int, host: String = "127.0.0.1"): String {
+        val attempt = readiness.begin()
         val operation = Operation("probe", host, port)
         operation.environment(context)
         try {
@@ -93,9 +103,11 @@ object DexAccess {
                 }
             }
             DexPrefs(context).hasPaired = true
+            readiness.verified(attempt, DexEndpoint(address, port))
             operation.success()
             return "Android shell доступен (UID 2000)"
         } catch (e: Exception) {
+            readiness.failed(attempt)
             throw operation.failure(e)
         }
     }
@@ -150,6 +162,7 @@ object DexAccess {
 
     internal fun connect(context: Context, port: Int): Kadb {
         val host = DexPrefs(context).host
+        val evidence = readiness.token()
         val operation = Operation("connect", host, port)
         try {
             val address = operation.validate(host, port)
@@ -158,12 +171,14 @@ object DexAccess {
             operation.stage(DexAccessStage.CONNECT)
             return Kadb.create(address, port, connectTimeout = 3_000, socketTimeout = 15_000)
         } catch (e: Exception) {
+            LocalAddressPolicy.normalizeOrNull(host)?.let { readiness.invalidate(evidence, DexEndpoint(it, port)) }
             throw operation.failure(e)
         }
     }
 
     /** Called after the connector owns the socket, so Stop can interrupt initial auth. */
     internal fun verifyShell(adb: Kadb, host: String, port: Int) {
+        val evidence = readiness.token()
         val operation = Operation("connect", host, port)
         operation.stage(DexAccessStage.CONNECT)
         try {
@@ -173,6 +188,7 @@ object DexAccess {
             }
             operation.success()
         } catch (e: Exception) {
+            LocalAddressPolicy.normalizeOrNull(host)?.let { readiness.invalidate(evidence, DexEndpoint(it, port)) }
             throw operation.failure(e)
         }
     }

@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
@@ -32,9 +33,22 @@ internal object PairingReplyPolicy {
         waiting && !expected.isNullOrEmpty() && expected == actual
 }
 
+internal enum class PairingNotificationBlock { APP, PROGRESS_CHANNEL, CODE_CHANNEL }
+
+internal object PairingNotificationPolicy {
+    /** A missing channel will be created by the service; an existing user-blocked channel stays blocked. */
+    fun block(appAllowed: Boolean, progressImportance: Int?, codeImportance: Int?, needsCode: Boolean): PairingNotificationBlock? = when {
+        !appAllowed -> PairingNotificationBlock.APP
+        progressImportance == NotificationManager.IMPORTANCE_NONE -> PairingNotificationBlock.PROGRESS_CHANNEL
+        needsCode && codeImportance == NotificationManager.IMPORTANCE_NONE -> PairingNotificationBlock.CODE_CHANNEL
+        else -> null
+    }
+}
+
 /** User-started foreground activation continues while Android's one-time pairing sheet stays open. */
 class PhonePairingService : Service() {
     private val main = Handler(Looper.getMainLooper())
+    private val attemptLock = Any()
     private val replies = ArrayBlockingQueue<String>(1)
     private var discovery: DexDiscovery? = null
     @Volatile private var pairing: DexEndpoint? = null
@@ -42,6 +56,8 @@ class PhonePairingService : Service() {
     @Volatile private var cancelled = false
     @Volatile private var waitingCode = false
     @Volatile private var dispatched = false
+    @Volatile private var destroyed = false
+    @Volatile private var finished = false
     private var worker: Thread? = null
     private var replyToken: String? = null
     private lateinit var notifications: NotificationManager
@@ -55,19 +71,34 @@ class PhonePairingService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(PROGRESS_ID, progress("Подготовка активации…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         when (intent?.action) {
-            START -> if (worker == null) {
+            START -> {
+                // START is sent with startForegroundService. A settings change can race the
+                // caller's gate: acknowledge its FGS obligation even when rejecting it below.
+                // REPLY/CANCEL use ordinary service PendingIntents and impose no such obligation.
+                if (replyToken == null) replyToken = UUID.randomUUID().toString()
+                startForeground(PROGRESS_ID, progress(status.ifBlank { "Подготовка активации…" }), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+                if (finished || destroyed) {
+                    // A queued START may still reach this instance between finish and onDestroy.
+                    // It needs an FGS acknowledgement but cannot reopen a terminal attempt.
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf(startId)
+                    return START_NOT_STICKY
+                }
+                if (worker != null) return START_NOT_STICKY
                 val prefs = DexPrefs(this)
                 if (!prefs.useDelegated || BridgeService.alive || DexState.running || DelegatedDesktopAccess.isReady(this)) {
                     finish("Остановите соединение перед активацией либо используйте уже активный доступ.")
                     return START_NOT_STICKY
                 }
+                val forcePair = intent.getBooleanExtra(FORCE_PAIR, false)
+                if (notificationBlock(this, forcePair || !prefs.hasPaired) != null) {
+                    finish("Уведомления активации отключены. Откройте HeadSwap и выберите ручной ввод или настройку уведомлений.")
+                    return START_NOT_STICKY
+                }
                 cancelled = false
                 active = true
-                replyToken = UUID.randomUUID().toString()
                 PhoneActivationStatus.clearFinished(this)
-                val forcePair = intent.getBooleanExtra(FORCE_PAIR, false)
                 worker = Thread({ activate(forcePair) }, "headswap-desk-activation").also { it.start() }
             }
             REPLY -> {
@@ -79,10 +110,17 @@ class PhonePairingService : Service() {
                     else { waitingCode = false; replies.offer(value) }
                 } else if (worker == null) stopSelf()
             }
-            CANCEL -> if (intent.getStringExtra(TOKEN) == replyToken && !dispatched) {
-                cancelled = true
-                worker?.interrupt()
+            CANCEL -> {
                 if (worker == null) stopSelf()
+                else {
+                    val cancelledWorker = synchronized(attemptLock) {
+                        if (intent.getStringExtra(TOKEN) == replyToken && !dispatched) {
+                            cancelled = true
+                            worker
+                        } else null
+                    }
+                    cancelledWorker?.interrupt()
+                }
             }
             else -> if (worker == null) stopSelf()
         }
@@ -95,8 +133,10 @@ class PhonePairingService : Service() {
             val prefs = DexPrefs(this)
             val audio = prefs.usbPlaybackAudio
             val screen = prefs.desktopPanelControl
-            main.post {
-                if (!cancelled) discovery = DexDiscovery(this) { p, c, _ -> pairing = p; connection = c }.also { it.start() }
+            postAttempt {
+                discovery = DexDiscovery(this) { p, c, _ ->
+                    if (!destroyed && !finished && !cancelled) { pairing = p; connection = c }
+                }.also { it.start() }
             }
             if (forcePair || !prefs.hasPaired) pairWithNotification()
             update("Ищу беспроводную отладку…")
@@ -110,15 +150,16 @@ class PhonePairingService : Service() {
             prefs.connectPort = endpoint.port
             checkActive()
             check(prefs.persistActivationSelection(audio, screen)) { "Настройки активации изменились. Повторите запуск." }
+            // Cancellation and the final dispatch boundary must be ordered, not two racy flags.
+            synchronized(attemptLock) { checkActive(); dispatched = true }
             update("Включаю доступ. HeadSwap сейчас перезапустится…")
-            notifications.cancel(CODE_ID)
-            dispatched = true
+            postAttempt { notifications.cancel(CODE_ID) }
             runBlocking { DexAccess.activatePhone(applicationContext, endpoint, audio, screen) }
             val deadline = SystemClock.elapsedRealtime() + PhoneActivationPolicy.DEADLINE_MS
             while (!cancelled && SystemClock.elapsedRealtime() < deadline) {
                 when (val state = PhoneActivationStatus.read(this)) {
                     is PhoneActivationStatus.Snapshot -> when (state.phase) {
-                        PhoneActivationStatus.Phase.READY -> { finish(null); return }
+                        PhoneActivationStatus.Phase.READY -> return
                         PhoneActivationStatus.Phase.FAILED -> error(state.message)
                         else -> Thread.sleep(250)
                     }
@@ -132,7 +173,12 @@ class PhonePairingService : Service() {
             failure = if (error is DexAccessException) error.message else
                 "Активация не завершена. Проверьте Wi-Fi, беспроводную отладку и повторите сопряжение в HeadSwap."
         } finally {
-            main.post { if (!cancelled || !dispatched) finish(failure) else stopSelf() }
+            val attempt = replyToken
+            main.post {
+                if (!destroyed && replyToken == attempt) {
+                    if (!cancelled || !dispatched) finish(failure) else stopSelf()
+                }
+            }
         }
     }
 
@@ -155,7 +201,8 @@ class PhonePairingService : Service() {
             }
             try {
                 runBlocking { DexAccess.pair(applicationContext, endpoint.port, code, endpoint.host) }
-                notifications.cancel(CODE_ID)
+                checkActive()
+                postAttempt { notifications.cancel(CODE_ID) }
                 return
             } catch (e: DexAccessException) {
                 if (e.reason !in setOf(DexAccessReason.PAIR_REJECTED, DexAccessReason.REFUSED,
@@ -175,12 +222,18 @@ class PhonePairingService : Service() {
         }
     }
 
-    private fun checkActive() { if (cancelled || Thread.currentThread().isInterrupted) throw InterruptedException() }
-    private fun update(message: String) {
+    private fun checkActive() { if (cancelled || destroyed || finished || Thread.currentThread().isInterrupted) throw InterruptedException() }
+    private fun postAttempt(action: () -> Unit) {
+        val attempt = replyToken
+        main.post {
+            if (!destroyed && !finished && !cancelled && attempt != null && replyToken == attempt) action()
+        }
+    }
+    private fun update(message: String) = postAttempt {
         status = message
         notifications.notify(PROGRESS_ID, progress(message))
     }
-    private fun showCode(problem: String?) {
+    private fun showCode(problem: String?) = postAttempt {
         waitingCode = true
         notifications.notify(CODE_ID, codeNotification(problem ?: "1. В отладке выберите «Подключить устройство с помощью кода».\n2. Не закрывая это окно, раскройте шторку.\n3. Нажмите «Ввести 6 цифр» ниже."))
     }
@@ -213,11 +266,17 @@ class PhonePairingService : Service() {
                 }
             }.build()
     }
-    private fun serviceAction(action: String, request: Int, mutable: Boolean) = PendingIntent.getForegroundService(this, request,
-        Intent(this, PhonePairingService::class.java).setAction(action).putExtra(TOKEN, replyToken),
+    private fun serviceAction(action: String, request: Int, mutable: Boolean) = PendingIntent.getService(this, request,
+        Intent(this, PhonePairingService::class.java).setAction(action)
+            // Extras are not part of PendingIntent identity. A new attempt must not update an old reply/cancel token.
+            .setData(Uri.Builder().scheme("headswap-desk").authority("activation")
+                .appendPath(checkNotNull(replyToken)).appendPath(action).build())
+            .putExtra(TOKEN, replyToken),
         PendingIntent.FLAG_UPDATE_CURRENT or if (mutable) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
 
     private fun finish(failure: String?) {
+        if (destroyed || finished) return
+        finished = true
         active = false
         status = failure.orEmpty()
         waitingCode = false
@@ -227,7 +286,9 @@ class PhonePairingService : Service() {
         stopSelf()
     }
     override fun onDestroy() {
-        cancelled = true
+        destroyed = true
+        finished = true
+        synchronized(attemptLock) { cancelled = true }
         active = false
         waitingCode = false
         replyToken = null
@@ -256,8 +317,26 @@ class PhonePairingService : Service() {
             private set
         @Volatile var status = ""
             private set
-        fun start(context: Context, forcePair: Boolean) = context.startForegroundService(
-            Intent(context, PhonePairingService::class.java).setAction(START).putExtra(FORCE_PAIR, forcePair))
+        fun start(context: Context, forcePair: Boolean): android.content.ComponentName? {
+            if (notificationBlock(context, forcePair || !DexPrefs(context).hasPaired) != null) {
+                status = "Уведомления активации отключены. Откройте HeadSwap и выберите ручной ввод или настройку уведомлений."
+                return null
+            }
+            return context.startForegroundService(
+                Intent(context, PhonePairingService::class.java).setAction(START).putExtra(FORCE_PAIR, forcePair))
+        }
+        internal fun notificationBlock(context: Context, needsCode: Boolean): PairingNotificationBlock? {
+            val manager = context.getSystemService(NotificationManager::class.java)
+            return PairingNotificationPolicy.block(manager.areNotificationsEnabled(),
+                manager.getNotificationChannel(PROGRESS_CHANNEL)?.importance,
+                manager.getNotificationChannel(CODE_CHANNEL)?.importance, needsCode)
+        }
+        internal fun notificationSettings(context: Context, block: PairingNotificationBlock): Intent =
+            if (block == PairingNotificationBlock.APP)
+                Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            else Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                .putExtra(Settings.EXTRA_CHANNEL_ID, if (block == PairingNotificationBlock.CODE_CHANNEL) CODE_CHANNEL else PROGRESS_CHANNEL)
         private fun createChannels(context: Context) {
             val manager = context.getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(NotificationChannel(PROGRESS_CHANNEL, "Активация HeadSwap", NotificationManager.IMPORTANCE_LOW))

@@ -15,6 +15,12 @@ object DesktopVideoQuality {
 
     fun frameRateChangeAllowed(fps: Int): Boolean = fps in 3..MAX_FPS
 
+    /** A receiver's explicit low-rate request is a ceiling, not AA's minimum keepalive rate. */
+    fun frameRateChangeTarget(requested: Int, huMaxFps: Int? = null): Int {
+        require(frameRateChangeAllowed(requested))
+        return huMaxFps?.let { minOf(requested, it) } ?: requested
+    }
+
     /** A receiver-specific encoder target is another upper bound, never a user-setting override. */
     fun encoderBitrate(policy: BitratePolicy, receiverLimit: Int? = null): Int =
         minOf(policy.current, receiverLimit ?: Int.MAX_VALUE)

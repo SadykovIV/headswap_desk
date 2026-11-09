@@ -37,9 +37,9 @@ internal object DesktopRotaryInput {
 
 /** Only our own registered display can be a hardware-input destination. */
 internal object DesktopInputTarget {
-    fun resolve(parentId: Int, children: Set<Int>, focusedId: Int?): Int {
-        require(parentId > 0 && children.all { it > 0 && it != parentId })
-        return focusedId?.takeIf { it == parentId || it in children } ?: parentId
+    fun <T : Any> resolve(parentId: Int, parent: T, children: Map<T, Int>, selected: T): Int {
+        require(parentId > 0 && parent !in children && children.values.all { it > 0 && it != parentId })
+        return if (selected == parent) parentId else children[selected] ?: parentId
     }
 }
 

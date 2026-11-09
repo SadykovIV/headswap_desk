@@ -161,7 +161,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                 }
             }
             val id = bounded(25) {
-                check(remote.protocolVersion() == DexUserServicePolicy.PROTOCOL_VERSION) { "Версия службы Shizuku не совпадает с приложением" }
+                check(remote.protocolVersion() == DexUserServicePolicy.PROTOCOL_VERSION) { "Версия службы Shizuku не совпадает с приложением. Остановите подключение и перезапустите службу Shizuku." }
                 remote.startDesktopSized(input.surface, lifetime, input.width, input.height, density, desktopMode)
             }
             check(id > 0) { "Не удалось создать отдельный экран" }
@@ -261,21 +261,65 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
         }
     }
 
-    override fun sendRotary(delta: Int) { DesktopRotaryInput.keys(delta).forEach(::sendKey) }
+    override fun sendRotary(delta: Int) {
+        dispatchHardware { requestedDisplay ->
+            if (delta != 0) com.headswap.desk.desktop.DesktopHardwareUi.interruptBack(requestedDisplay)
+            if (com.headswap.desk.desktop.DesktopHardwareUi.rotate(requestedDisplay, delta)) {
+                enqueue { it.resetHardwareInput() }
+            } else DesktopRotaryInput.keys(delta).forEach(::injectHardwareKey)
+        }
+    }
 
     override fun sendKey(keycode: Int) {
-        if (keycode == android.view.KeyEvent.KEYCODE_SEARCH || keycode == android.view.KeyEvent.KEYCODE_VOICE_ASSIST) {
-            val requestedDisplay = displayId
-            main.post {
-                DesktopAssistant.launch(context, requestedDisplay,
-                    DelegatedInputGateway.ownedDisplayIds() + requestedDisplay) {
-                    !stopping.get() && firstFrame && displayId == requestedDisplay && requestedDisplay > 0
+        dispatchHardware { requestedDisplay ->
+            if (keycode != android.view.KeyEvent.KEYCODE_BACK)
+                com.headswap.desk.desktop.DesktopHardwareUi.interruptBack(requestedDisplay)
+            val backTarget = if (keycode == android.view.KeyEvent.KEYCODE_BACK)
+                com.headswap.desk.desktop.DesktopHardwareUi.captureBack(requestedDisplay) else null
+            when {
+                backTarget != null -> {
+                    val epoch = generation
+                    enqueue { remote ->
+                        if (remote.routeHostBack(requestedDisplay, backTarget.modal)) main.post {
+                            if (!stopping.get() && firstFrame && displayId == requestedDisplay &&
+                                generation == epoch && retiringGeneration != epoch) backTarget.dispatch()
+                        }
+                    }
                 }
+                com.headswap.desk.desktop.DesktopHardwareUi.key(requestedDisplay, keycode) ->
+                    enqueue { it.resetHardwareInput() }
+                keycode == android.view.KeyEvent.KEYCODE_SEARCH || keycode == android.view.KeyEvent.KEYCODE_VOICE_ASSIST -> {
+                    enqueue { it.resetHardwareInput() }
+                    val assistantDisplay = DesktopAssistant.launch(context, requestedDisplay,
+                        DelegatedInputGateway.ownedDisplayIds() + requestedDisplay) {
+                        !stopping.get() && firstFrame && displayId == requestedDisplay && requestedDisplay > 0
+                    }
+                    if (assistantDisplay != null) enqueue { it.focusHardwareDisplay(assistantDisplay) }
+                }
+                // NAVI/MUSIC are launcher commands, not injectable Android keys. A foreign
+                // component keeps ownership of its UI; never let MUSIC launch on the phone.
+                keycode == 65538 || keycode == android.view.KeyEvent.KEYCODE_MUSIC -> {
+                    enqueue { it.resetHardwareInput() }
+                    AppLog.i("DESKTOP hardware category unavailable in selected profile", false)
+                }
+                else -> injectHardwareKey(keycode)
             }
-            return
         }
-        if (keycode !in 0..1000) return
+    }
+
+    private fun injectHardwareKey(keycode: Int) {
+        if (keycode !in 1..1000) return
         enqueue { it.injectKey(0, keycode); it.injectKey(1, keycode) }
+    }
+
+    /** Recheck the exact session after crossing threads; an old HU event cannot reach a new display. */
+    private fun dispatchHardware(action: (Int) -> Unit) {
+        val requestedDisplay = displayId
+        val epoch = generation
+        main.post {
+            if (!stopping.get() && firstFrame && requestedDisplay > 0 && displayId == requestedDisplay &&
+                epoch != 0L && generation == epoch && retiringGeneration != epoch) action(requestedDisplay)
+        }
     }
 
     override fun requestKeyFrame() { /* CarLife requests its own encoder's IDR directly. */ }

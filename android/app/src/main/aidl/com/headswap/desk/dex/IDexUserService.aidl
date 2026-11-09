@@ -39,6 +39,12 @@ interface IDexUserService {
     @nullable String[] readShizukuGuidance(int displayId) = 21;
     /** Protocol 14: track the host Activity's own launch in an Android Desktop child, without granting shell launch privileges. */
     void trackDesktopChildLaunch(IBinder childToken, String packageName) = 22;
+    /** Protocol 15: a locally handled hardware action interrupts a double-Back sequence. */
+    void resetHardwareInput() = 23;
+    /** Protocol 15: select only a live owned display after an explicit local assistant launch. */
+    void focusHardwareDisplay(int displayId) = 24;
+    /** Protocol 17: completes shared Back/IME/Home decision. true requests only the captured own-host Back callback. */
+    boolean routeHostBack(int parentDisplayId, boolean modal) = 25;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }

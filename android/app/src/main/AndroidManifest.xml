@@ -37,6 +37,8 @@
 
     <!-- без queries на API 30+ пакет Android Auto не виден (проверка установки, запуск настроек) -->
     <queries>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.APP_MAPS" /></intent>
+        <intent><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.APP_MUSIC" /></intent>
         <intent><action android:name="android.intent.action.ASSIST" /></intent>
         <intent><action android:name="android.intent.action.VOICE_COMMAND" /></intent>
         <package android:name="com.yandex.searchapp" />
