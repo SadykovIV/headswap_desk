@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
+import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.os.Binder
 import android.os.IBinder
@@ -17,6 +19,7 @@ import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.ScrollView
 import android.widget.Switch
 import android.widget.TextView
 import com.headswap.desk.R
@@ -41,7 +44,7 @@ internal object DesktopSettingsProbe {
             checkMapBuffers()
             result.putString("appBuffers", "screen 160 DPI; selected app buffer 320 DPI at 2x for create and resize")
             checkSettings(test)
-            result.putString("settings", "phone controls, persisted choices, HUD switch and both component cards")
+            result.putString("settings", "flat settings, permission-only subpage/Back/recreation, persisted phone/audio/HUD/DPI choices, disabled shade and both component cards")
             test.finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("error", android.util.Log.getStackTraceString(error))
@@ -99,6 +102,7 @@ internal object DesktopSettingsProbe {
         val toggle = ui.toggle(card, longLabel, false) {}
         val first = ui.button(card, "Способ отключения: Затемнять экран ▾") {}
         val next = ui.button(card, "Настройка уведомлений приложений") {}
+        val navigation = ui.navigation(card, "Приборная панель и HUD", "Повороты, расстояние и данные воспроизводимой музыки") {}
         root.measure(View.MeasureSpec.makeMeasureSpec(ui.dp(widthDp), View.MeasureSpec.EXACTLY),
             View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
         root.layout(0, 0, root.measuredWidth, root.measuredHeight)
@@ -107,7 +111,9 @@ internal object DesktopSettingsProbe {
         check(toggle.control.width >= ui.dp(48) && toggle.control.height >= ui.dp(48))
         check(toggle.control.right <= toggle.row.width && toggle.control.contentDescription == longLabel)
         check(first.top > toggle.row.bottom && next.top > first.bottom)
-        for (text in listOf(label, first, next)) {
+        check(navigation.view.top > next.bottom && navigation.view.height >= ui.dp(64))
+        check(navigation.view.isClickable && navigation.view.isFocusable)
+        for (text in listOf(label, first, next) + navigation.view.nodes().filterIsInstance<TextView>().toList()) {
             val layout = checkNotNull(text.layout)
             check(layout.getLineEnd(layout.lineCount - 1) == text.text.length)
             check(layout.getEllipsisCount(layout.lineCount - 1) == 0)
@@ -120,7 +126,6 @@ internal object DesktopSettingsProbe {
         val context = test.targetContext
         val prefs = DexPrefs(context)
         val originalMode = prefs.desktopMode
-        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
         val originalAccess = prefs.accessMode
         val originalScreen = prefs.desktopPanelControl
         val originalTimer = prefs.phoneScreenMode
@@ -130,10 +135,13 @@ internal object DesktopSettingsProbe {
         val originalSetupCompleted = prefs.initialSetupCompleted
         val originalCompact = prefs.compactMapSymbols
         val originalPackages = prefs.dpiCorrectionPackages
+        val originalAutoplay = prefs.autoMusicPlayback
+        val originalAudio = prefs.usbPlaybackAudio
         var activity: Activity? = null
         var components: Activity? = null
         val monitor = test.addMonitor(ComponentUpdatesActivity::class.java.name, null, false)
         try {
+            prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
             prefs.initialSetupCompleted = true
             prefs.useDelegated = true
             prefs.desktopPanelControl = true
@@ -144,24 +152,42 @@ internal object DesktopSettingsProbe {
             prefs.compactMapSymbols = true
             prefs.dpiCorrectionPackages = com.headswap.desk.shared.DesktopRenderPolicy.DEFAULT_PACKAGES
             activity = test.startActivitySync(Intent(Intent.ACTION_MAIN).setClass(context, DexSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            val root = activity.window.decorView
+            var root = activity.window.decorView
             onUi(test) { root.button("Настройки").performClick() }
+            test.waitForIdleSync()
+            onUi(test) {
+                checkFlatSettings(root)
+                val shade = root.toggle("Показывать шторку уведомлений")
+                check(!shade.isChecked && !shade.isEnabled)
+                val shadeRow = shade.parent as View
+                check(!shadeRow.isEnabled)
+                // Disabled controls cannot change state through normal user activation.
+                check(!shadeRow.performClick() || !shade.isChecked)
+                check(!shade.isChecked && !shade.isEnabled)
+            }
             checkDpiMenu(test, root, prefs)
             onUi(test) {
-                val screen = root.toggle("Управление экраном телефона")
-                val timer = root.nodes().filterIsInstance<Button>().first { it.text.startsWith("Способ отключения:") }
-                val timeout = root.nodes().filterIsInstance<Button>().first { it.text.startsWith("Гасить через:") }
-                check(screen.isEnabled && screen.isChecked && timer.isShown && timeout.isShown)
+                for ((label, read) in listOf<Pair<String, () -> Boolean>>(
+                    "Автоматически продолжать музыку при подключении" to { prefs.autoMusicPlayback },
+                    "Передавать звук в CarLife" to { prefs.usbPlaybackAudio })) {
+                    val toggle = root.toggle(label)
+                    check(toggle.isEnabled)
+                    val before = read()
+                    toggle.performClick(); check(read() != before)
+                    toggle.performClick(); check(read() == before)
+                }
+                val screen = root.toggle("Управление дисплеем телефона")
+                val timer = root.buttonStarting("Способ отключения:")
+                val timeout = root.buttonStarting("Гасить через:")
+                check(screen.isEnabled && screen.isChecked && timer.isEnabled && timeout.isEnabled)
                 screen.performClick()
-                check(!prefs.desktopPanelControl && !timer.isShown && !timeout.isShown)
+                check(!prefs.desktopPanelControl && timer.isShown && timeout.isShown && !timer.isEnabled && !timeout.isEnabled)
                 screen.performClick()
-                check(timer.isShown && timeout.isShown && prefs.phoneIdleMode == PhoneIdleMode.CURTAIN &&
-                    prefs.phoneIdleTimeout == PhoneIdleTimeout.SYSTEM)
+                check(timer.isEnabled && timeout.isEnabled && prefs.phoneIdleMode == PhoneIdleMode.CURTAIN && prefs.phoneIdleTimeout == PhoneIdleTimeout.SYSTEM)
                 for (mode in listOf(PhoneIdleMode.PANEL, PhoneIdleMode.CURTAIN)) {
                     timer.performClick()
                     val options = android.view.inspector.WindowInspector.getGlobalWindowViews()
-                        .flatMap { it.nodes().filterIsInstance<android.widget.ListView>().toList() }
-                        .last { it.isShown }
+                        .flatMap { it.nodes().filterIsInstance<android.widget.ListView>().toList() }.last { it.isShown }
                     val labels = (0 until options.count).map { options.getItemAtPosition(it).toString() }
                     check(labels == listOf("Выключать экран", "Затемнять экран"))
                     val index = labels.indexOf(mode.label)
@@ -170,27 +196,102 @@ internal object DesktopSettingsProbe {
                 }
                 root.toggle("Подсказки навигации на приборной панели и HUD").performClick()
                 check(!AaPrefs(context).metaNavi)
-                // Scope blocking monitors to the two Settings launches. A null-action
-                // explicit Activity intent can otherwise also match an IntentFilter.
                 val appNotifications = test.addMonitor(IntentFilter(Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS), null, true)
-                val listenerAccess = test.addMonitor(IntentFilter(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS), null, true)
                 try {
                     root.button("Настройка уведомлений приложений").performClick()
-                    root.button("Доступ HeadSwap к уведомлениям").performClick()
-                    check(appNotifications.hits == 1 && listenerAccess.hits == 1)
-                } finally {
-                    test.removeMonitor(appNotifications)
-                    test.removeMonitor(listenerAccess)
-                }
-                root.button("Компоненты HeadSwap Desktop").performClick()
+                    check(appNotifications.hits == 1)
+                } finally { test.removeMonitor(appNotifications) }
+            }
+            // A permission is a live Android state, not a mutable in-app switch.
+            reveal(test, root.button("Разрешения приложения"))
+            val flatScroll = root.nodes().filterIsInstance<ScrollView>().single { it.isShown }
+            val savedScroll = flatScroll.scrollY
+            check(savedScroll > 0)
+            onUi(test) { root.button("Разрешения приложения").performClick() }
+            test.waitForIdleSync()
+            onUi(test) { checkPermissions(root) }
+            val recreated = test.addMonitor(DexSetupActivity::class.java.name, null, false)
+            try {
+                val previous = checkNotNull(activity)
+                onUi(test) { previous.recreate() }
+                activity = checkNotNull(test.waitForMonitorWithTimeout(recreated, 6_000))
+                check(activity !== previous)
+                root = activity.window.decorView
+                test.waitForIdleSync()
+            } finally { test.removeMonitor(recreated) }
+            onUi(test) {
+                checkPermissions(root)
+                check(!AaPrefs(context).metaNavi && prefs.phoneScreenMode == PhoneIdleMode.CURTAIN && prefs.phoneTimerEnabled)
+                check(prefs.phoneIdleTimeout == PhoneIdleTimeout.SYSTEM && prefs.desktopPanelControl)
+                check(prefs.dpiCorrectionPackages == setOf("ru.yandex.yandexmaps", "com.android.settings"))
+                val listenerAccess = test.addMonitor(IntentFilter(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS), null, true)
+                try {
+                    root.navigation("Доступ HeadSwap к уведомлениям").performClick()
+                    check(listenerAccess.hits == 1)
+                } finally { test.removeMonitor(listenerAccess) }
+                root.button("Назад").performClick()
+            }
+            test.waitForIdleSync()
+            onUi(test) {
+                checkFlatSettings(root)
+                val restoredScroll = root.nodes().filterIsInstance<ScrollView>().single { it.isShown }.scrollY
+                check(restoredScroll == savedScroll) { "Settings scroll lost: $savedScroll -> $restoredScroll" }
+                root.button("Назад").performClick()
+                check(root.button("Подключить").isShown && root.button("Настройки").isShown)
+                // Completed setup opens activation alone; initial onboarding must not return.
+                root.button("Выдать права приложению").performClick()
+                check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "Выдать права приложению" })
+                check(root.nodes().filterIsInstance<TextView>().none { it.isShown && it.text == "Первоначальная настройка" })
+                check(!root.button("Уведомления и работа в фоне").isShown)
+                check(!root.button("Установить компоненты").isShown)
+                check(root.button("Готово — вернуться к подключению").isShown)
+                root.button("Готово — вернуться к подключению").performClick()
+                root.button("Настройки").performClick()
+            }
+            test.waitForIdleSync()
+            // The HUD shortcut reaches the same permission page, not a second settings menu.
+            onUi(test) {
+                root.navigation("Доступ HeadSwap к уведомлениям").performClick()
+                checkPermissions(root)
+                root.navigation("Доступ к рабочему столу").performClick()
+                check(root.button("Готово — вернуться к подключению").isShown)
+                check(!root.button("Уведомления и работа в фоне").isShown)
+                root.button("Готово — вернуться к подключению").performClick()
+                root.button("Настройки").performClick()
+                root.button("Установить и обновить компоненты").performClick()
             }
             components = checkNotNull(test.waitForMonitorWithTimeout(monitor, 5_000))
+            test.waitForIdleSync()
             val detail = components.window.decorView
+            val cards = mutableListOf<View>()
             onUi(test) {
                 check(detail.button("Проверить обновления HeadSwap Desktop").isShown)
-                check(detail.button("Проверить версии компонента").isShown && detail.button("Установить из файла…").isShown)
-                check(detail.nodes().filterIsInstance<TextView>().any { it.text == "DriveDeck · HeadSwap" })
+                check(detail.nodes().filterIsInstance<Button>().none { it.text == "Выбрать компонент" })
+                for (title in listOf("DriveDeck · HeadSwap", "CarBridge · HeadSwap")) {
+                    val heading = detail.nodes().filterIsInstance<TextView>().single { it.text == title && it.isShown }
+                    val card = heading.parent as View
+                    check(card.button("Проверить версии компонента").isEnabled)
+                    check(card.button("Установить из файла…").isEnabled)
+                    cards.add(card)
+                }
+                check(cards[0] !== cards[1] && cards[0].parent === cards[1].parent)
+                check(cards[1].top > cards[0].bottom)
             }
+            for (card in cards) {
+                val pick = card.button("Установить из файла…")
+                reveal(test, pick)
+                val picker = test.addMonitor(IntentFilter(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    addDataType("application/vnd.android.package-archive")
+                }, Instrumentation.ActivityResult(Activity.RESULT_CANCELED, null), true)
+                try { onUi(test) { pick.performClick(); check(picker.hits == 1) } }
+                finally { test.removeMonitor(picker) }
+            }
+            // System pickers were intercepted; no network, download, or installer was started.
+            onUi(test) { detail.button("Назад").performClick() }
+            test.waitForIdleSync()
+            onUi(test) { checkFlatSettings(root) }
+
         } finally {
             test.removeMonitor(monitor)
             onUi(test) { components?.finish(); activity?.finish() }
@@ -200,10 +301,63 @@ internal object DesktopSettingsProbe {
             prefs.phoneIdleTimeout = originalTimeout
             prefs.accessMode = originalAccess
             prefs.desktopMode = originalMode
+            prefs.autoMusicPlayback = originalAutoplay
+            prefs.usbPlaybackAudio = originalAudio
             AaPrefs(context).metaNavi = originalNav
             prefs.initialSetupCompleted = originalSetupCompleted
             prefs.compactMapSymbols = originalCompact
             prefs.dpiCorrectionPackages = originalPackages
+        }
+    }
+
+    private fun checkFlatSettings(root: View) {
+        for (heading in listOf("Параметры изображения", "Звук", "Уведомления на магнитоле",
+            "Приборная панель и HUD", "Компоненты HeadSwap Desktop", "Обслуживание")) {
+            check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == heading }) { "Missing flat block: $heading" }
+        }
+        for (prefix in listOf("Разрешение:", "Размер интерфейса:", "Скорость видеопотока:", "Способ отключения:", "Гасить через:"))
+            check(root.buttonStarting(prefix).isShown)
+        for (label in listOf("Передавать звук в CarLife", "Автоматически продолжать музыку при подключении",
+            "Управление дисплеем телефона", "Подсказки навигации на приборной панели и HUD")) check(root.toggle(label).isShown)
+        for (label in listOf("Исправить DPI приложения", "Разрешения приложения", "Установить и обновить компоненты",
+            "Повторить заново первоначальную настройку", "Отправить журнал")) check(root.button(label).isShown)
+        check(root.nodes().none { it.isShown && it.contentDescription?.startsWith("Открыть настройки:") == true })
+        check(root.nodes().filterIsInstance<TextView>().none { it.isShown && it.text == "Приложение" })
+    }
+
+    private fun checkPermissions(root: View) {
+        check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "Разрешения приложения" })
+        check(!root.toggle("Управление дисплеем телефона").isShown)
+        for (label in listOf("Доступ к рабочему столу", "Доступ HeadSwap к уведомлениям", "Показ поверх приложений",
+            "Уведомления HeadSwap", "Работа без ограничений батареи")) {
+            val row = root.navigation(label)
+            val info = row.createAccessibilityNodeInfo()
+            try {
+                check(info.className.toString() == Button::class.java.name && info.isClickable && !info.isCheckable)
+                check(!info.stateDescription.isNullOrBlank())
+            } finally { info.recycle() }
+            check(row.nodes().none { it is Switch })
+            val mark = row.nodes().filterIsInstance<TextView>().single { it.text == "✓" || it.text == "✕" }
+            val granted = mark.text == "✓"
+            val color = mark.currentTextColor
+            check(if (granted) Color.green(color) > Color.red(color) else Color.red(color) > Color.green(color))
+            check(row.stateDescription.toString().startsWith(if (granted) "Доступ есть." else "Нет доступа."))
+        }
+    }
+
+    private fun reveal(test: Instrumentation, target: View) {
+        onUi(test) {
+            var ancestor = target.parent
+            while (ancestor != null && ancestor !is ScrollView) ancestor = ancestor.parent
+            val scroll = checkNotNull(ancestor as? ScrollView) { "No scroll ancestor for $target" }
+            val rect = Rect(0, 0, target.width, target.height)
+            scroll.offsetDescendantRectToMyCoords(target, rect)
+            scroll.scrollTo(0, rect.top)
+        }
+        test.waitForIdleSync()
+        onUi(test) {
+            val visible = Rect()
+            check(target.getGlobalVisibleRect(visible) && visible.height() > 0) { "Control is off screen: $target" }
         }
     }
 
@@ -250,6 +404,8 @@ internal object DesktopSettingsProbe {
         if (this@nodes is ViewGroup) for (i in 0 until childCount) yieldAll(getChildAt(i).nodes())
     }
     private fun View.button(text: String) = nodes().filterIsInstance<Button>().first { it.text == text }
+    private fun View.buttonStarting(prefix: String) = nodes().filterIsInstance<Button>().first { it.isShown && it.text.startsWith(prefix) }
+    private fun View.navigation(label: String) = nodes().first { it.isShown && it.isClickable && it.contentDescription == label }
     private fun View.toggle(label: String) = nodes().filterIsInstance<Switch>().first { it.contentDescription == label }
     private fun onUi(test: Instrumentation, run: () -> Unit) {
         var failure: Throwable? = null

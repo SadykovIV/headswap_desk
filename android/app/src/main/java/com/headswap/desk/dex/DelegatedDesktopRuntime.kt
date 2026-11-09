@@ -22,14 +22,24 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
     // set display/actionButton; this ordinary helper owns and releases the producers.
     private val inputLeases = HashMap<Int, IBinder>() // Worker only, just like the display leases.
 
-    override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay {
+    override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int,
+        producerLifetime: IBinder, sessionToken: IBinder): OwnedDesktopDisplay {
         DelegatedDesktopPolicy.requireMode(mode)
-        return create("HeadSwap ${DesktopModePolicy.label(mode)}", surface, width, height, density,
-            DesktopModePolicy.displayFlags(mode, Build.VERSION.SDK_INT, independentLock))
+        val name = "HeadSwap ${DesktopModePolicy.label(mode)}"
+        val flags = DesktopModePolicy.displayFlags(mode, Build.VERSION.SDK_INT, independentLock)
+        if (DesktopDisplayBackendPolicy.requiresVdm(Build.VERSION.SDK_INT, mode)) {
+            val family = VdmDisplayFamily(context, inputGateway.openVdmSession(producerLifetime, sessionToken))
+            return family.create(name, surface, width, height, density, flags, parent = true)
+        }
+        return LocalDesktopDisplay(create(name, surface, width, height, density, flags), producerLifetime)
     }
 
-    override fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
-        create(name, surface, width, height, density, EmbeddedDisplayPolicy.displayFlags(Build.VERSION.SDK_INT, independentLock))
+    override fun createChildDisplay(parent: OwnedDesktopDisplay, name: String, surface: Surface,
+        width: Int, height: Int, density: Int): OwnedDesktopDisplay {
+        val flags = EmbeddedDisplayPolicy.displayFlags(Build.VERSION.SDK_INT, independentLock)
+        return parent.family?.create(name, surface, width, height, density, flags, parent = false)
+            ?: LocalDesktopDisplay(create(name, surface, width, height, density, flags), parent.nativeLifetime)
+    }
 
     // Permission-gated flags are intentionally absent from the SDK IntDef. A vendor refusing
     // lock isolation must still permit normal projection with the previously supported flags.

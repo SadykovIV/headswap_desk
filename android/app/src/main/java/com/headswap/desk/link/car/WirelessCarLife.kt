@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.hardware.usb.UsbManager
 import com.headswap.desk.AppLog
 import com.headswap.desk.BridgeService
 import com.headswap.desk.BuildConfig
@@ -13,21 +14,30 @@ import com.headswap.desk.CarLifeState
 import com.headswap.desk.dex.DesktopAccess
 import com.headswap.desk.ui.Actions
 
+enum class CarLifeConnectionMode { USB, WIFI, AUTO }
+
 /** Wireless projection is independent of the short-lived Wi-Fi ADB activation. */
 class WirelessPrefs(context: Context) {
     private val app = context.applicationContext
     private val preferences = app.getSharedPreferences("desktop_wireless", Context.MODE_PRIVATE)
 
-    var enabled: Boolean
-        get() = preferences.getBoolean("enabled", false)
+    var mode: CarLifeConnectionMode
+        get() = WirelessConnectionPolicy.savedMode(preferences.getString("mode", null), preferences.getBoolean("enabled", false))
         set(value) {
-            preferences.edit().putBoolean("enabled", value).apply()
-            CarProfile.enableTrigger(app, value)
+            preferences.edit().putString("mode", value.name).putBoolean("enabled", value != CarLifeConnectionMode.USB).apply()
+            CarProfile.enableTrigger(app, value != CarLifeConnectionMode.USB)
+        }
+
+    var enabled: Boolean
+        get() = mode != CarLifeConnectionMode.USB
+        set(value) {
+            mode = if (!value) CarLifeConnectionMode.USB
+                else mode.takeUnless { it == CarLifeConnectionMode.USB } ?: CarLifeConnectionMode.WIFI
         }
 
     fun observeEnabled(changed: (Boolean) -> Unit): () -> Unit {
         val listener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-            if (key == "enabled" || key == null) changed(enabled)
+            if (key == "enabled" || key == "mode" || key == null) changed(enabled)
         }
         preferences.registerOnSharedPreferenceChangeListener(listener)
         return { preferences.unregisterOnSharedPreferenceChangeListener(listener) }
@@ -35,6 +45,17 @@ class WirelessPrefs(context: Context) {
 }
 
 object WirelessCarLife {
+    fun hasCompatibleUsb(context: Context): Boolean = runCatching {
+        context.getSystemService(UsbManager::class.java).accessoryList.orEmpty().any(Actions::isCompatibleAccessory)
+    }.getOrDefault(false)
+
+    fun selectedTransport(context: Context): CarLifeConnectionMode =
+        WirelessConnectionPolicy.selectedTransport(WirelessPrefs(context).mode, hasCompatibleUsb(context), hasConfiguredCar(context))
+
+    fun preferUsb(context: Context): Boolean = selectedTransport(context) == CarLifeConnectionMode.USB
+
+    fun hasConfiguredCar(context: Context): Boolean = CarProfile(context).isSet || CarWifi(context).isSet
+
     fun missingPermissions(context: Context): List<String> = buildList {
         add(Manifest.permission.BLUETOOTH_CONNECT)
         add(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -44,6 +65,8 @@ object WirelessCarLife {
     /** No sockets, Bluetooth listeners or activation are started before this check. */
     fun unavailableReason(context: Context): String? = when {
         !BuildConfig.WIRELESS_BETA || !WirelessPrefs(context).enabled -> "Выберите подключение CarLife по Wi-Fi"
+        WirelessPrefs(context).mode == CarLifeConnectionMode.AUTO && !hasConfiguredCar(context) ->
+            "Настройте беспроводную магнитолу для автоматического подключения без USB"
         missingPermissions(context).isNotEmpty() -> "Разрешите доступ к устройствам поблизости и локальной сети"
         !DesktopAccess.isReadyForProjection(context) -> "Сначала подготовьте выбранный способ доступа на главном экране HeadSwap"
         else -> null

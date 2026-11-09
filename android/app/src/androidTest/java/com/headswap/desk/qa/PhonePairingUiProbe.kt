@@ -14,7 +14,7 @@ import android.os.SystemClock
 import com.headswap.desk.dex.PhonePairingService
 import com.headswap.desk.dex.PairingNotificationBlock
 
-/** Exercises the real foreground service and inline reply without ever supplying a valid pairing code. */
+/** Exercises real service/RemoteInput identity. The synthetic six-digit value is not a system pairing code. */
 internal object PhonePairingUiProbe {
     @JvmStatic fun run(test: Instrumentation) {
         val result = Bundle()
@@ -30,6 +30,11 @@ internal object PhonePairingUiProbe {
             await { manager.activeNotifications.any { it.id == 72 && !it.notification.actions.isNullOrEmpty() } }
             val notice = manager.activeNotifications.first { it.id == 72 }.notification
             val firstService = currentService(test)
+            val firstAttempt = checkNotNull(PhonePairingService.replyAttempt())
+            check(!PhonePairingService.submitCode(context, firstAttempt, ""))
+            check(!PhonePairingService.submitCode(context, firstAttempt, "12x"))
+            check(PhonePairingService.replyAttempt() == firstAttempt && currentService(test) === firstService)
+            result.putBoolean("emptyAppReplyKeepsSameAttempt", true)
             val action = notice.actions.single()
             val input = action.remoteInputs.single()
             result.putBoolean("inlineReply", input.allowFreeFormInput)
@@ -59,6 +64,12 @@ internal object PhonePairingUiProbe {
                 "An old PendingIntent was reused for the new attempt"
             }
             val secondText = second.extras.getCharSequence(android.app.Notification.EXTRA_TEXT).toString()
+            val secondAttempt = checkNotNull(PhonePairingService.replyAttempt())
+            check(secondAttempt != firstAttempt)
+            check(!PhonePairingService.submitCode(context, firstAttempt, "123456"))
+            check(PhonePairingService.replyAttempt() == secondAttempt)
+            result.putBoolean("oldAppReplyCannotAffectNewAttempt", true)
+            verifyAppReplyUi(test, secondAttempt, result)
             action.actionIntent.send(context, 0, fillIn)
             cancel.actionIntent.send()
             // Replay the terminal callback belonging to the destroyed A instance after B exists.
@@ -77,6 +88,11 @@ internal object PhonePairingUiProbe {
             }
             result.putBoolean("previousAttemptCannotAffectNext", true)
             result.putBoolean("oldInstanceCannotFinishNext", true)
+            val sameService = currentService(test)
+            verifyAppReplyUi(test, secondAttempt, result, submit = true)
+            await { PhonePairingService.replyAttempt() == null }
+            check(PhonePairingService.active && currentService(test) === sameService) { "App reply restarted activation instead of using its worker" }
+            result.putBoolean("appReplyUsesNotificationWorker", true)
             secondCancel.actionIntent.send()
             await { !PhonePairingService.active && manager.activeNotifications.none { it.id == 71 || it.id == 72 } }
             // Old replies and cancellation must not leave an empty foreground service behind.
@@ -95,6 +111,30 @@ internal object PhonePairingUiProbe {
         }
         test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK,result)
     }
+    private fun verifyAppReplyUi(test: Instrumentation, attempt: String, result: Bundle, submit: Boolean = false) {
+        val intent = Intent(test.targetContext, com.headswap.desk.dex.DexSetupActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val activity = test.startActivitySync(intent)
+        try {
+            test.runOnMainSync {
+                val type = com.headswap.desk.dex.DexSetupActivity::class.java
+                val code = type.getDeclaredField("phonePairCode").apply { isAccessible = true }.get(activity) as android.widget.EditText
+                val button = type.getDeclaredField("phonePairButton").apply { isAccessible = true }.get(activity) as android.widget.Button
+                type.getDeclaredMethod("renderAccessControls").apply { isAccessible = true }.invoke(activity)
+                check(code.isEnabled && code.isShown && button.isEnabled && button.isShown) { "Active notification disabled the app reply form" }
+                code.setText("")
+                button.performClick()
+                check(code.error != null && PhonePairingService.replyAttempt() == attempt)
+                if (submit) {
+                    code.setText("123456") // Synthetic fixture value; no system pairing dialog is open.
+                    button.performClick()
+                    check(code.text.isEmpty()) { "App did not submit to the current reply capability" }
+                }
+            }
+            result.putBoolean("appAndNotificationShareEditableAttempt", true)
+        } finally { test.runOnMainSync { activity.finish() } }
+    }
+
     private fun currentService(test: Instrumentation): PhonePairingService {
         var found: PhonePairingService? = null
         test.runOnMainSync {

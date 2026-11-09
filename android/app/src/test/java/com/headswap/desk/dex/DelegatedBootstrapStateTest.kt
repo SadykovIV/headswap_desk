@@ -7,6 +7,7 @@ class DelegatedBootstrapStateTest {
     @Test fun newProcessHasNoAccessAndCannotStopOldBootstrap() {
         val state = DelegatedBootstrapState()
         assertFalse(state.isActive())
+        assertFalse(state.hasOwner())
         assertFalse(state.requestStop())
     }
 
@@ -16,10 +17,12 @@ class DelegatedBootstrapStateTest {
         val lease = state.begin { requests++; assertFalse(state.isActive()) }
         assertTrue(state.isActive())
         assertTrue(state.requestStop())
+        assertTrue("Native cleanup must still own the activation after Stop", state.hasOwner())
         assertFalse(state.requestStop())
         assertEquals(1, requests)
         state.end(lease)
         assertFalse(state.isActive())
+        assertFalse(state.hasOwner())
     }
 
     @Test fun overlappingActivationCannotReplaceCurrentStopOwner() {

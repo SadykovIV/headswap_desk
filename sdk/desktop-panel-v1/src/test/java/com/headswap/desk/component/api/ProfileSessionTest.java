@@ -103,4 +103,21 @@ public class ProfileSessionTest {
         assertTrue(chrome.sendDashboardAction(ProfileContract.DASH_BACK));
         assertFalse(chrome.sendDashboardAction(66));
     }
+    @Test public void notificationActionRequiresItsOwnNegotiatedCapability() {
+        int[] calls = {0};
+        IDesktopPanelSession remote = new IDesktopPanelSession.Default() {
+            @Override public boolean sendDashboardAction(int action) {
+                calls[0]++;
+                return action == ProfileContract.DASH_NOTIFICATIONS;
+            }
+        };
+        assertFalse(ProfileSession.fromWire(1, ProfileContract.CAP_PROFILE_CHROME, remote).openNotifications());
+        assertEquals(0, calls[0]);
+        ProfileSession notifications = ProfileSession.fromWire(1, ProfileContract.CAP_NOTIFICATIONS, remote);
+        assertTrue(notifications.openNotifications());
+        assertFalse(notifications.canUseMedia());
+        assertFalse(notifications.canUseMicrophone());
+        assertEquals(1, calls[0]);
+    }
+
 }

@@ -307,6 +307,7 @@ public final class EmbeddedDisplayClient {
 
     /** Called after the original Activity's resume guards. No producer is stopped/recreated here. */
     public static void resume(Activity host) {
+        NotificationStatusBridge.resume(host);
         int parent = DisplayOnlyLaunch.displayId(host);
         if (parent <= 0) return;
         EmbeddedResumeGate gate = RESUMES.get(host);
@@ -327,9 +328,44 @@ public final class EmbeddedDisplayClient {
         });
     }
     public static void pause(Activity host) {
+        NotificationStatusBridge.pause(host);
         releaseHostFocus(host);
         EmbeddedResumeGate gate = RESUMES.get(host);
         if (gate != null) gate.pause();
+    }
+
+    static void notificationStatus(Context context, IBinder token, boolean visible, Consumer<android.os.Bundle> result) {
+        bind(context);
+        final IEmbeddedDisplayGateway service = gateway;
+        final int parent = DisplayOnlyLaunch.displayId(context);
+        WORK.post(() -> {
+            android.os.Bundle status = null;
+            if (service != null && service == gateway && parent > 0 && (gatewayCapabilities & 64) != 0) {
+                try { status = service.notificationStatus(parent, token, visible); } catch (RemoteException | RuntimeException ignored) {}
+            }
+            final android.os.Bundle value = status;
+            MAIN.post(() -> result.accept(value));
+        });
+    }
+    static void showNotifications(Context context) {
+        final IEmbeddedDisplayGateway service = gateway;
+        final int parent = DisplayOnlyLaunch.displayId(context);
+        WORK.post(() -> {
+            if (service != null && service == gateway && parent > 0 && (gatewayCapabilities & 64) != 0) {
+                try { service.showNotifications(parent); } catch (RemoteException | RuntimeException ignored) {}
+            }
+        });
+    }
+    public static void openNotification(Context context, String key, String pkg) {
+        final IEmbeddedDisplayGateway service = gateway;
+        final int parent = DisplayOnlyLaunch.displayId(context);
+        WORK.post(() -> {
+            boolean accepted = false;
+            if (service != null && service == gateway && parent > 0 && (gatewayCapabilities & 64) != 0) {
+                try { accepted = service.openNotification(parent, key, pkg); } catch (RemoteException | RuntimeException ignored) {}
+            }
+            if (!accepted) MAIN.post(() -> Toast.makeText(context, "Уведомление недоступно. Откройте приложение из меню.", Toast.LENGTH_SHORT).show());
+        });
     }
 
     /** Restore before dispatch to a native control. An actual child DOWN reclaims focus in the same traversal. */

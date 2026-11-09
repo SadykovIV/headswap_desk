@@ -20,3 +20,12 @@ enum class DesktopAccessMode {
         }
     }
 }
+
+/** One live activation owns the desktop resources until its cleanup acknowledges completion. */
+internal object DesktopBackendTransitionPolicy {
+    fun requiresActivationEnd(ownsActivation: Boolean, current: DesktopAccessMode, next: DesktopAccessMode): Boolean =
+        current != next && blocksProjection(ownsActivation, next)
+
+    fun blocksProjection(ownsActivation: Boolean, requested: DesktopAccessMode): Boolean =
+        ownsActivation && requested != DesktopAccessMode.COMPUTER
+}

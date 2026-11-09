@@ -37,7 +37,7 @@ import java.util.UUID
 /** Owns the privileged producer; CarLife owns its consumer Surface and single H.264 encoder. */
 class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     private val onFailed: (Failure) -> Unit = {}) :
-    AaLifecycle, AaPeer, DesktopSurfaceListener, DesktopPowerControl, DesktopNavigation, TerminalSource {
+    AaLifecycle, AaPeer, DesktopSurfaceListener, DesktopPowerControl, DesktopNavigation, TerminalSource, com.headswap.desk.aa.DesktopLockIsolation {
     enum class Failure { HELPER_UNAVAILABLE, OTHER }
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -49,11 +49,12 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     private val connected = CountDownLatch(1)
     private val serviceDied = CountDownLatch(1)
     private val finished = CountDownLatch(1)
-    private val inputGateway = DelegatedInputGateway(this.context)
+    private val inputGateway = DelegatedInputGateway(this.context, ::watchNativeProducer)
     private val bindAction = DelegatedDesktopService.BIND_ACTION_PREFIX + UUID.randomUUID()
     // Binder transactions are not cancelled by Future.cancel(). Keep start/stop ordered
     // even when the caller's deadline expires and the remote start finishes late.
     private val binderCalls = Executors.newSingleThreadExecutor { r -> Thread(r, "dex-binder").apply { isDaemon = true } }
+    private val inputDiagnostics = DesktopInputDiagnostics("delegated")
     private val input = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, LinkedBlockingQueue(128),
         { r -> Thread(r, "dex-mouse").apply { isDaemon = true } })
     private val panel = Executors.newSingleThreadExecutor { r -> Thread(r, "desktop-panel").apply { isDaemon = true } }
@@ -63,6 +64,14 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     private var bindRequested = false // Read/written only on the main looper.
     @Volatile private var generation = 0L
     @Volatile private var retiringGeneration = 0L
+    @Volatile private var nativeProducer: IBinder? = null
+    private val nativeLock = Any()
+    private var nativeDeath: IBinder.DeathRecipient? = null
+    @Volatile private var vdmRecovery: VdmHostRecovery.Request? = null
+    override val requiresIsolatedPhoneLock: Boolean get() =
+        DesktopDisplayBackendPolicy.requiresVdm(android.os.Build.VERSION.SDK_INT, desktopMode)
+    @Volatile override var hadIsolatedDesktop: Boolean = false
+        private set
     @Volatile private var displayId = -1
     @Volatile private var desktopMode = DesktopModePolicy.ANDROID_DESKTOP
     @Volatile private var firstFrame = false
@@ -70,12 +79,40 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     @Volatile private var failure: String? = null
     @Volatile private var generationStartedAt = 0L
     private val death = IBinder.DeathRecipient {
-        EmbeddedSessionRegistry.producerStopped(this)
+        if (nativeHasStopped()) EmbeddedSessionRegistry.producerStopped(this)
         serviceDied.countDown()
         val retired = retiringGeneration
-        if (retired != 0L) core.desktopSurfaceProducerClosed(retired)
+        if (retired != 0L && nativeHasStopped()) core.desktopSurfaceProducerClosed(retired)
         fail(helperUnavailableMessage(), Failure.HELPER_UNAVAILABLE)
     }
+    private fun nativeHasStopped(): Boolean = nativeProducer?.let { !it.isBinderAlive }
+        ?: (serviceBinder?.isBinderAlive != true)
+
+    private fun watchNativeProducer(binder: IBinder) {
+        synchronized(nativeLock) {
+            nativeProducer?.let { old -> nativeDeath?.let { runCatching { old.unlinkToDeath(it, 0) } } }
+            nativeProducer = binder
+            val callback = IBinder.DeathRecipient {
+                if (nativeProducer === binder) {
+                    EmbeddedSessionRegistry.producerStopped(this)
+                    retiringGeneration.takeIf { it != 0L }?.let(core::desktopSurfaceProducerClosed)
+                    fail("Связь с независимым рабочим столом прервалась", Failure.HELPER_UNAVAILABLE)
+                }
+            }
+            nativeDeath = callback
+            try { binder.linkToDeath(callback, 0) }
+            catch (_: android.os.RemoteException) {
+                Thread({ callback.binderDied() }, "desktop-native-death").apply { isDaemon = true; start() }
+            }
+        }
+    }
+
+    private fun forgetNativeProducer() = synchronized(nativeLock) {
+        nativeProducer?.let { old -> nativeDeath?.let { runCatching { old.unlinkToDeath(it, 0) } } }
+        nativeProducer = null
+        nativeDeath = null
+    }
+
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName, binder: IBinder) {
             try {
@@ -165,10 +202,15 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
                     "Адаптированный DriveDeck отключён или недоступен"
                 }
             }
+            if (requiresIsolatedPhoneLock) {
+                val repair = VdmHostRecovery.create(context) { !stopping.get() && this.generation == generation }
+                vdmRecovery = repair
+                check(repair.ensureReady(18_000)) { repair.failure ?: "Служба независимого экрана недоступна. Повторите активацию HeadSwap." }
+            }
             val lifetime = Binder()
             synchronized(stateLock) {
                 check(!stopping.get()) { "Подключение остановлено" }
-                inputGateway.beginGeneration(generation, lifetime, allowFullscreen = desktopMode == DesktopModePolicy.DRIVEDECK)
+                inputGateway.beginGeneration(generation, lifetime, allowFullscreen = EmbeddedDisplayPolicy.supportsChildren(desktopMode))
             }
             val id = bounded(25) {
                 check(remote.protocolVersion() == DexUserServicePolicy.PROTOCOL_VERSION) { "Версия службы рабочего стола не совпадает с приложением. Завершите доступ и активируйте HeadSwap снова." }
@@ -176,6 +218,8 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
             }
             check(id > 0) { "Не удалось создать отдельный экран" }
             displayId = id
+            hadIsolatedDesktop = hadIsolatedDesktop || context.getSystemService(android.hardware.display.DisplayManager::class.java)
+                .getDisplay(id)?.let(DesktopDisplayIsolation::confirmedIndependence) == true
             if (stopping.get() || !core.desktopSurfaceReady(generation)) {
                 onSurfaceClosing(generation)
                 return
@@ -184,7 +228,8 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
                 check(!stopping.get() && retiringGeneration != generation) { "Сеанс завершён" }
                 DexState.displayId = id
                 if (desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
-                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols, correctionPackages)
+                    EmbeddedSessionRegistry.activate(this, remote, id, this.input, desktopMode, density, compactMapSymbols, correctionPackages,
+                        nativeLifetime = nativeProducer ?: checkNotNull(serviceBinder))
                 }
             }
             status("Рабочий стол ${input.width}×${input.height} готов, ожидаю видео…")
@@ -201,6 +246,8 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
 
     override fun onSurfaceClosing(generation: Long) {
         if (this.generation != generation) return
+        vdmRecovery?.close()
+        vdmRecovery = null
         // Invalidate queued input before retiring the corresponding display.
         synchronized(stateLock) {
             EmbeddedSessionRegistry.deactivate(this)
@@ -218,17 +265,19 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
         DexState.displayId = -1
         val remote = service
         val binder = serviceBinder
+        var nativeClosed = nativeHasStopped()
         if (remote != null && binder?.isBinderAlive == true && serviceDied.count != 0L) {
-            try { bounded(8) { remote.stop() } }
+            try { bounded(8) { remote.stop() }; nativeClosed = true }
             catch (e: Exception) {
                 AppLog.i("DESKTOP delegated: stop failed (${e.javaClass.simpleName}); closing producer", false)
                 // Ordinary unbind is NOT a producer-death acknowledgement. Try the
                 // explicit close transaction before trusting actual Binder death.
                 val closed = runCatching { bounded(8) { remote.destroy() }; true }.getOrDefault(false)
                 val confirmedDead = if (closed) false else try {
-                    serviceDied.await(6, TimeUnit.SECONDS) || !binder.isBinderAlive
-                } catch (_: InterruptedException) { Thread.currentThread().interrupt(); !binder.isBinderAlive }
-                if (!closed && !confirmedDead) {
+                    serviceDied.await(6, TimeUnit.SECONDS); nativeHasStopped()
+                } catch (_: InterruptedException) { Thread.currentThread().interrupt(); nativeHasStopped() }
+                nativeClosed = closed || confirmedDead
+                if (!nativeClosed) {
                     val message = "Служба не подтвердила закрытие экрана. Завершите HeadSwap перед повторным подключением"
                     failure = message
                     DexState.error = message
@@ -239,9 +288,11 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
                 }
             }
         }
+        check(nativeClosed || nativeHasStopped()) { "Производитель экрана ещё не подтвердил завершение" }
         EmbeddedSessionRegistry.producerStopped(this)
         this.generation = 0
         retiringGeneration = 0
+        forgetNativeProducer()
         displayId = -1
         if (!stopping.get()) status("Ожидаю повторного подключения USB CarLife…")
     }
@@ -380,13 +431,27 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     private fun enqueue(block: (IDexUserService) -> Unit) {
         val token = generation
         if (stopping.get() || token == 0L || retiringGeneration == token || !firstFrame) return
+        val arrivedNs = android.os.SystemClock.elapsedRealtimeNanos()
+        val observedDepth = input.queue.size + 1
         try { input.execute {
-            if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) try { service?.let(block) }
-            catch (e: Exception) {
-                // An already dequeued input can overlap normal USB-detach cleanup.
-                // Its retired display is gone; this must not end a reconnectable session.
-                if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
-                    fail("Не удалось передать управление рабочему столу: ${e.message}", failureKind(e))
+            if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
+                val startedNs = android.os.SystemClock.elapsedRealtimeNanos()
+                var succeeded = false
+                try {
+                    try {
+                        service?.let { remote -> block(remote); succeeded = true }
+                    } finally {
+                        // Record the remote call before any failure-triggered teardown work.
+                        inputDiagnostics.completed(token, arrivedNs, startedNs,
+                            android.os.SystemClock.elapsedRealtimeNanos(), observedDepth, succeeded)
+                            ?.let { AppLog.i(it, false) }
+                    }
+                } catch (e: Exception) {
+                    // An already dequeued input can overlap normal USB-detach cleanup.
+                    // Its retired display is gone; this must not end a reconnectable session.
+                    if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
+                        fail("Не удалось передать управление рабочему столу: ${e.message}", failureKind(e))
+                    }
                 }
             }
         } } catch (_: java.util.concurrent.RejectedExecutionException) {
@@ -417,6 +482,7 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     }
 
     override fun stop(onDone: () -> Unit) {
+        vdmRecovery?.close()
         val firstStop = synchronized(stateLock) {
             stopping.compareAndSet(false, true).also { if (it) {
                 EmbeddedSessionRegistry.deactivate(this)

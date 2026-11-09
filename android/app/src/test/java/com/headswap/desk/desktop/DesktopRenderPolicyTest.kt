@@ -2,6 +2,8 @@ package com.headswap.desk.desktop
 
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
+import android.os.IBinder
+import java.lang.reflect.Proxy
 import com.headswap.desk.embed.EmbeddedSessionRegistry
 import com.headswap.desk.shared.DesktopRenderPolicy
 import java.util.concurrent.Executors
@@ -9,10 +11,21 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 
 class DesktopRenderPolicyTest {
+    private fun liveService(): IDexUserService = object : IDexUserService.Default() {
+        private val lifetime = Proxy.newProxyInstance(IBinder::class.java.classLoader,
+            arrayOf(IBinder::class.java)) { _, method, _ ->
+            when (method.name) {
+                "isBinderAlive" -> true
+                else -> error("Unexpected Binder method: ${method.name}")
+            }
+        } as IBinder
+        override fun asBinder(): IBinder = lifetime
+    }
+
     @Test fun disablingCompactMapsKeepsTheViewportAndExactSessionDensity() {
         val owner = Any()
         val worker = Executors.newSingleThreadExecutor()
-        val remote = IDexUserService.Default()
+        val remote = liveService()
         try {
             for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK)) {
                 for (dpi in listOf(96, 128, 160, 200, 320, 640)) {

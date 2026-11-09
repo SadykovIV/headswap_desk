@@ -46,7 +46,7 @@ public final class ProfileSession {
     /** Only one implemented SDK capability may be requested. An advertised unknown, reserved or composite bit is insufficient. */
     public boolean supports(int capability) {
         boolean implemented = capability == ProfileContract.CAP_LAUNCH_APP || capability == ProfileContract.CAP_OPEN_CATALOG ||
-                capability == ProfileContract.CAP_MEDIA || capability == ProfileContract.CAP_PROFILE_CHROME;
+                capability == ProfileContract.CAP_MEDIA || capability == ProfileContract.CAP_PROFILE_CHROME || capability == ProfileContract.CAP_NOTIFICATIONS;
         return implemented && (capabilities & capability) != 0;
     }
 
@@ -54,6 +54,17 @@ public final class ProfileSession {
     public boolean canOpenCatalog() { return supports(ProfileContract.CAP_OPEN_CATALOG); }
     public boolean canUseMicrophone() { return supports(ProfileContract.CAP_MICROPHONE_INPUT); }
     public boolean canUseVoiceChannel() { return supports(ProfileContract.CAP_VOICE_CHANNEL); }
+    /** Count/status only. Call at most once per second while the native control is visible; false on pause. */
+    public android.os.Bundle getNotificationStatus(boolean nativeEntryVisible) {
+        if (!supports(ProfileContract.CAP_NOTIFICATIONS)) return null;
+        try { return remote.getNotificationStatus(nativeEntryVisible); }
+        catch (android.os.RemoteException | RuntimeException unavailable) { return null; }
+    }
+    public boolean openNotifications() {
+        if (!supports(ProfileContract.CAP_NOTIFICATIONS)) return false;
+        try { return remote.sendDashboardAction(ProfileContract.DASH_NOTIFICATIONS); }
+        catch (android.os.RemoteException | RuntimeException unavailable) { return false; }
+    }
     public boolean canUseMedia() { return supports(ProfileContract.CAP_MEDIA); }
     public boolean canUseProfileChrome() { return supports(ProfileContract.CAP_PROFILE_CHROME); }
 

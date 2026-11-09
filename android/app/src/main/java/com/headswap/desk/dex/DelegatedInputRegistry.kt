@@ -22,6 +22,12 @@ internal class DelegatedInputRegistry {
 
     fun registeredDisplayIds(): Set<Int> = displays.keys.toSet()
 
+    fun requirePendingParent(token: Any) {
+        check(generation > 0 && token == expectedParentToken && displays.isEmpty()) {
+            "Сеанс экрана уже завершён или зарегистрирован"
+        }
+    }
+
     fun requireParent(expectedGeneration: Long): Entry {
         check(generation > 0 && generation == expectedGeneration) { "Сеанс экрана завершён" }
         return checkNotNull(displays.values.singleOrNull { it.parent == null && it.token == expectedParentToken })

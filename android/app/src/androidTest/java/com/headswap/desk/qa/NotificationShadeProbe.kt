@@ -2,7 +2,10 @@ package com.headswap.desk.qa
 
 import android.app.Activity
 import android.app.Instrumentation
+import android.app.NotificationManager
 import android.app.UiAutomation
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
@@ -23,6 +26,8 @@ import com.headswap.desk.dex.*
 import com.headswap.desk.embed.EmbeddedSessionRegistry
 import com.headswap.desk.notify.HuNotificationShade
 import com.headswap.desk.notify.HuNotifications
+import com.headswap.desk.notify.HuNotificationFeature
+import com.headswap.desk.notify.HuNotificationGateway
 import java.lang.reflect.Proxy
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
@@ -76,6 +81,10 @@ internal object NotificationShadeProbe {
                     DesktopConnectionState.attach(delivery)
                     test.runOnMainSync { shade = HuNotificationShade(context).also { it.start() } }
                     shell(ui, "cmd notification post -t HeadSwapTestMessage headswap-shade-test NotificationShadeVerification")
+                    if (!HuNotificationFeature.AVAILABLE) {
+                        verifyDisabled(test, ui, context, checkNotNull(shade), id, owner, delivery, result)
+                    } else {
+                    result.putString("notificationShadeMode", "enabled-interaction")
                     val deadline = SystemClock.elapsedRealtime() + 6000
                     while (SystemClock.elapsedRealtime() < deadline && HuNotifications.items.none { it.who.contains("HeadSwapTestMessage") }) {
                         delivery.writeCompleted(Ch.VIDEO, Msg.VIDEO_HEARTBEAT, 0, SystemClock.elapsedRealtime())
@@ -132,6 +141,7 @@ internal object NotificationShadeProbe {
                     test.runOnMainSync { check(panelField.get(shade) == null) { "Shade remained after ownership ended" } }
                     check(HuNotifications.items.isEmpty()) { "Notification model survived session end" }
                     result.putBoolean("removedAfterSession", true)
+                    }
                 } finally { display.release() }
             }
         } catch (error: Throwable) { result.putString("error",android.util.Log.getStackTraceString(error)) }
@@ -149,6 +159,75 @@ internal object NotificationShadeProbe {
             shell(ui, "appops set com.headswap.desk SYSTEM_ALERT_WINDOW default")
         }
         test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK,result)
+    }
+    /** Explicit suspension test, not a successful run of the normal shade interaction scenario. */
+    private fun verifyDisabled(test: Instrumentation, ui: UiAutomation, context: Context,
+        shade: HuNotificationShade, displayId: Int, owner: Any, delivery: DesktopVideoDelivery, result: Bundle) {
+        result.putString("notificationShadeMode", "disabled")
+        result.putString("scope", "Saved opt-in, owned display, gateway/model/capability suspension; actual NLS delivery and phone RemoteInput availability. No HUD manoeuvre, music or TLS pairing test.")
+        check(DexPrefs(context).huNotificationsEnabled && EmbeddedSessionRegistry.ownsParentDisplay(displayId))
+        result.putBoolean("savedOptInAndOwnedDisplay", true)
+        test.runOnMainSync {
+            HuNotifications.session(context, true) // A stale caller cannot bypass the build gate either.
+            shade.expand(displayId)
+            check(!shade.available(displayId))
+            val panelField = HuNotificationShade::class.java.getDeclaredField("panel").apply { isAccessible = true }
+            check(panelField.get(shade) == null)
+        }
+        val status = HuNotificationGateway.status(displayId, Binder(), true)
+        check(!status.getBoolean("enabled") && !status.getBoolean("connected") && status.getInt("count") == 0)
+        check(!HuNotificationGateway.hasNativeEntry(displayId))
+        check(!HuNotificationGateway.show(displayId))
+        check(!HuNotificationGateway.open(context, displayId, "qa-disabled", "com.android.shell"))
+        result.putBoolean("gatewayRejectsShadeAndCardActions", true)
+        val capabilities = HuNotificationFeature.capabilities(127)
+        check(capabilities == 63) { "Notification suspension changed other gateway capabilities" }
+        result.putInt("sharedGatewayCapabilityMask", capabilities)
+        val input = shell(ui, "dumpsys input")
+        check(input.lineSequence().none { it.contains("HeadSwapDesk notification shade") && it.contains("displayId=$displayId,") })
+        result.putBoolean("noShadeInputWindow", true)
+
+        await {
+            com.headswap.desk.cluster.ClusterNavigationListener.connected?.activeNotifications?.any {
+                it.tag == "headswap-shade-test"
+            } == true
+        }
+        check(HuNotifications.items.isEmpty()) { "Suspended shade collected notification content" }
+        result.putBoolean("notificationModelEmptyAfterRealPost", true)
+        result.putBoolean("hudListenerStillReceivesSystemNotifications", true)
+
+        // These are two sequential scenarios. Activation correctly refuses to run during
+        // a desktop session, so retire this probe's synthetic ownership before testing it.
+        test.runOnMainSync { shade.close() }
+        DesktopConnectionState.detach(delivery)
+        EmbeddedSessionRegistry.deactivate(owner)
+        DexState.displayId = -1; DexState.running = false; CarLifeState.running = false
+        result.putBoolean("fixtureDesktopRetiredBeforePairing", true)
+
+        // Exercise the actual independent phone service without submitting any pairing code.
+        check(!PhonePairingService.active) { "A pre-existing pairing attempt must not be interrupted" }
+        val notifications = context.getSystemService(NotificationManager::class.java)
+        shell(ui, "pm grant com.headswap.desk android.permission.POST_NOTIFICATIONS")
+        if (Build.VERSION.SDK_INT >= 37) shell(ui, "pm grant com.headswap.desk android.permission.ACCESS_LOCAL_NETWORK")
+        try {
+            test.runOnMainSync { PhonePairingService.start(context, true) }
+            await { notifications.activeNotifications.any { it.id == 72 && !it.notification.actions.isNullOrEmpty() } }
+            val action = notifications.activeNotifications.single { it.id == 72 }.notification.actions.single()
+            check(action.remoteInputs.single().allowFreeFormInput)
+            check(PhonePairingService.active)
+            result.putBoolean("phonePairingInlineActionAvailable", true)
+        } finally {
+            context.stopService(Intent(context, PhonePairingService::class.java))
+            await { !PhonePairingService.active && notifications.activeNotifications.none { it.id == 71 || it.id == 72 } }
+        }
+    }
+    private fun await(predicate: () -> Boolean) {
+        val deadline = SystemClock.elapsedRealtime() + 6_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (predicate()) return
+            SystemClock.sleep(100)
+        }
+        check(predicate()) { "Disabled-shade probe prerequisite did not become ready" }
     }
     private fun texts(view: android.view.View): List<String> = when(view) {
         is TextView -> listOf(view.text.toString())

@@ -23,6 +23,12 @@ public final class CompatibilityProbe extends Instrumentation {
         start();
     }
     @Override public void onStart() {
+        if ("generic-fullscreen".equals(probe)) { GenericFullscreenProbe.run(this); return; }
+        if ("vdm-latency".equals(probe)) { VdmLatencyProbe.run(this); return; }
+        if ("vdm-ime".equals(probe)) { VdmFunctionalProbe.run(this, false); return; }
+        if ("vdm-audio".equals(probe)) { VdmFunctionalProbe.run(this, true); return; }
+        if ("vdm-recovery".equals(probe)) { VdmRecoveryProbe.run(this); return; }
+        if ("vdm-runtime".equals(probe)) { VdmRuntimeProbe.run(this); return; }
         if ("vdm-gates".equals(probe)) { VirtualDeviceGateProbe.run(this); return; }
         if ("surface-timing".equals(probe)) { SurfaceTimingProbe.run(this); return; }
         if ("wireless-opt-out".equals(probe)) { WirelessOptOutProbe.run(this); return; }
@@ -40,6 +46,7 @@ public final class CompatibilityProbe extends Instrumentation {
         if ("panel-reconnect".equals(probe)) { PanelReconnectProbe.run(this, panelToken); return; }
         if ("offline-ime".equals(probe)) { OfflineImeProbe.run(this); return; }
         if ("usb-music-loss".equals(probe)) { UsbMusicLossProbe.run(this); return; }
+        if ("drivedeck-notifications".equals(probe)) { DriveDeckRuntimeProbe.run(this, false, true); return; }
         if ("drivedeck-fullscreen".equals(probe)) { DriveDeckRuntimeProbe.run(this, true); return; }
         if ("drivedeck".equals(probe)) { DriveDeckRuntimeProbe.run(this); return; }
         if ("components".equals(probe)) { ComponentProbe.run(this); return; }

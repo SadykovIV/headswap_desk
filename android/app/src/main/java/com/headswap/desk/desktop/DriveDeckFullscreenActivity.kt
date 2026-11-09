@@ -11,6 +11,7 @@ import android.graphics.drawable.RippleDrawable
 import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowInsetsController
@@ -28,6 +29,7 @@ import kotlin.math.roundToInt
 /** Signature-protected launcher for one full-screen DriveDeck app on its active HU display. */
 class DriveDeckFullscreenActivity : Activity() {
     private lateinit var pane: DesktopAppPane
+    private var hardwareBack: FullscreenHardwareBack? = null
     private lateinit var message: TextView
     private lateinit var back: ImageButton
     private lateinit var home: ImageButton
@@ -79,6 +81,8 @@ class DriveDeckFullscreenActivity : Activity() {
         root.addView(back, buttonPosition(aboveHome = false))
         root.addView(home, buttonPosition(aboveHome = false))
         setContentView(root)
+        hardwareBack = FullscreenHardwareBack.attach(this, pane) { !leaving }
+            ?: run { finish(); return }
         openTarget(intent)
     }
 
@@ -122,11 +126,28 @@ class DriveDeckFullscreenActivity : Activity() {
         super.onResume()
         if (isFinishing || !::pane.isInitialized) return
         if (config() == null) { finish(); return }
+        hardwareBack?.resume()
         window.insetsController?.apply {
             hide(WindowInsets.Type.systemBars())
             systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
         pane.refreshBuffer()
+    }
+
+    override fun onPause() {
+        hardwareBack?.pause()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        hardwareBack?.close()
+        hardwareBack = null
+        super.onDestroy()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) hardwareBack?.touchDown()
+        return super.dispatchTouchEvent(event)
     }
 
     @Deprecated("Route Back to the owned child display")

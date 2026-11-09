@@ -138,6 +138,11 @@
             android:taskAffinity="${applicationId}.drivedeck.fullscreen"
             android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
             android:theme="@style/Theme.Headswap.Dex" />
+        <activity android:name=".desktop.NotificationFullscreenActivity" android:exported="false"
+            android:excludeFromRecents="true" android:resizeableActivity="true" android:launchMode="singleTop"
+            android:taskAffinity="${applicationId}.notification.fullscreen"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden"
+            android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".dex.DpiCorrectionActivity" android:exported="false" android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".update.ComponentUpdatesActivity" android:exported="false" />
         <provider
@@ -147,6 +152,12 @@
             android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/component_apk_paths" />
         </provider>
+
+        <provider
+            android:name=".dex.VdmHostProvider"
+            android:authorities="${applicationId}.vdmhost"
+            android:exported="true"
+            android:permission="android.permission.DUMP" />
 
         <!-- Explicitly launched by the shell service on its own display only; never a phone HOME. -->
         <activity

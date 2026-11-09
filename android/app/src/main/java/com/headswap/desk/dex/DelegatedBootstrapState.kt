@@ -16,6 +16,10 @@ internal class DelegatedBootstrapState {
     @Synchronized
     fun isActive(): Boolean = current?.stopping == false
 
+    /** Stopping is not a native cleanup acknowledgement; ownership lasts until end(). */
+    @Synchronized
+    fun hasOwner(): Boolean = current != null
+
     @Synchronized
     fun end(lease: Lease) {
         if (current === lease) current = null

@@ -5,13 +5,26 @@ import org.junit.Test
 
 class HuShadePolicyTest {
     @Test fun onlyTheLiveOwnedSecondaryScreenMayReceiveTheShade() {
-        assertTrue(HuShadePolicy.canShow(true, true, true, 8, true))
-        assertFalse(HuShadePolicy.canShow(true, true, true, 0, true))
-        assertFalse(HuShadePolicy.canShow(true, true, true, -1, true))
-        assertFalse(HuShadePolicy.canShow(false, true, true, 8, true))
-        assertFalse(HuShadePolicy.canShow(true, false, true, 8, true))
-        assertFalse(HuShadePolicy.canShow(true, true, false, 8, true))
-        assertFalse(HuShadePolicy.canShow(true, true, true, 8, false))
+        // Preserve the ownership/permission policy while the production feature is suspended.
+        assertTrue(HuShadePolicy.canShow(true, true, true, 8, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(true, true, true, 0, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(true, true, true, -1, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(false, true, true, 8, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(true, false, true, 8, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(true, true, false, 8, true, featureAvailable = true))
+        assertFalse(HuShadePolicy.canShow(true, true, true, 8, false, featureAvailable = true))
+    }
+    @Test fun suspensionOverridesSavedOptInEvenWithAllPermissionsAndALiveOwnedDisplay() {
+        assertFalse(HuNotificationFeature.enabled(true))
+        assertFalse(HuShadePolicy.canShow(true, true, true, 8, true))
+    }
+    @Test fun suspensionRemovesOnlyNotificationCapabilityFromOldAndNewComponentContracts() {
+        val notification = 1 shl 6
+        for (advertised in listOf(127, 0b10100101, 0, notification, Int.MAX_VALUE)) {
+            val effective = HuNotificationFeature.capabilities(advertised)
+            assertEquals(0, effective and notification)
+            assertEquals(advertised and notification.inv(), effective)
+        }
     }
     @Test fun lockScreenNeverRevealsNotificationContentEvenIfHuIsIndependent() {
         assertTrue(HuShadePolicy.revealText(false, false))

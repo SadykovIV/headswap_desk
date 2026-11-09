@@ -52,7 +52,8 @@ internal class GuidancePaneVisibility {
 /** Session authority stays in HeadSwap. Public handles are unrelated to Android display IDs. */
 internal object EmbeddedSessionRegistry {
     private class Parent(val owner: Any, val remote: IDexUserService, val displayId: Int, val calls: ExecutorService,
-        val mode: Int, val density: Int, val correctedPackages: Set<String>, val shizuku: Boolean) {
+        val mode: Int, val density: Int, val correctedPackages: Set<String>, val shizuku: Boolean,
+        val nativeLifetime: IBinder) {
         fun bufferDensity(requested: Int): Int = if (correctedPackages.isNotEmpty()) requested else density
     }
     private class Lease(val handle: Int, val uid: Int, val parent: Parent, val token: IBinder, val fullscreen: Boolean,
@@ -73,13 +74,35 @@ internal object EmbeddedSessionRegistry {
 
     fun activate(owner: Any, remote: IDexUserService, displayId: Int, calls: ExecutorService, mode: Int,
         density: Int, compactMapSymbols: Boolean, correctionPackages: Set<String> = DesktopRenderPolicy.DEFAULT_PACKAGES,
-        shizuku: Boolean = false) = synchronized(lock) {
+        shizuku: Boolean = false, nativeLifetime: IBinder = remote.asBinder()) = synchronized(lock) {
         require(displayId > 0)
         DesktopGeometryPolicy.requireDensity(density)
         check(parent == null || parent?.owner === owner) { "Предыдущий рабочий стол ещё активен" }
         val selected = if (compactMapSymbols) correctionPackages.toSet() else emptySet()
-        parent = Parent(owner, remote, displayId, calls, mode, density, selected, shizuku)
+        check(nativeLifetime.isBinderAlive) { "Производитель рабочего стола завершился" }
+        parent = Parent(owner, remote, displayId, calls, mode, density, selected, shizuku, nativeLifetime)
     }
+
+    /** In-process capability. A reused numeric display ID never authenticates a successor session. */
+    fun captureParent(parentId: Int): Any? = synchronized(lock) {
+        parent?.takeIf { it.displayId == parentId && it.nativeLifetime.isBinderAlive }
+    }
+    fun isCurrentParent(parentId: Int, proof: Any): Boolean = synchronized(lock) {
+        parent === proof && parent?.displayId == parentId && parent?.nativeLifetime?.isBinderAlive == true
+    }
+    fun parentMode(parentId: Int): Int? = synchronized(lock) { parent?.takeIf { it.displayId == parentId }?.mode }
+    /** Uses the producer's existing Home/profile path; no UI intent guesses the selected component. */
+    fun requestHome(parentId: Int, proof: Any): Boolean {
+        val active = synchronized(lock) { parent?.takeIf { it === proof && it.displayId == parentId && it.nativeLifetime.isBinderAlive } } ?: return false
+        cleanup.execute {
+            runCatching { call(active) { remote ->
+                check(isCurrentParent(parentId, proof))
+                remote.showDesktop()
+            } }
+        }
+        return true
+    }
+
 
     fun renderConfig(parentId: Int, ownDesktop: Boolean, packageName: String? = null): IntArray = synchronized(lock) {
         val active = checkNotNull(parent) { "Рабочий стол ещё не готов" }
@@ -108,7 +131,7 @@ internal object EmbeddedSessionRegistry {
     /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
     private fun guidanceTargets(): List<GuidanceTarget> {
         if (!CarLifeState.running) return emptyList()
-        val active = parent?.takeIf { it.remote.asBinder().isBinderAlive } ?: return emptyList()
+        val active = parent?.takeIf { it.remote.asBinder().isBinderAlive && it.nativeLifetime.isBinderAlive } ?: return emptyList()
         val current = leases.values.filter { it.parent === active }
         if (current.isEmpty()) return listOf(GuidanceTarget(active, active.displayId, null, null))
         val foreground = current.filter { it.fullscreen }.ifEmpty { current }
@@ -142,6 +165,14 @@ internal object EmbeddedSessionRegistry {
 
     fun readDelegatedGuidance(displayId: Int, read: () -> ShellManeuverSample): ShellManeuverSample =
         readGuidance(displayId, false) { read() }
+
+    /** Revalidate the captured pane before every asynchronous Assist callback, including hide/reveal. */
+    fun readDelegatedGuidanceScoped(displayId: Int, read: (() -> Unit) -> ShellManeuverSample): ShellManeuverSample {
+        val target = synchronized(lock) { guidanceTargets().find { !it.parent.shizuku && it.displayId == displayId } }
+            ?: return ShellManeuverSample.Unavailable
+        val requireCurrent = { check(synchronized(lock) { target in guidanceTargets() }) { "Guidance pane changed" } }
+        return readDelegatedGuidance(displayId) { read(requireCurrent) }
+    }
 
     /** Reject new operations immediately; retained leases can still acknowledge producer release. */
     fun deactivate(owner: Any) = synchronized(lock) {
@@ -317,6 +348,28 @@ internal object EmbeddedSessionRegistry {
         }
     }
 
+    /** Notification capabilities stay in the host; a component can never supply an arbitrary PendingIntent. */
+    fun launchNotification(activity: Activity, handle: Int, ticket: com.headswap.desk.notify.HuNotificationLaunch.Ticket) {
+        val lease = active(Process.myUid(), handle)
+        activeCall(lease) { remote ->
+            check(lease.fullscreen && activity.display?.displayId == lease.parent.displayId &&
+                ticket.parentId == lease.parent.displayId && ticket.parentProof === lease.parent && ticket.current(activity))
+            com.headswap.desk.dex.EmbeddedDisplayPolicy.requireChildId(lease.displayId, lease.parent.displayId)
+            remote.trackDesktopChildLaunch(lease.token, ticket.action.packageName)
+            check(ticket.current(activity) && !activity.isDestroyed && !activity.isFinishing &&
+                activity is com.headswap.desk.desktop.NotificationFullscreenActivity && activity.launchVisible)
+            val options = ActivityOptions.makeBasic().setLaunchDisplayId(lease.displayId)
+            // Android 14+ requires the sender to opt in for a user-click PendingIntent.
+            // Android 16+ narrows this to our actually visible fullscreen host Activity.
+            if (android.os.Build.VERSION.SDK_INT >= 36)
+                options.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_IF_VISIBLE)
+            else if (android.os.Build.VERSION.SDK_INT >= 34)
+                options.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+            ticket.action.intent.send(activity, 0, null, null, null, null, options.toBundle())
+            lease.packageName = ticket.action.packageName
+        }
+    }
+
     fun touch(uid: Int, handle: Int, action: Int, x: Float, y: Float) {
         val lease = active(uid, handle)
         activeCall(lease) { it.injectChildTouch(lease.token, action, x, y) }
@@ -367,7 +420,11 @@ internal object EmbeddedSessionRegistry {
                 try {
                     try { call(lease.parent, stop) }
                     catch (_: RejectedExecutionException) { stop(lease.parent.remote) }
-                } catch (error: Exception) { if (lease.parent.remote.asBinder().isBinderAlive) throw error }
+                } catch (error: Exception) { if (lease.parent.nativeLifetime.isBinderAlive) throw error }
+            } else {
+                check(!lease.parent.nativeLifetime.isBinderAlive) {
+                    "Нативный производитель ещё не подтвердил закрытие окна"
+                }
             }
             synchronized(lock) { if (leases[lease.handle] === lease) leases.remove(lease.handle) }
             unlink(lease)

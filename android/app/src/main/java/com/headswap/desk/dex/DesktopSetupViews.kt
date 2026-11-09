@@ -8,6 +8,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.view.View
 import android.view.Gravity
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -71,6 +72,68 @@ internal class DesktopSetupViews(private val context: Context) {
         setTextColor(primary)
         setOnClickListener { action() }
         parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(2) })
+    }
+
+    class NavigationRow(val view: View, private val summary: TextView) {
+        fun updateSummary(value: String) {
+            if (summary.text.toString() != value) summary.text = value
+            summary.visibility = if (value.isEmpty()) View.GONE else View.VISIBLE
+            if (view.stateDescription?.toString().orEmpty() != value) view.stateDescription = value.takeIf { it.isNotEmpty() }
+        }
+    }
+
+    /** One accessible target with a wrapping title and status, rather than a stack of large buttons. */
+    fun navigation(parent: LinearLayout, label: String, summary: String = "", action: () -> Unit): NavigationRow {
+        val row = LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(64)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            isClickable = true
+            isFocusable = true
+            contentDescription = label
+            background = RippleDrawable(ColorStateList.valueOf(Color.argb(45, 255, 255, 255)),
+                GradientDrawable().apply { setColor(cardColor); cornerRadius = dp(10).toFloat() }, null)
+            accessibilityDelegate = object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = Button::class.java.name
+                }
+            }
+            setOnClickListener { action() }
+        }
+        val copy = column().apply { importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS }
+        row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+        text(copy, label, 16f, true)
+        val detail = text(copy, summary, 13f)
+        row.addView(TextView(context).apply {
+            text = "›"; textSize = 24f; setTextColor(secondary)
+            setPadding(dp(10), 0, 0, 0)
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(-2, -2))
+        parent.addView(row, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        return NavigationRow(row, detail).also { it.updateSummary(summary) }
+    }
+
+    class PermissionRow(private val row: NavigationRow, private val mark: TextView) {
+        val view: View get() = row.view
+        fun update(granted: Boolean, detail: String) {
+            mark.text = if (granted) "✓" else "✕"
+            mark.setTextColor(if (granted) Color.rgb(106, 230, 157) else Color.rgb(255, 119, 119))
+            row.updateSummary(detail)
+            view.stateDescription = (if (granted) "Доступ есть. " else "Нет доступа. ") + detail
+        }
+    }
+
+    /** Read-only permission state; tapping the row opens the real Android permission flow. */
+    fun permission(parent: LinearLayout, label: String, action: () -> Unit): PermissionRow {
+        val row = navigation(parent, label, action = action)
+        val mark = TextView(context).apply {
+            textSize = 26f
+            gravity = Gravity.CENTER
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        (row.view as LinearLayout).addView(mark, 0, LinearLayout.LayoutParams(dp(36), -2).apply { marginEnd = dp(8) })
+        return PermissionRow(row, mark)
     }
 
     class Toggle(val row: LinearLayout, val control: Switch) {

@@ -176,6 +176,15 @@ object DexAccess {
         }
     }
 
+    /** Existing paired identity, own literal address only; caller owns and can close this socket. */
+    internal fun connectEndpoint(context: Context, endpoint: DexEndpoint, timeoutMs: Int): Kadb {
+        require(timeoutMs in 1..20_000)
+        val address = LocalAddressPolicy.normalizeOrNull(endpoint.host)
+        require(address != null && acceptsHost(address) && endpoint.port in 1..65535) { "ADB endpoint must belong to this phone" }
+        configure(context)
+        return Kadb.create(address, endpoint.port, connectTimeout = minOf(3_000, timeoutMs), socketTimeout = timeoutMs)
+    }
+
     /** Called after the connector owns the socket, so Stop can interrupt initial auth. */
     internal fun verifyShell(adb: Kadb, host: String, port: Int) {
         val evidence = readiness.token()

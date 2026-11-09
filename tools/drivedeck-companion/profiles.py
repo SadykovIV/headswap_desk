@@ -18,7 +18,7 @@ LEGACY = Profile('bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157
     'SCALE': 'L', 'WIDTH': 'H', 'HEIGHT': 'I', 'DENSITY': 'M',
     'CLOSED': 'A', 'RELEASING': 'B', 'ENABLED': 'c0', 'READY': 'S',
 })
-CURRENT = Profile('e32ac90ed66d7d325653ed475cd3623d41d7737aeb321813991aedab7b06a003', '0.6.9', 332, 331, 'patch_069.py', {
+CURRENT = Profile('e32ac90ed66d7d325653ed475cd3623d41d7737aeb321813991aedab7b06a003', '0.6.9', 333, 331, 'patch_069.py', {
     'RENDERER_CLASS': 'c.g8', 'OPEN_SPLIT': 'A', 'SET_HANDLE': 'q',
     'SCALE': 'O', 'WIDTH': 'K', 'HEIGHT': 'L', 'DENSITY': 'P',
     'CLOSED': 'D', 'RELEASING': 'E', 'ENABLED': 'g0', 'READY': 'W',

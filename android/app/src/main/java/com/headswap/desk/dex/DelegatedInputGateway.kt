@@ -15,7 +15,8 @@ import android.view.MotionEvent
 import com.headswap.desk.AppLog
 
 /** TestApi calls stay in the already instrumented main process, not in ordinary helper ART. */
-internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.Stub() {
+internal class DelegatedInputGateway(context: Context,
+    private val onNativeProducer: (IBinder) -> Unit = {}) : IDelegatedInputGateway.Stub() {
     private val context = context.applicationContext
     private val registry = DelegatedInputRegistry()
     private val imeRoutes = DelegatedImeRoutes()
@@ -34,6 +35,9 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         this.context.checkSelfPermission(PhonePowerActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
         SamsungHuActivity(MotionEvent::class.java, KeyEvent::class.java) else null
     private var reportedActivityMarker = false
+    @Volatile private var vdmSession: IVdmDesktopSession? = null
+    @Volatile var nativeProducerLifetime: IBinder? = null
+        private set
     private val setActionButton by lazy { MotionEvent::class.java.getMethod("setActionButton", Int::class.javaPrimitiveType) }
 
     fun preflight() {
@@ -46,6 +50,8 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     @Synchronized fun beginGeneration(generation: Long, token: IBinder, allowFullscreen: Boolean) {
         displayWakeLocks.close()
         registry.begin(generation, token, allowFullscreen)
+        vdmSession = null
+        nativeProducerLifetime = null
         imeRoutes.clear()
         panelParent = null
         DexState.independentPhoneLock = null
@@ -61,6 +67,19 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         activeGateway.compareAndSet(this, null)
         phonePanel.restoreBestEffort()
         registry.deactivate()
+    }
+
+    @Synchronized override fun openVdmSession(producerLifetime: IBinder, parentToken: IBinder): IVdmDesktopSession {
+        requireActive()
+        registry.requirePendingParent(parentToken)
+        check(vdmSession == null && producerLifetime.isBinderAlive) { "Семейство экранов уже открыто" }
+        val opened = VdmHostLink.openSession(producerLifetime, Binder.getCallingPid())
+        vdmSession = opened
+        val lifetime = checkNotNull(opened.lifetime)
+        nativeProducerLifetime = lifetime
+        // Observed before the producer can submit its first Surface/create transaction.
+        onNativeProducer(lifetime)
+        return opened
     }
 
     @Synchronized override fun registerParent(displayId: Int, token: IBinder, width: Int, height: Int) {
@@ -111,12 +130,13 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
                 !DelegatedDesktopAccess.isReady(context)) return@refresh false
             val source = try {
                 requireTrustedDisplay(entry.id)
-                val fromHelper = backend !== ShellDisplayIme &&
+                val ownerUid = displayOwnerUid(entry.id)
+                val fromHelper = ownerUid == Process.myUid() && backend !== ShellDisplayIme &&
                     ShellPanelClient.enableLocalIme(entry.id) && ShellPanelClient.imeConnection === backend
                 when {
                     fromHelper -> "helper"
                     ShellDisplayIme.availableInActivation(context) -> {
-                        ShellDisplayIme.enable(entry.id, Process.myUid())
+                        ShellDisplayIme.enable(entry.id, ownerUid)
                         "activation"
                     }
                     else -> null
@@ -137,8 +157,10 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
             requireTrustedDisplay(displayId)
             registry.requireDisplay(displayId, token).also { check(it.parent != null) }
         }
-        val visible = ShellPanelClient.imeVisible(displayId) ?: if (ShellDisplayIme.availableInActivation(context)) {
-            try { ShellDisplayIme.isVisible(displayId, Process.myUid()) }
+        val ownerUid = synchronized(this) { displayOwnerUid(displayId) }
+        val visible = (if (ownerUid == Process.myUid()) ShellPanelClient.imeVisible(displayId) else null)
+            ?: if (ShellDisplayIme.availableInActivation(context)) {
+            try { ShellDisplayIme.isVisible(displayId, ownerUid) }
             catch (_: Exception) { null }
             catch (_: LinkageError) { null }
         } else null
@@ -257,6 +279,22 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         require(id > 0) { "Ввод на основной экран телефона запрещён" }
         val display = checkNotNull(displays.getDisplay(id)) { "Экран уже закрыт" }
         check(display.isValid && display.flags and 128 != 0) { "Ожидался доверенный отдельный экран" }
+        check(DesktopDisplayIsolation.ownerUid(display) == displayOwnerUid(id)) {
+            "Экран принадлежит другому процессу"
+        }
+    }
+
+    private fun displayOwnerUid(id: Int): Int {
+        val family = vdmSession ?: return Process.myUid()
+        check(nativeProducerLifetime?.isBinderAlive == true &&
+            VdmHostLink.ownsDisplay(id, family.asBinder()) && family.ownsDisplay(id)) {
+            "Экран не принадлежит текущей службе HeadSwap"
+        }
+        val group = family.displayGroup(id)
+        check(group > 0 && DesktopDisplayIsolation.groupId(checkNotNull(displays.getDisplay(id))) == group) {
+            "Группа независимого экрана изменилась"
+        }
+        return 2000 // Accepted only with the authenticated current family, never by UID alone.
     }
 
     companion object {

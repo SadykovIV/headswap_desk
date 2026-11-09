@@ -37,7 +37,7 @@ import java.io.IOException
 /** Owns the privileged producer; CarLife owns its consumer Surface and single H.264 encoder. */
 class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
     private val onFailed: (Failure) -> Unit = {}) :
-    AaLifecycle, AaPeer, DesktopSurfaceListener, DesktopPowerControl, DesktopNavigation, TerminalSource {
+    AaLifecycle, AaPeer, DesktopSurfaceListener, DesktopPowerControl, DesktopNavigation, TerminalSource, com.headswap.desk.aa.DesktopLockIsolation {
     enum class Failure { HELPER_UNAVAILABLE, OTHER }
     private val context = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -53,6 +53,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
     // Binder transactions are not cancelled by Future.cancel(). Keep start/stop ordered
     // even when the caller's deadline expires and the remote start finishes late.
     private val binderCalls = Executors.newSingleThreadExecutor { r -> Thread(r, "dex-binder").apply { isDaemon = true } }
+    private val inputDiagnostics = DesktopInputDiagnostics("shizuku")
     private val input = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, LinkedBlockingQueue(128),
         { r -> Thread(r, "dex-mouse").apply { isDaemon = true } })
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "dex-watch").apply { isDaemon = true } }
@@ -65,6 +66,10 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
     private var bindRequested = false // Read/written only on the main looper.
     @Volatile private var generation = 0L
     @Volatile private var retiringGeneration = 0L
+    override val requiresIsolatedPhoneLock: Boolean get() =
+        DesktopDisplayBackendPolicy.requiresVdm(android.os.Build.VERSION.SDK_INT, desktopMode)
+    @Volatile override var hadIsolatedDesktop: Boolean = false
+        private set
     @Volatile private var displayId = -1
     @Volatile private var desktopMode = DesktopModePolicy.ANDROID_DESKTOP
     @Volatile private var firstFrame = false
@@ -168,6 +173,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
             displayId = id
             DexState.independentPhoneLock = context.getSystemService(android.hardware.display.DisplayManager::class.java)
                 .getDisplay(id)?.let(DesktopDisplayIsolation::confirmedIndependence)
+            hadIsolatedDesktop = hadIsolatedDesktop || DexState.independentPhoneLock == true
             if (stopping.get() || !core.desktopSurfaceReady(generation)) {
                 onSurfaceClosing(generation)
                 return
@@ -394,13 +400,27 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
     private fun enqueue(block: (IDexUserService) -> Unit) {
         val token = generation
         if (stopping.get() || token == 0L || retiringGeneration == token || !firstFrame) return
+        val arrivedNs = android.os.SystemClock.elapsedRealtimeNanos()
+        val observedDepth = input.queue.size + 1
         try { input.execute {
-            if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) try { service?.let(block) }
-            catch (e: Exception) {
-                // An already dequeued input can overlap normal USB-detach cleanup.
-                // Its retired display is gone; this must not end a reconnectable session.
-                if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
-                    fail("Не удалось передать управление рабочему столу: ${e.message}", failureKind(e))
+            if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
+                val startedNs = android.os.SystemClock.elapsedRealtimeNanos()
+                var succeeded = false
+                try {
+                    try {
+                        service?.let { remote -> block(remote); succeeded = true }
+                    } finally {
+                        // Record the remote call before any failure-triggered teardown work.
+                        inputDiagnostics.completed(token, arrivedNs, startedNs,
+                            android.os.SystemClock.elapsedRealtimeNanos(), observedDepth, succeeded)
+                            ?.let { AppLog.i(it, false) }
+                    }
+                } catch (e: Exception) {
+                    // An already dequeued input can overlap normal USB-detach cleanup.
+                    // Its retired display is gone; this must not end a reconnectable session.
+                    if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
+                        fail("Не удалось передать управление рабочему столу: ${e.message}", failureKind(e))
+                    }
                 }
             }
         } } catch (_: java.util.concurrent.RejectedExecutionException) {

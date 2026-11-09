@@ -28,6 +28,13 @@ interface DesktopNavigation {
     fun showDesktop(): Boolean
 }
 
+/** Recovery may cross a phone lock only for a backend that cannot fall back to its group. */
+interface DesktopLockIsolation {
+    val requiresIsolatedPhoneLock: Boolean
+    /** Historical evidence from this connector's authenticated native display, not a preference. */
+    val hadIsolatedDesktop: Boolean
+}
+
 /**
  * AA-сторона моста на время жизни СЕРВИСА, а не одной USB-сессии CarLife. Физический обрыв USB (EIO)
  * закрывает CarLife-сессию, но AA-сессия остаётся «тёплой» graceMs: если USB вернулся, новая
@@ -48,6 +55,7 @@ class BridgeHost(
     private var started = false
     private var tearingDown = false
     private var grace: ScheduledFuture<*>? = null
+    private var graceOwner: Any? = null
     private val tornDownLatch = CountDownLatch(1)
 
     /** AA закрыта полностью (ByeBye, EOF, close). */
@@ -59,6 +67,10 @@ class BridgeHost(
 
     @get:Synchronized
     val isInGrace: Boolean get() = grace != null
+
+    val canRecoverWhilePhoneLocked: Boolean get() = (connector as? DesktopLockIsolation)?.let {
+        it.requiresIsolatedPhoneLock && it.hadIsolatedDesktop
+    } == true
 
     fun awaitTornDown(timeoutMs: Long): Boolean = tornDownLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
 
@@ -75,15 +87,23 @@ class BridgeHost(
         return (connector as? DesktopNavigation)?.showDesktop() ?: false
     }
 
-    /** Новая CarLife-сессия: отменить grace, при первой - запустить AA. false = хост уже закрывается. */
+    /** Claim a live source before constructing/attaching its next transport session. */
     @Synchronized
-    fun onUsbSessionStarted(): Boolean {
+    fun reserveSession(): Boolean {
         if (isDead) return false
         grace?.let {
             it.cancel(false)
             grace = null
+            graceOwner = null
             log("BRIDGE USB вернулся в grace-окно: AA-сессия жива, переиспользую", true)
         }
+        return true
+    }
+
+    /** Новая CarLife-сессия: отменить grace, при первой - запустить AA. false = хост уже закрывается. */
+    @Synchronized
+    fun onUsbSessionStarted(): Boolean {
+        if (!reserveSession()) return false
         if (!started) {
             started = true
             val prev = previous
@@ -115,15 +135,20 @@ class BridgeHost(
             return
         }
         grace?.cancel(false)
+        val owner = Any()
+        graceOwner = owner
         log("BRIDGE USB закрыт: держу AA тёплой ${graceMs} мс", true)
         AaState.status = "мост: USB потерян, AA жива ${graceMs / 1000} с"
-        grace = scheduler.schedule({ onGraceExpired() }, graceMs, TimeUnit.MILLISECONDS)
+        grace = scheduler.schedule({ onGraceExpired(owner) }, graceMs, TimeUnit.MILLISECONDS)
     }
 
-    private fun onGraceExpired() {
+    private fun onGraceExpired(owner: Any) {
         synchronized(this) {
-            if (tearingDown || grace == null) return
+            // cancel(false) cannot recall a callback already dequeued by the scheduler.
+            // That callback must not expire a later disconnect's grace period either.
+            if (tearingDown || graceOwner !== owner) return
             grace = null
+            graceOwner = null
             tearDown("USB не вернулся за ${graceMs} мс")
         }
     }
@@ -139,6 +164,7 @@ class BridgeHost(
         tearingDown = true
         grace?.cancel(false)
         grace = null
+        graceOwner = null
         log("BRIDGE закрываю AA ($why): ByeBye, flush, EOF, close", true)
         if (!started) {
             tornDownLatch.countDown()

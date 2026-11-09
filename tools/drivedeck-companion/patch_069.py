@@ -254,12 +254,67 @@ for signature in ('public final d()V', 'public final c(ZLjava/lang/Runnable;ZII)
     method('smali/c/K4.smali', signature, void)
 method('smali/c/c2.1.smali','public final E(Z)V',void)
 method('smali/c/c2.1.smali','public final y()V',void)
-# Notification PendingIntent is opaque and may choose display 0; use the package fallback.
-def notification_fallback(s):
-    old="    invoke-virtual {v0}, Landroid/app/PendingIntent;->send()V"
-    assert s.count(old)==1
-    return s.replace(old,"    goto :cond_0")
-edit('smali/c/g6.1.smali', notification_fallback)
+# Notification cards use only their SBN key/package. The host resolves a current Activity
+# PendingIntent and owns the fullscreen child, so no opaque service/broadcast or phone fallback runs.
+method('smali/c/g6.1.smali', 'public final c(Landroid/content/Context;)V', """
+    .locals 2
+    iget-object v0, p0, Lc/g6;->f:Ljava/lang/String;
+    iget-object v1, p0, Lc/g6;->a:Ljava/lang/String;
+    invoke-static {p1, v0, v1}, Lru/drivedeck/headswap/EmbeddedDisplayClient;->openNotification(Landroid/content/Context;Ljava/lang/String;Ljava/lang/String;)V
+    return-void
+""")
+
+# The original sidebar is one Canvas View. Capture its real status-icon draw bounds, including
+# Canvas transforms. Handle only touches inside those rendered native controls, never an overlay.
+def notification_status_controls(s):
+    signature = '.method public final onDraw(Landroid/graphics/Canvas;)V\n    .locals 47\n'
+    assert s.count(signature) == 1
+    s = s.replace(signature, signature + '\n    invoke-static/range {p0 .. p1}, Lru/drivedeck/headswap/NotificationStatusBridge;->beginDraw(Landroid/view/View;Landroid/graphics/Canvas;)V\n')
+    start = s.index(signature); end = s.index('.end method', start)
+    body = s[start:end]
+    assert body.count('    return-void') == 2
+    body = body.replace('    return-void', '    invoke-static/range {p0 .. p1}, Lru/drivedeck/headswap/NotificationStatusBridge;->endDraw(Landroid/view/View;Landroid/graphics/Canvas;)V\n\n    return-void')
+    s = s[:start]+body+s[end:]
+    signature = '.method public final s(Landroid/graphics/Canvas;IFFFI)V'
+    start = s.index(signature); end = s.index('.end method', start)
+    body = s[start:end]
+    anchor = '    invoke-virtual {v0, v1, v2, p3, p4}, Landroid/graphics/RectF;->set(FFFF)V'
+    assert body.count(anchor)==1
+    body = body.replace(anchor, anchor+'\n\n    invoke-static {p0, p1, p2, v0}, Lru/drivedeck/headswap/NotificationStatusBridge;->icon(Landroid/view/View;Landroid/graphics/Canvas;ILandroid/graphics/RectF;)V')
+    s = s[:start]+body+s[end:]
+    signature = '.method public final onTouchEvent(Landroid/view/MotionEvent;)Z\n    .locals 16\n'
+    assert s.count(signature) == 1
+    s=s.replace(signature, signature+"""
+    move-object/from16 v0, p0
+    iget-boolean v1, v0, Lc/q2;->z:Z
+    if-nez v1, :headswap_original_status_touch
+    invoke-static/range {p0 .. p1}, Lru/drivedeck/headswap/NotificationStatusBridge;->touch(Landroid/view/View;Landroid/view/MotionEvent;)Z
+    move-result v0
+    if-eqz v0, :headswap_original_status_touch
+    return v0
+    :headswap_original_status_touch
+""")
+    signature = '.method public final onInitializeAccessibilityNodeInfo(Landroid/view/accessibility/AccessibilityNodeInfo;)V\n    .locals 3\n'
+    assert s.count(signature) == 1
+    s = s.replace(signature, signature + """
+    iget-boolean v0, p0, Lc/q2;->z:Z
+    if-nez v0, :headswap_original_accessibility
+    invoke-static {p0, p1}, Lru/drivedeck/headswap/NotificationStatusBridge;->accessibility(Landroid/view/View;Landroid/view/accessibility/AccessibilityNodeInfo;)V
+    :headswap_original_accessibility
+""")
+    signature = '.method public final performAccessibilityAction(ILandroid/os/Bundle;)Z\n    .locals 3\n'
+    assert s.count(signature) == 1
+    s = s.replace(signature, signature + """
+    iget-boolean v0, p0, Lc/q2;->z:Z
+    if-nez v0, :headswap_original_accessibility_action
+    invoke-static {p0, p1}, Lru/drivedeck/headswap/NotificationStatusBridge;->accessibilityAction(Landroid/view/View;I)Z
+    move-result v0
+    if-eqz v0, :headswap_original_accessibility_action
+    return v0
+    :headswap_original_accessibility_action
+""")
+    return s
+edit('smali/c/q2.1.smali', notification_status_controls)
 # New app must never initialize its dashboard on display 0.
 def lifecycle(s):
     s=s.replace('# instance fields\n','# instance fields\n.field private headSwapInitialized:Z\n',1)
@@ -364,10 +419,10 @@ update_files, update_policy = disable_stock_app_updates(root)
 changes.extend(update_files)
 # Manifest: no system UID, HOME, launcher icon/aliases, boot entry or global overlays.
 ET.register_namespace('android','http://schemas.android.com/apk/res/android');a='{http://schemas.android.com/apk/res/android}'
-p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','332')
+p=root/'AndroidManifest.xml';tree=ET.parse(p);m=tree.getroot();m.set('package','ru.drivedeck.headswap');m.set(a+'versionCode','333')
 # Apktool's versionInfo overrides manifest attributes during rebuild.
 yml=root/'apktool.yml'
-yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 332', yml.read_text());assert n==1
+yml_text,n=re.subn(r'(versionCode:)\s*[^\n]+', r'\g<1> 333', yml.read_text());assert n==1
 yml.write_text(yml_text);changes.append('apktool.yml')
 for key in ['sharedUserId','sharedUserLabel','sharedUserMaxSdkVersion']:m.attrib.pop(a+key,None)
 remove_permissions={'RECEIVE_BOOT_COMPLETED','SYSTEM_ALERT_WINDOW','MANAGE_ACTIVITY_TASKS','REAL_GET_TASKS','START_TASKS_FROM_RECENTS','INJECT_EVENTS','WRITE_SECURE_SETTINGS','MODIFY_DAY_NIGHT_MODE','ADD_TRUSTED_DISPLAY','START_ANY_ACTIVITY','INTERNAL_SYSTEM_WINDOW','ACTIVITY_EMBEDDING','BIND_APPWIDGET','CHANGE_WIFI_STATE','MODIFY_PHONE_STATE','INSTALL_PACKAGES','BLUETOOTH_PRIVILEGED','TETHER_PRIVILEGED','WRITE_SETTINGS','MANAGE_APP_OPS_MODES'}
@@ -396,5 +451,5 @@ left=[]
 for p in (root/'smali').rglob('*.smali'):
     if re.search(r'->startActivity(?:ForResult)?\(',p.read_text()):left.append(str(p))
 assert not left,left
-(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'e32ac90ed66d7d325653ed475cd3623d41d7737aeb321813991aedab7b06a003','application_id':'ru.drivedeck.headswap','version_code':332,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification PendingIntent sends; package opens on current display','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
+(root.parent/'patch-report.json').write_text(json.dumps({'original_sha256':'e32ac90ed66d7d325653ed475cd3623d41d7737aeb321813991aedab7b06a003','application_id':'ru.drivedeck.headswap','version_code':333,'app_update_policy':update_policy,'activity':'ru.drivedeck.launcher.MainActivity','rewritten_activity_launches':launches,'files_modified':sorted(set(changes)),'disabled':['HOME/LAUNCHER/ASSIST registrations and aliases','boot receivers and system UID','HOME/role selection and global settings intents','system night mode and global dimmer','root probes and shell command execution','opaque notification sends; keys now resolve through the host managed fullscreen gateway','unprivileged TextureView virtual-display creation and background player display','runtime automatic navigator fallback; embedded launches cannot become fullscreen','phone accessibility/overlay split route','install telemetry and diagnostic upload','device/radio/display quick controls; explicit media mute retained','APK installer intents'],'retained':['original APK untouched','class names and original app resources','local diagnostic logging','ordinary own-display fullscreen app launch','display guards on create/resume/new-intent/moved-to-display','only exact legacy default layout preferences migrate; customized layouts and other preferences retained','explicit user media controls','shell-owned embedded map and internal two-app page via signature gateway'],'license_check':'No licensing/DRM implementation identified in static analysis; no signature/entitlement bypass applied.','validation':'Build and runtime results recorded separately'},ensure_ascii=False,indent=2))
 print('Patched',len(set(changes)),'files;',launches,'activity launches guarded')

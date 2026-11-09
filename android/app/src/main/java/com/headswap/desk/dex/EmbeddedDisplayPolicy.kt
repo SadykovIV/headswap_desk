@@ -13,8 +13,15 @@ internal object EmbeddedDisplayPolicy {
     private val packagePattern = Regex("[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z][a-zA-Z0-9_]*)+")
     private val classPattern = Regex("\\.?[a-zA-Z_$][a-zA-Z0-9_$]*(\\.[a-zA-Z_$][a-zA-Z0-9_$]*)*")
 
+    fun supportsChildren(mode: Int): Boolean =
+        mode == DesktopModePolicy.ANDROID_DESKTOP || mode == DesktopModePolicy.DRIVEDECK
+
+    /** Tile component launches remain Android Desktop-only; host fullscreen is shared by both profiles. */
+    fun canTrackHostLaunch(mode: Int, fullscreen: Boolean): Boolean =
+        mode == DesktopModePolicy.ANDROID_DESKTOP || (mode == DesktopModePolicy.DRIVEDECK && fullscreen)
+
     fun requireParent(mode: Int, displayId: Int) {
-        check(displayId > 0 && (mode == DesktopModePolicy.DRIVEDECK || mode == DesktopModePolicy.ANDROID_DESKTOP)) {
+        check(displayId > 0 && supportsChildren(mode)) {
             "Окно доступно только на активном Android Desktop или DriveDeck"
         }
     }

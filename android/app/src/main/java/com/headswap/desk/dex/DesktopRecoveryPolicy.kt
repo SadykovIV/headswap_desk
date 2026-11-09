@@ -31,6 +31,11 @@ internal class DesktopRecoveryPolicy {
     fun cancel() { pending = null; serial++ }
 
     companion object {
+        /** Never unlock or keep the phone awake to recover an already isolated car desktop. */
+        fun phoneStateEligible(interactive: Boolean, locked: Boolean,
+                               confirmedIsolatedSession: Boolean): Boolean =
+            confirmedIsolatedSession || interactive && !locked
+
         /** Source recovery belongs to the active output, not to the USB attachment mechanism. */
         fun transportEligible(kind: String, connected: Boolean, usbAutoStartStopped: Boolean,
                               permittedAccessoryPresent: Boolean): Boolean = connected && when (kind) {

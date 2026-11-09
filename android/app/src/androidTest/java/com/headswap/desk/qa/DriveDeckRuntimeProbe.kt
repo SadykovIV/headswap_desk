@@ -22,12 +22,14 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.atomic.AtomicLong
 
 /** Disposable emulator only. The caller supplies companion prefs with Settings + Clock in the split page. */
 internal object DriveDeckRuntimeProbe {
-    @JvmStatic @JvmOverloads fun run(test: Instrumentation, fullscreen: Boolean = false) {
+    @JvmStatic @JvmOverloads fun run(test: Instrumentation, fullscreen: Boolean = false, notifications: Boolean = false) {
         val result = Bundle()
         var ui: UiAutomation? = null
+        var vdm: AutoCloseable? = null
         try {
             check(Build.HARDWARE in listOf("ranchu", "goldfish")) { "Disposable emulator required" }
             val automation = test.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
@@ -40,6 +42,7 @@ internal object DriveDeckRuntimeProbe {
                 .firstOrNull { context.packageManager.getLaunchIntentForPackage(it) != null }
                 ?: error("Install a clock fixture package before this probe")
             val lease = DelegatedDesktopAccess.begin {}
+            vdm = VdmProbeHost.start(test, automation)
             val gateway = DelegatedInputGateway(context)
             val token = Binder()
             gateway.beginGeneration(1, token, true)
@@ -62,12 +65,16 @@ internal object DriveDeckRuntimeProbe {
                 ImageReader.newInstance(1280, 720, PixelFormat.RGBA_8888, 3).use { pixels ->
                     val drain = HandlerThread("qa-companion-images").apply { start() }
                     val latest = AtomicReference<Bitmap?>()
+                    val frameSequence = AtomicLong()
                     pixels.setOnImageAvailableListener({ reader -> reader.acquireLatestImage()?.use { image ->
                         val plane = image.planes[0]
                         val padded = Bitmap.createBitmap(plane.rowStride / plane.pixelStride, image.height, Bitmap.Config.ARGB_8888)
                         padded.copyPixelsFromBuffer(plane.buffer)
                         val cropped = Bitmap.createBitmap(padded, 0, 0, image.width, image.height)
-                        synchronized(latest) { latest.getAndSet(cropped)?.recycle() }
+                        synchronized(latest) {
+                            latest.getAndSet(cropped)?.recycle()
+                            frameSequence.incrementAndGet()
+                        }
                         if (padded !== cropped) padded.recycle()
                     } }, Handler(drain.looper))
                     try {
@@ -84,6 +91,9 @@ internal object DriveDeckRuntimeProbe {
                         service.showDesktop()
                         await(5000) { childPackages(context, parent).containsAll(setOf("com.android.settings", clockPackage)) }
                         result.putBoolean("homeRetainsSplit", true)
+                        if (notifications) NotificationInteractionProbe.runWithin(test, automation, parent, service, result) { stage ->
+                            awaitNotificationFrame(latest, stage, File(context.filesDir, "qa-notification-$stage.png"))
+                        }
                         if (fullscreen) {
                             val monitor = test.addMonitor(DriveDeckFullscreenActivity::class.java.name, null, false)
                             try {
@@ -96,9 +106,7 @@ internal object DriveDeckRuntimeProbe {
                                         ActivityOptions.makeBasic().setLaunchDisplayId(parent).toBundle())
                                 }
                                 val fullscreenActivity = checkNotNull(monitor.waitForActivityWithTimeout(10000)) { "Fullscreen host did not launch" }
-                                await(20000) { topClass(context, parent) == DriveDeckFullscreenActivity::class.java.name && populatedSettingsFrame(latest) }
-                                // Discard a single transient frame; require stable populated content before preserving evidence.
-                                SystemClock.sleep(1000)
+                                awaitFullscreen(test, automation, context, parent, fullscreenActivity, latest, frameSequence)
                                 save(latest, File(context.filesDir, "qa-drivedeck-fullscreen-diagnostic.png"))
                                 check(populatedSettingsFrame(latest)) { "Settings frame is not populated" }
                                 save(latest, File(context.filesDir, "qa-drivedeck-fullscreen-proven.png"))
@@ -130,6 +138,19 @@ internal object DriveDeckRuntimeProbe {
                         }
                         check(tasks(context).none { it.first == 0 && it.second == DesktopModePolicy.DRIVEDECK_PACKAGE })
                         result.putBoolean("phoneHomeUnchanged", true)
+                    } catch (error: Throwable) {
+                        // Preserve the real consumer frame before releasing the projection; this
+                        // diagnoses a failed predicate without relaxing or retrying its assertion.
+                        runCatching { save(latest, File(context.filesDir, "qa-drivedeck-failed.png")) }
+                        runCatching { File(context.filesDir, "qa-drivedeck-failed-activities.txt")
+                            .writeText(shell(automation, "dumpsys activity activities")) }
+                        runCatching { File(context.filesDir, "qa-drivedeck-failed-windows.txt")
+                            .writeText(shell(automation, "dumpsys window windows")) }
+                        result.getInt("parentDisplay", -1).takeIf { it > 0 }?.let { parent ->
+                            result.putString("failedParentTop", topClass(context, parent))
+                            result.putString("failedChildPackages", childPackages(context, parent).sorted().joinToString())
+                        }
+                        throw error
                     } finally {
                         EmbeddedSessionRegistry.deactivate(owner)
                         service.stop()
@@ -145,7 +166,7 @@ internal object DriveDeckRuntimeProbe {
                 DexState.displayId = -1; DexState.running = false; CarLifeState.running = false
             }
         } catch (error: Throwable) { result.putString("error", android.util.Log.getStackTraceString(error)) }
-        finally { ui?.dropShellPermissionIdentity() }
+        finally { runCatching { vdm?.close() }; ui?.dropShellPermissionIdentity() }
         test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
     }
     @Suppress("DEPRECATION") private fun tasks(context: Context): List<Pair<Int, String>> =
@@ -164,19 +185,85 @@ internal object DriveDeckRuntimeProbe {
     private fun populatedSettingsFrame(latest: AtomicReference<Bitmap?>): Boolean = synchronized(latest) {
         val frame = latest.get() ?: return@synchronized false
         var dark = 0; var light = 0; var rightLight = 0
+        val textRows = HashSet<Int>()
         // Exclude floating controls: a white Activity placeholder with only buttons is not evidence.
         for (y in 60 until frame.height - 80 step 4) for (x in 80 until frame.width - 40 step 4) {
             val pixel = frame.getPixel(x, y)
             val value = (Color.red(pixel) + Color.green(pixel) + Color.blue(pixel)) / 3
-            if (value < 120) dark++
+            if (value < 120) { dark++; textRows.add(y / 40) }
             if (value > 210) { light++; if (x > frame.width / 2) rightLight++ }
         }
-        dark > 250 && light > 5000 && rightLight > 10000
+        // Font antialiasing differs across system Settings versions. Require distributed text,
+        // not a fixed glyph-pixel count that rejected a fully populated Android 17 screen.
+        dark > 50 && textRows.size >= 5 && light > 5000 && rightLight > 10000
     }
+    private fun awaitFullscreen(test: Instrumentation, automation: UiAutomation, context: Context,
+        parent: Int, host: Activity, latest: AtomicReference<Bitmap?>, sequence: AtomicLong) {
+        val deadline = SystemClock.elapsedRealtime() + 20_000
+        var confirmed = false
+        var seen = sequence.get()
+        var populatedFrames = 0
+        while (SystemClock.elapsedRealtime() < deadline) {
+            if (!confirmed && topClass(context, parent) == DriveDeckFullscreenActivity::class.java.name) {
+                val child = context.getSystemService(android.hardware.display.DisplayManager::class.java).displays
+                    .singleOrNull { it.name == DesktopImePolicy.childName(true, emptyList()) }
+                if (child != null) {
+                    val dump = shell(automation, "dumpsys activity activities")
+                    val block = dump.substringAfter("Display #${child.displayId} (activities from top to bottom):", "")
+                        .substringBefore("\nDisplay #")
+                    // Placement and rendering are distinct acknowledgements. Do not accept the
+                    // previous split image or a starting-window background as a fullscreen result.
+                    if (block.contains("com.android.settings/") && block.contains("state=RESUMED") &&
+                        block.contains("reportedDrawn=true reportedVisible=true")) {
+                        confirmed = true
+                        seen = sequence.get()
+                    }
+                }
+            }
+            if (confirmed && sequence.get() > seen) {
+                seen = sequence.get()
+                populatedFrames = if (populatedSettingsFrame(latest)) populatedFrames + 1 else 0
+                if (populatedFrames >= 2) return
+            }
+            // Request a fresh consumer frame even when the Settings UI is static. No production
+            // timing or lifecycle changes are involved, and the original overall deadline stays.
+            test.runOnMainSync { host.window.decorView.postInvalidateOnAnimation() }
+            SystemClock.sleep(100)
+        }
+        error("Fullscreen Settings did not present fresh populated frames (drawn=$confirmed)")
+    }
+    private fun shell(ui: UiAutomation, command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(ui.executeShellCommand(command)).use { it.readBytes().toString(Charsets.UTF_8) }
     private fun childPackages(context: Context, parent: Int) = tasks(context).filter { it.first > 0 && it.first != parent }.map { it.second }.toSet()
     private fun await(timeout: Long, condition: () -> Boolean) {
         val end = SystemClock.elapsedRealtime() + timeout
         while (!condition()) { check(SystemClock.elapsedRealtime() < end) { "Timed out waiting for companion windows" }; SystemClock.sleep(100) }
+    }
+    private fun awaitNotificationFrame(latest: AtomicReference<Bitmap?>, stage: String, file: File) {
+        // Task placement is not rendering. Match the harmless fixture and actual shade colors
+        // in the composed parent buffer before claiming success or sending the next gesture.
+        await(12_000) { synchronized(latest) {
+            val frame = latest.get() ?: return@synchronized false
+            var green = 0; var card = 0; var leftLight = 0; var sidebar = 0
+            for (y in 60 until frame.height - 80 step 4) for (x in 4 until frame.width - 40 step 4) {
+                val pixel = frame.getPixel(x, y)
+                if (pixel and 0xffffff == 0x145431) green++
+                if (pixel and 0xffffff == 0x233041) card++
+                val mean = (Color.red(pixel) + Color.green(pixel) + Color.blue(pixel)) / 3
+                if (x < frame.width / 2 && mean > 210) leftLight++
+                if (x < 80 && mean in 20..80 && Color.blue(pixel) >= Color.red(pixel)) sidebar++
+            }
+            val rendered = when (stage) {
+                "shade" -> card > 1000
+                "activity" -> green > 15000
+                // Native DriveDeck sidebar + Settings tile: AOSP Clock is blue, Google Clock
+                // is black. A blank fullscreen/transition frame cannot satisfy both regions.
+                "home" -> green < 10 && card < 100 && leftLight > 3000 && sidebar > 500
+                else -> error("Unknown notification frame stage")
+            }
+            if (rendered) file.outputStream().use { check(frame.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+            rendered
+        } }
     }
     private fun save(latest: AtomicReference<Bitmap?>, file: File) {
         // Decoder callback owns recycling; take a copy on its handler by retaining current bitmap briefly.

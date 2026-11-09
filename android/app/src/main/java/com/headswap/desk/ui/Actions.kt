@@ -28,6 +28,8 @@ import com.headswap.desk.aa.TranscodeSelfCheck
 import com.headswap.desk.dex.DexPrefs
 import com.headswap.desk.dex.DesktopAccess
 import com.headswap.desk.dex.DexAutoConnectPolicy
+import com.headswap.desk.link.car.CarLifeConnectionMode
+import com.headswap.desk.link.car.WirelessPrefs
 
 /**
  * Действия, которые раньше жили прямо в MainActivity (кнопки UI и команды intent):
@@ -95,6 +97,10 @@ object Actions {
     @Synchronized fun scan(ctx: Context, reason: String, retryPermission: Boolean = false): UsbScanResult {
         try {
             observeUsbConnection(ctx)
+            if (WirelessPrefs(ctx).mode == CarLifeConnectionMode.WIFI) {
+                usbGate.reset()
+                return publish(UsbScanState.WAITING_FOR_ACCESSORY, "Выбрано подключение CarLife по Wi-Fi", reason)
+            }
             if (detachedIdle.idle) {
                 return publish(UsbScanState.DETACHED, "USB отключён. Ожидаю переподключения; доступ сохранён", reason)
             }
@@ -108,7 +114,7 @@ object Actions {
             val usb = ctx.getSystemService(UsbManager::class.java)
             val list = usb.accessoryList.orEmpty()
             val acc = list.firstOrNull(::isCompatibleAccessory)
-            val active = BridgeService.alive && CarLifeState.running
+            val active = BridgeService.alive && CarLifeState.running && !CarLifeState.wirelessSession
             val step = usbGate.decide(acc?.let(::accessoryKey), acc?.let(usb::hasPermission) == true, active, retryPermission)
             if (acc != null) CarLifeState.accessory = MainActivity.describe(acc)
             return when (step) {

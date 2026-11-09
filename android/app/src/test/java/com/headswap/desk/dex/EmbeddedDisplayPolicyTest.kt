@@ -4,6 +4,18 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class EmbeddedDisplayPolicyTest {
+    @org.junit.Test fun hostTrackingNeverGrantsDriveDeckTilesOrDexTheFullscreenAuthority() {
+        for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK,
+            DesktopModePolicy.SAMSUNG_DEX, -1, 3)) {
+            org.junit.Assert.assertEquals(mode == DesktopModePolicy.ANDROID_DESKTOP || mode == DesktopModePolicy.DRIVEDECK,
+                EmbeddedDisplayPolicy.supportsChildren(mode))
+            org.junit.Assert.assertEquals(mode == DesktopModePolicy.ANDROID_DESKTOP,
+                EmbeddedDisplayPolicy.canTrackHostLaunch(mode, false))
+            org.junit.Assert.assertEquals(mode == DesktopModePolicy.ANDROID_DESKTOP || mode == DesktopModePolicy.DRIVEDECK,
+                EmbeddedDisplayPolicy.canTrackHostLaunch(mode, true))
+        }
+    }
+
     private fun rejects(block: () -> Unit) {
         try { block(); fail("Unsafe widget request accepted") }
         catch (_: IllegalArgumentException) { }

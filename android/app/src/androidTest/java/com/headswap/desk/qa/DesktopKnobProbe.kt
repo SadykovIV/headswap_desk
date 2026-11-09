@@ -27,6 +27,7 @@ internal object DesktopKnobProbe {
     @JvmStatic @JvmOverloads fun run(test: Instrumentation, wirelessDashboard: Boolean = false, rawBack: Boolean = false) {
         val result = Bundle()
         var ui: UiAutomation? = null
+        var vdm: AutoCloseable? = null
         var phone: Activity? = null
         var phoneController: PhoneScreenIdleController? = null
         val prefs = DexPrefs(test.targetContext)
@@ -57,6 +58,7 @@ internal object DesktopKnobProbe {
                 DesktopConnectionState.attach(delivery)
             }
             val lease = DelegatedDesktopAccess.begin {}
+            vdm = VdmProbeHost.start(test, automation)
             val gateway = DelegatedInputGateway(context)
             val token = Binder(); gateway.beginGeneration(1, token, true)
             val owner = Any()
@@ -229,6 +231,7 @@ internal object DesktopKnobProbe {
             }
         } catch (error: Throwable) { result.putString("error", android.util.Log.getStackTraceString(error)) }
         finally {
+            runCatching { vdm?.close() }
             onMain(test) { phoneController?.onStop(); phone?.finish() }
             DesktopConnectionState.detach(delivery); delivery.close(); setBridgeAlive(oldAlive)
             if (wirelessDashboard) {

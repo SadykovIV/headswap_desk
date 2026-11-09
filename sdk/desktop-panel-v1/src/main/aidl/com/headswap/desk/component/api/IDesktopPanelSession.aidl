@@ -10,4 +10,6 @@ interface IDesktopPanelSession {
     boolean sendMediaCommand(int command) = 3;
     boolean setDashboardLayout(boolean musicVisible, boolean musicOnRight, boolean targetVisible, int dockHeightPx) = 4;
     boolean sendDashboardAction(int action) = 5;
+    /** Optional CAP_NOTIFICATIONS: refresh a visible native entry; result contains count/status only. */
+    Bundle getNotificationStatus(boolean nativeEntryVisible) = 6;
 }

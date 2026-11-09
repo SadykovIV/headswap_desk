@@ -92,7 +92,9 @@ public final class ManualAccessLauncher {
     private static boolean activate(int uid, ManualAccessPolicy.Options options) throws Exception {
         JSONObject active = heartbeat(uid, null);
         if (active != null) {
-            requireCapabilities(ensureKeyboard(uid, active), options);
+            active = ensureKeyboard(uid, active);
+            requireCapabilities(active, options);
+            ensureIndependentDisplay(uid, active);
             System.out.println("Доступ работает в текущем сеансе.");
             return false;
         }
@@ -135,7 +137,9 @@ public final class ManualAccessLauncher {
             while (SystemClock.elapsedRealtime() < heartbeatDeadline) {
                 JSONObject status = heartbeat(uid, beforeKill);
                 if (status != null) {
-                    requireCapabilities(ensureKeyboard(uid, status), options);
+                    status = ensureKeyboard(uid, status);
+                    requireCapabilities(status, options);
+                    ensureIndependentDisplay(uid, status);
                     return true;
                 }
                 Thread.sleep(500);
@@ -237,6 +241,15 @@ public final class ManualAccessLauncher {
     private static boolean displayAccessReady(JSONObject status) {
         return Boolean.TRUE.equals(status.opt("keyboardRouting")) &&
             (!Boolean.TRUE.equals(status.opt("panelNeedsHelper")) || Boolean.TRUE.equals(status.opt("displayHelper")));
+    }
+
+    private static void ensureIndependentDisplay(int uid, JSONObject status) throws Exception {
+        if (Build.VERSION.SDK_INT < 37) return;
+        DisplayHelperRendezvous record = liveRecovery(uid);
+        check(record != null && record.matchesHeartbeat(number(status.opt("pid")), number(status.opt("elapsedRealtimeMs")),
+            status.optString("helperSession")), "Не удалось подтвердить владельца независимого экрана. Повторите активацию.");
+        System.out.println("Подготавливаю независимый экран Android 17…");
+        VdmHostBootstrap.ensureReady(uid, record.pid, record.token, null);
     }
 
     private static void requireCapabilities(JSONObject status, ManualAccessPolicy.Options options) throws IOException {

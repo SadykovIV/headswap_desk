@@ -20,6 +20,8 @@ internal object DesktopImePolicy {
     fun childName(fullscreen: Boolean, used: Collection<String>): String =
         if (fullscreen) fullscreenName else tileNames.first { it !in used }
 
+    fun isSupportedName(name: String): Boolean = name in names
+
     fun backTarget(parentId: Int, childIme: Map<Int, Boolean?>): Int {
         require(parentId > 0 && childIme.keys.all { it > 0 && it != parentId })
         if (childIme.values.any { it == null }) return parentId

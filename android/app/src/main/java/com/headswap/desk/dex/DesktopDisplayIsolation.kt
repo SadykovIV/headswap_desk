@@ -21,6 +21,13 @@ internal object DesktopDisplayIsolation {
         if (valid == false) null else type.getField("displayGroupId").getInt(info)
     }.getOrNull()
 
+    fun ownerUid(display: Display): Int? = runCatching {
+        val type = Class.forName("android.view.DisplayInfo")
+        val info = type.getConstructor().newInstance()
+        if (Display::class.java.getMethod("getDisplayInfo", type).invoke(display, info) == false) null
+        else type.getField("ownerUid").getInt(info)
+    }.getOrNull()
+
     fun confirmedIndependence(display: Display): Boolean? {
         if (display.displayId <= 0 || !display.isValid || display.flags and ALWAYS_UNLOCKED == 0) return false
         val group = groupId(display) ?: return null

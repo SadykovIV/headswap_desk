@@ -625,7 +625,7 @@ class AndroidDesktopActivity : Activity() {
             (!lock.isDeviceLocked && !lock.isKeyguardLocked || display?.let { com.headswap.desk.dex.DesktopDisplayIsolation.independent(it) } == true) &&
             providerPane.isComponentForeground(entry) && current() }
         try {
-            session = PanelLaunchSession(this, entry, current, mediaForeground = {
+            session = PanelLaunchSession(this, entry, display?.displayId ?: -1, current, mediaForeground = {
                 (!dashboard || musicVisible) && foreground() &&
                     (!dashboard || musicVisible)
             }, chromeForeground = { dashboard && foreground() }, chromeVisible = { profileExposed }, onDashboardAction = { action ->

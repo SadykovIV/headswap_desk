@@ -40,6 +40,7 @@ import com.headswap.desk.component.DesktopComponentEntry
 import com.headswap.desk.component.DesktopComponents
 import com.headswap.desk.MainActivity
 import com.headswap.desk.ui.Actions
+import com.headswap.desk.link.car.CarLifeConnectionMode
 import com.headswap.desk.link.car.WirelessPrefs
 import com.headswap.desk.link.car.WirelessCarLife
 import com.headswap.desk.link.car.WirelessSetupActivity
@@ -59,7 +60,14 @@ class DexSetupActivity : Activity() {
     private lateinit var connectionModeChoice: Button
     private lateinit var wirelessSetupButton: Button
     private var pairingPermissionAction: (() -> Unit)? = null
-    private var onboardingLaunched = false
+    private lateinit var initialSetupSection: LinearLayout
+    private lateinit var activationHeading: TextView
+    private lateinit var initialSetupIntro: LinearLayout
+    private lateinit var setupAccessButton: Button
+    private lateinit var setupDoneButton: Button
+    private lateinit var phonePairButton: Button
+    private var setupRequested = false
+    private var phoneReplyAttempt: String? = null
     private lateinit var connectButton: Button
     private lateinit var connectButtonHint: TextView
     private lateinit var cancelWaitingButton: Button
@@ -73,6 +81,7 @@ class DexSetupActivity : Activity() {
     private var phonePairOpen = false
     private var phoneActivationRequested = false
     private var phoneLaunchCommitted = false
+    private var endingComputerAccess = false
     private var phoneStatusSeen = ""
     private var connectionButtonState = DesktopConnectionButtonPolicy.State.IDLE
     private lateinit var phoneScreenButton: Button
@@ -120,6 +129,15 @@ class DexSetupActivity : Activity() {
     private val ui by lazy { DesktopSetupViews(this) }
     private lateinit var homePage: ScrollView
     private lateinit var settingsPage: ScrollView
+    private lateinit var settingsNavigator: DesktopSettingsNavigator
+    private lateinit var activationAccessRow: DesktopSetupViews.PermissionRow
+    private lateinit var notificationAccessRow: DesktopSetupViews.PermissionRow
+    private lateinit var overlayAccessRow: DesktopSetupViews.PermissionRow
+    private lateinit var batteryAccessRow: DesktopSetupViews.PermissionRow
+    private lateinit var notificationDeliveryRow: DesktopSetupViews.PermissionRow
+    private lateinit var noticesHint: TextView
+    private lateinit var autoMusicChoice: DesktopSetupViews.Toggle
+    private lateinit var imageSettings: LinearLayout
     private lateinit var audioSettings: LinearLayout
     private lateinit var phoneSettings: LinearLayout
     private lateinit var phoneControlDetails: LinearLayout
@@ -178,6 +196,10 @@ class DexSetupActivity : Activity() {
     private var shizukuListenersRegistered = false
 
     companion object {
+        private const val REQUEST_SETTINGS_NOTIFICATIONS = 1307
+
+        const val EXTRA_SHOW_ACTIVATION = "com.headswap.desk.SHOW_ACTIVATION"
+        const val EXTRA_COMPUTER_ACTIVATION = "com.headswap.desk.COMPUTER_ACTIVATION"
         private const val REQUEST_NETWORK = 2
         private const val REQUEST_PAIRING_NOTIFICATIONS = 21
         private const val REQUEST_SHIZUKU = 1005
@@ -195,7 +217,7 @@ class DexSetupActivity : Activity() {
                 main.postDelayed(this, 500)
                 return
             }
-            if (WirelessPrefs(this@DexSetupActivity).enabled) {
+            if (!WirelessCarLife.preferUsb(this@DexSetupActivity)) {
                 continuePendingConnection()
                 when {
                     stopped -> {
@@ -203,7 +225,7 @@ class DexSetupActivity : Activity() {
                         cancelContinuation()
                         showState("Остановлено", "Нажмите «Подключить», чтобы начать беспроводное соединение.")
                     }
-                    desktopConnectionReady() -> showState("$desktopName подключён", "Изображение передаётся по Wi-Fi CarLife. ${DesktopAudioState.status}" + lockIsolationHint())
+                    desktopConnectionReady() -> showState("$desktopName подключён", "Изображение передаётся в CarLife. ${DesktopAudioState.status}" + lockIsolationHint())
                     BridgeService.alive -> showState("Подключение по Wi-Fi…", CarLifeState.status, busy = true)
                     workerBusy.get() || permissionAction != null || shizukuPermissionToken != null ||
                         flow.phase in setOf(DexSetupFlow.Phase.FIND_PAIRING, DexSetupFlow.Phase.PAIRING,
@@ -223,7 +245,7 @@ class DexSetupActivity : Activity() {
                 main.postDelayed(this, 500)
                 return
             }
-            if (Actions.isUsbDetachedIdle()) {
+            if (WirelessPrefs(this@DexSetupActivity).mode == CarLifeConnectionMode.USB && Actions.isUsbDetachedIdle()) {
                 showUsbDetached()
                 renderAccessControls()
                 main.postDelayed(this, 500)
@@ -326,16 +348,18 @@ class DexSetupActivity : Activity() {
         AppLog.init(this)
         prefs = DexPrefs(this)
         prefs.enabled = true
-        phoneSetupOpen = savedInstanceState?.getBoolean("phone_setup_open") == true
+        setupRequested = savedInstanceState?.getBoolean("setup_requested") == true || intent.getBooleanExtra(EXTRA_SHOW_ACTIVATION, false)
+        phoneSetupOpen = savedInstanceState?.getBoolean("phone_setup_open") == true || setupRequested
         phonePairOpen = savedInstanceState?.getBoolean("phone_pair_open") == true
         manualAdbOpen = savedInstanceState?.getBoolean("manual_adb_open") == true
         buildView()
         openSettings(savedInstanceState?.getBoolean("settings_open") == true)
-        if (savedInstanceState != null) {
-            val page = if (settingsPage.visibility == View.VISIBLE) settingsPage else homePage
+        settingsNavigator.restore(savedInstanceState)
+        if (savedInstanceState != null && homePage.visibility == View.VISIBLE) {
             val y = savedInstanceState.getInt("page_scroll")
-            page.post { page.scrollTo(0, y) }
+            homePage.post { homePage.scrollTo(0, y) }
         }
+        if (intent.getBooleanExtra(EXTRA_COMPUTER_ACTIVATION, false)) homePage.post { showComputerActivationHelp() }
         Shizuku.addBinderReceivedListenerSticky(shizukuReceived)
         Shizuku.addBinderDeadListener(shizukuDead)
         Shizuku.addRequestPermissionResultListener(shizukuPermissionResult)
@@ -353,6 +377,15 @@ class DexSetupActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_SHOW_ACTIVATION, false)) {
+            setupRequested = true
+            phoneSetupOpen = true
+            phonePairOpen = !prefs.hasPaired
+            openSettings(false)
+            renderAccessControls()
+            homePage.post { homePage.smoothScrollTo(0, 0) }
+        }
+        if (intent.getBooleanExtra(EXTRA_COMPUTER_ACTIVATION, false)) showComputerActivationHelp()
         if (intent.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED && visible) usbAttached()
     }
 
@@ -365,18 +398,13 @@ class DexSetupActivity : Activity() {
             addDataScheme("package")
         }, Context.RECEIVER_NOT_EXPORTED)
         visible = true
-        if (!prefs.initialSetupCompleted && !onboardingLaunched) {
-            onboardingLaunched = true
-            startActivity(Intent(this, DesktopOnboardingActivity::class.java))
-            return
-        }
         Actions.observeUsbConnection(this)
         main.post(refresh)
         if (observePhoneActivation(force = true)) return
         when {
             phoneSetupOpen && prefs.useDelegated && !DelegatedDesktopAccess.isReady(this) -> showPhoneActivationSetup()
             stopped -> showState("Остановлено", "Подключите USB заново или нажмите «Подключить».")
-            !WirelessPrefs(this).enabled && Actions.isUsbDetachedIdle() -> showUsbDetached()
+            WirelessPrefs(this).mode == CarLifeConnectionMode.USB && Actions.isUsbDetachedIdle() -> showUsbDetached()
             BridgeService.alive && CarLifeState.running -> { armed = true; monitorBridge = true; bridgeStartedAt = SystemClock.elapsedRealtime() }
             prefs.useDesktopService -> beginConnect(explicit = false)
             workerBusy.get() -> {
@@ -424,8 +452,10 @@ class DexSetupActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         val settingsOpen = settingsPage.visibility == View.VISIBLE
         outState.putBoolean("settings_open", settingsOpen)
+        settingsNavigator.save(outState)
         outState.putInt("page_scroll", if (settingsOpen) settingsPage.scrollY else homePage.scrollY)
         outState.putBoolean("manual_adb_open", manualAdbOpen)
+        outState.putBoolean("setup_requested", setupRequested)
         outState.putBoolean("phone_setup_open", phoneSetupOpen)
         outState.putBoolean("phone_pair_open", phonePairOpen)
         super.onSaveInstanceState(outState)
@@ -470,26 +500,19 @@ class DexSetupActivity : Activity() {
         ui.brand(header, 48)
         ui.text(header, "HeadSwap Desktop", 23f, true).layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         ui.button(header, "Настройки") { openSettings(true) }.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        val profile = ui.section(home)
-        desktopChoice = ui.button(profile, "Профиль: $desktopProfileName ▾") {
-            if (!accessChoiceLocked()) DesktopProfilePicker.show(this, prefs.desktopMode, { !accessChoiceLocked() }, ::selectDesktopProfile)
-        }.apply { setTextColor(Color.WHITE) }
-        desktopChoiceHint = ui.text(profile, "", 13f)
-        val connection = ui.section(home, "Подключение к CarLife")
-        connectionModeChoice = ui.button(connection, "") {
-            if (!accessChoiceLocked()) {
-                val wireless = WirelessPrefs(this)
-                AlertDialog.Builder(this).setTitle("Подключение к магнитоле")
-                    .setSingleChoiceItems(arrayOf("USB-кабель", "Беспроводной CarLife"), if (wireless.enabled) 1 else 0) { dialog, index ->
-                        dialog.dismiss()
-                        if (!accessChoiceLocked()) wireless.enabled = index == 1
-                        renderAccessControls()
-                    }.setNegativeButton("Отмена", null).show()
-            }
+        initialSetupSection = ui.section(home)
+        activationHeading = ui.text(initialSetupSection, "Первоначальная настройка", 18f, true)
+        val activation = initialSetupSection
+        initialSetupIntro = ui.group(activation)
+        ui.text(initialSetupIntro, "Выдайте права HeadSwap, чтобы открыть приложения телефона на магнитоле. Это делается на телефоне по Wi-Fi или с компьютера.", 14f)
+        ui.button(initialSetupIntro, "Уведомления и работа в фоне") {
+            startActivity(Intent(this, DesktopOnboardingActivity::class.java))
         }
-        wirelessSetupButton = ui.button(connection, "Настроить беспроводную магнитолу") {
-            startActivity(Intent(this, WirelessSetupActivity::class.java))
+        ui.button(initialSetupIntro, "Установить компоненты") {
+            startActivity(Intent(this, com.headswap.desk.update.ComponentUpdatesActivity::class.java))
         }
+        ui.text(initialSetupIntro, "Выдать права приложению", 18f, true)
+        val connection = ui.section(home, "Подключение")
         title = ui.text(connection, "Готов к настройке", 22f, true)
         hint = ui.text(connection, "", 15f)
         accessHint = ui.text(connection, "", 13f)
@@ -508,24 +531,48 @@ class DexSetupActivity : Activity() {
             phoneIdle.showNow(manualCurtain = true)
         }
         phoneScreenHint = ui.text(connection, "", 13f)
-        val activation = ui.section(home, "Активация")
+        setupAccessButton = ui.button(connection, "Выдать права приложению") { openActivationSetup() }
+
+        val profile = ui.section(home, "Профиль")
+        desktopChoice = ui.button(profile, "Профиль: $desktopProfileName ▾") {
+            if (!accessChoiceLocked()) DesktopProfilePicker.show(this, prefs.desktopMode, { !accessChoiceLocked() }, ::selectDesktopProfile)
+        }.apply { setTextColor(Color.WHITE) }
+        desktopChoiceHint = ui.text(profile, "", 13f)
+        val transport = ui.section(home, "Тип подключения")
+        connectionModeChoice = ui.button(transport, "") {
+            if (!accessChoiceLocked()) {
+                val wireless = WirelessPrefs(this)
+                val choices = CarLifeConnectionMode.entries.toTypedArray()
+                AlertDialog.Builder(this).setTitle("Тип подключения")
+                    .setSingleChoiceItems(arrayOf("USB", "Wi-Fi", "Автоматически"), choices.indexOf(wireless.mode)) { dialog, index ->
+                        dialog.dismiss()
+                        if (!accessChoiceLocked()) wireless.mode = choices[index]
+                        renderAccessControls()
+                    }.setNegativeButton("Отмена", null).show()
+            }
+        }
+        wirelessSetupButton = ui.button(transport, "Настроить беспроводную магнитолу") {
+            startActivity(Intent(this, WirelessSetupActivity::class.java))
+        }
+        ui.text(transport, "Автоматически: USB при подключённом кабеле, иначе настроенная беспроводная магнитола.", 13f)
         accessChoice = ui.button(activation, "") { chooseAccessMode() }
         accessChangeHint = ui.text(activation, "", 13f)
         phoneActivationSection = ui.group(activation)
 
-        phoneActivationButton = ui.button(phoneActivationSection, "Активировать с телефона") { beginPhoneActivation() }
+        phoneActivationButton = ui.button(phoneActivationSection, "По Wi-Fi") {
+            if (phoneSetupOpen && prefs.hasPaired) beginPhoneActivation() else showPhoneActivationSetup()
+        }
         phoneActivationHint = ui.text(phoneActivationSection, "", 14f)
         phoneActivationDetails = ui.group(phoneActivationSection).apply { visibility = View.GONE }
         ui.text(phoneActivationDetails,
-            "Подключитесь к Wi-Fi и включите «Беспроводную отладку» в настройках разработчика. Для USB CarLife после активации Wi-Fi можно отключить. При беспроводном подключении Wi-Fi нужен во время работы.", 14f)
-        ui.button(phoneActivationDetails, "Ввести код в уведомлении") { startNotificationActivation(forcePair = true, openSettings = true) }
-        ui.button(phoneActivationDetails, "Ввести код в приложении") { phonePairOpen = !phonePairOpen; renderAccessControls() }
+            "1. Подключите телефон к Wi-Fi.\n2. В параметрах разработчика включите «Беспроводную отладку».\n3. Откройте «Подключить устройство с помощью кода сопряжения».\n4. Введите 6 цифр здесь или в уведомлении HeadSwap. Окно с кодом должно оставаться открытым.", 14f)
+        ui.button(phoneActivationDetails, "Открыть отладку и ввод в уведомлении") { startNotificationActivation(forcePair = true, openSettings = true) }
         ui.button(phoneActivationDetails, "Открыть настройки отладки") { openDebugSettings() }
         phonePairSection = ui.group(phoneActivationDetails).apply { visibility = View.GONE }
         ui.text(phonePairSection,
-            "Резервный способ. Включите разделённый экран с настройками беспроводной отладки и введите 6 цифр. Для основного способа нажмите «Ввести код в уведомлении».", 14f)
+            "Код можно ввести любым способом. Для ввода здесь откройте HeadSwap и настройки отладки в разделённом экране.", 14f)
         phonePairCode = field(phonePairSection, "Код из 6 цифр", "", 1005, secret = true)
-        ui.button(phonePairSection, "Сопрячь и активировать") { beginPhonePair() }.also(inputViews::add)
+        phonePairButton = ui.button(phonePairSection, "Сопрячь и активировать") { beginPhonePair() }
         ui.button(phoneActivationDetails, "Сопрячь заново") {
             if (!phoneLaunchCommitted && !workerBusy.get()) {
                 cancelContinuation()
@@ -534,7 +581,7 @@ class DexSetupActivity : Activity() {
                 showPhoneActivationSetup()
             }
         }
-        ui.button(phoneActivationSection, "Активация с компьютера") { showComputerActivationHelp() }
+        ui.button(phoneActivationSection, "С компьютера") { showComputerActivationHelp() }
         shizukuSetup = ui.group(activation).apply { visibility = View.GONE }
 
         shizukuHelp = ui.text(shizukuSetup, "Запустите Shizuku и один раз разрешите доступ для HeadSwap Desktop. Пока Shizuku работает, подключайте CarLife выбранным способом. После перезагрузки телефона службу нужно запустить снова.")
@@ -575,9 +622,13 @@ class DexSetupActivity : Activity() {
         }.also(inputViews::add)
         ui.button(adbAdvanced, "Открыть настройки отладки") { withNetworkPermission { openDebugSettings() } }
 
-        computerAccessStatus = ui.text(activation, "", 13f)
-        finishComputerAccess = ui.button(activation, "Завершить доступ и закрыть HeadSwap") {
-            if (!accessChoiceLocked() && DelegatedDesktopAccess.isReady(this)) DelegatedDesktopAccess.requestStop()
+        setupDoneButton = ui.button(activation, "Готово — вернуться к подключению") {
+            setupRequested = false
+            renderAccessControls()
+        }
+        computerAccessStatus = ui.text(connection, "", 13f)
+        finishComputerAccess = ui.button(connection, "Завершить доступ и закрыть HeadSwap") {
+            finishActivationForBackendChange()
         }
         detail = ui.text(adbAdvanced, "", 12f).apply { setTextIsSelectable(true) }
         watch(host) { hostEdited = true }
@@ -585,27 +636,24 @@ class DexSetupActivity : Activity() {
         watch(connectPort) { connectPortEdited = true }
         setup.visibility = if (prefs.useDesktopService || prefs.hasPaired) View.GONE else View.VISIBLE
 
-        val settingsHeader = LinearLayout(this).apply {
-            gravity = android.view.Gravity.CENTER_VERTICAL
-            settings.addView(this, LinearLayout.LayoutParams(-1, -2))
+        settingsNavigator = DesktopSettingsNavigator(ui, settingsPage, settings) { openSettings(false) }
+        buildDisplaySettings()
+        buildOutputSettings()
+        buildPermissionSettings()
+        val components = settingsNavigator.block("Компоненты HeadSwap Desktop")
+        ui.button(components, "Установить и обновить компоненты") {
+            startActivity(Intent(this, com.headswap.desk.update.ComponentUpdatesActivity::class.java))
         }
-        ui.button(settingsHeader, "Назад") { openSettings(false) }.layoutParams = LinearLayout.LayoutParams(-2, -2)
-        ui.text(settingsHeader, "Настройки", 24f, true).apply {
-            layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-            setPadding(dp(12), 0, 0, 0)
+        val maintenance = settingsNavigator.block("Обслуживание")
+        ui.button(maintenance, "Повторить заново первоначальную настройку") {
+            startActivity(Intent(this, DesktopOnboardingActivity::class.java))
         }
-        buildDisplaySettings(settings)
-        buildOutputSettings(settings)
-        val app = ui.section(settings, "Приложение")
-        ui.button(app, "Компоненты HeadSwap Desktop") { startActivity(Intent(this, com.headswap.desk.update.ComponentUpdatesActivity::class.java)) }
-        ui.button(app, "Первоначальная настройка") { startActivity(Intent(this, DesktopOnboardingActivity::class.java)) }
-        ui.button(app, "Работа без ограничений батареи") { DesktopOnboardingActivity.requestBatteryExemption(this) }
-        ui.button(app, "Отправить журнал") { LogShare.shareLog(this) }
+        ui.button(maintenance, "Отправить журнал") { LogShare.shareLog(this) }
         renderAccessControls()
     }
 
-    private fun buildDisplaySettings(settings: LinearLayout) {
-        val imageSettings = ui.section(settings, "Изображение на магнитоле")
+    private fun buildDisplaySettings() {
+        imageSettings = settingsNavigator.block("Параметры изображения")
         resolutionChoice = ui.button(imageSettings, "") {
             if (!accessChoiceLocked()) {
                 val values = DesktopResolution.entries
@@ -639,10 +687,13 @@ class DexSetupActivity : Activity() {
             if (!accessChoiceLocked()) {
                 val values = (listOf(1, 2, 4, 6, 8, 12, 16, 20) + prefs.desktopBitrateMbps).distinct().sorted()
                 AlertDialog.Builder(this).setTitle("Скорость видеопотока")
-                    .setSingleChoiceItems(values.map { "$it Мбит/с" }.toTypedArray(),
+                    .setSingleChoiceItems((values.map { "$it Мбит/с" } + "Своя скорость…").toTypedArray(),
                         values.indexOf(prefs.desktopBitrateMbps)) { dialog, index ->
                         dialog.dismiss()
-                        if (!accessChoiceLocked()) prefs.desktopBitrateMbps = values[index]
+                        if (!accessChoiceLocked()) {
+                            if (index == values.size) showCustomBitrate()
+                            else prefs.desktopBitrateMbps = values[index]
+                        }
                         renderAccessControls()
                     }.setNegativeButton("Отмена", null).show()
             }
@@ -655,8 +706,8 @@ class DexSetupActivity : Activity() {
         }
     }
 
-    private fun buildOutputSettings(settings: LinearLayout) {
-        audioSettings = ui.section(settings, "Звук")
+    private fun buildOutputSettings() {
+        audioSettings = settingsNavigator.block("Звук")
         usbAudioChoice = ui.toggle(audioSettings, "Передавать звук в CarLife", prefs.usbPlaybackAudio) { checked ->
             if (!applyingAccessChoice && !accessChoiceLocked() && prefs.useDelegated) {
                 prefs.usbPlaybackAudio = checked
@@ -664,12 +715,12 @@ class DexSetupActivity : Activity() {
             }
         }
         usbAudioHint = ui.text(audioSettings, "", 13f)
-        ui.toggle(audioSettings, "Автоматически продолжать музыку при подключении", prefs.autoMusicPlayback) {
+        autoMusicChoice = ui.toggle(audioSettings, "Автоматически продолжать музыку при подключении", prefs.autoMusicPlayback) {
             prefs.autoMusicPlayback = it
         }
         ui.text(audioSettings, "В режиме «Доступ HeadSwap» музыка продолжается после готовности изображения и звука. Сначала откройте плеер и включите трек: функция возобновляет существующее воспроизведение. В режиме Shizuku автопродолжение пока недоступно.", 13f)
-        phoneSettings = ui.section(settings, "Экран телефона")
-        panelControlChoice = ui.toggle(phoneSettings, "Управление экраном телефона", prefs.desktopPanelControl) { checked ->
+        phoneSettings = ui.group(imageSettings)
+        panelControlChoice = ui.toggle(phoneSettings, "Управление дисплеем телефона", prefs.desktopPanelControl) { checked ->
             if (!applyingAccessChoice && !accessChoiceLocked()) {
                 prefs.desktopPanelControl = checked
                 phoneIdle.refresh()
@@ -701,33 +752,86 @@ class DexSetupActivity : Activity() {
                 }.setNegativeButton("Отмена", null).show()
         }
         idleModeHint = ui.text(phoneControlDetails, "", 13f)
-        val notices = ui.section(settings, "Уведомления на магнитоле")
-        ui.toggle(notices, "Показывать шторку уведомлений", prefs.huNotificationsEnabled) {
-            prefs.huNotificationsEnabled = it
-            if (it) {
-                if (!Settings.canDrawOverlays(this)) openShadeOverlayPermission() else openNotificationAccess()
-            }
-        }
-        ui.text(notices, "Для шторки нужны доступ к уведомлениям и разрешение поверх приложений. Шторка появляется только на экране CarLife. При блокировке телефона текст скрывается. Сообщения могут быть видны пассажирам, содержание не записывается в журнал.", 13f)
-        ui.button(notices, "Разрешить шторку поверх приложений") { openShadeOverlayPermission() }
-        ui.button(notices, "Настроить доступ к уведомлениям") { openNotificationAccess() }
-        val hud = ui.section(settings, "Приборная панель и HUD")
+        val notices = settingsNavigator.block("Уведомления на магнитоле")
+        ui.toggle(notices, "Показывать шторку уведомлений", false) {}.setEnabled(false)
+        noticesHint = ui.text(notices, "Шторка временно отключена — её интерфейс будет переработан.", 14f)
+        val hud = settingsNavigator.block("Приборная панель и HUD")
         navigationChoice = ui.toggle(hud, "Подсказки навигации на приборной панели и HUD", clusterPrefs.metaNavi) {
             clusterPrefs.metaNavi = it
+            renderSettingsOverview()
         }
         ui.button(hud, "Настройка уведомлений приложений") {
             openNotificationSettings(Intent(Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS),
                 Settings.ACTION_MANAGE_ALL_APPLICATIONS_SETTINGS,
                 "Откройте настройки уведомлений приложений на телефоне и разрешите уведомления навигатору.")
         }
-        ui.button(hud, "Доступ HeadSwap к уведомлениям") { openNotificationAccess() }
+        ui.navigation(hud, "Доступ HeadSwap к уведомлениям", "Разрешение для подсказок навигации") { settingsNavigator.open("permissions") }
         ui.text(hud, "Разрешите HeadSwap доступ к уведомлениям и начните ведение по маршруту. На Android 16 и новее HeadSwap также может взять поворот и расстояние из карточки Навигатора или Карт в открытом окне ГУ. Подсказки отображаются, если магнитола подписана на навигацию.", 13f)
+        ui.text(hud, "Название трека и доступная обложка передаются из медиасессии Android. Их отображение зависит от возможностей приборной панели.", 13f)
+    }
+
+    private fun buildPermissionSettings() {
+        val permissions = settingsNavigator.subpage("permissions", "Разрешения приложения", "")
+        ui.text(permissions, "Зелёная галочка — доступ есть, красный крестик — нет. Нажмите строку, чтобы настроить разрешение. Статус обновится после возврата.", 14f)
+        activationAccessRow = ui.permission(permissions, "Доступ к рабочему столу") { openActivationSetup() }
+        notificationAccessRow = ui.permission(permissions, "Доступ HeadSwap к уведомлениям") { openNotificationAccess() }
+        overlayAccessRow = ui.permission(permissions, "Показ поверх приложений") { openShadeOverlayPermission() }
+        notificationDeliveryRow = ui.permission(permissions, "Уведомления HeadSwap") {
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_SETTINGS_NOTIFICATIONS)
+            else openNotificationSettings(PhonePairingService.notificationSettings(this,
+                PhonePairingService.notificationBlock(this, needsCode = true) ?: PairingNotificationBlock.APP),
+                Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS,
+                "Откройте настройки уведомлений HeadSwap на телефоне.")
+        }
+        batteryAccessRow = ui.permission(permissions, "Работа без ограничений батареи") {
+            if (DesktopOnboardingActivity.batteryExempt(this))
+                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            else DesktopOnboardingActivity.requestBatteryExemption(this)
+        }
+    }
+
+    private fun hasNotificationAccess(): Boolean = runCatching {
+        getSystemService(android.app.NotificationManager::class.java).isNotificationListenerAccessGranted(
+            android.content.ComponentName(this, com.headswap.desk.cluster.ClusterNavigationListener::class.java))
+    }.getOrDefault(false)
+
+    private fun renderSettingsOverview() {
+        if (!::settingsNavigator.isInitialized || settingsPage.visibility != View.VISIBLE) return
+        val listener = hasNotificationAccess()
+        val overlay = Settings.canDrawOverlays(this)
+        val battery = DesktopOnboardingActivity.batteryExempt(this)
+        val notificationBlock = PhonePairingService.notificationBlock(this, needsCode = true)
+        noticesHint.updateText("Шторка временно отключена — её интерфейс будет переработан.")
+        val missing = mutableListOf<String>()
+        if (!DesktopAccess.isReady(this)) missing += "активацию приложения"
+        if (clusterPrefs.metaNavi && !listener) missing += "доступ к уведомлениям"
+        if (notificationBlock != null) missing += when (notificationBlock) {
+            PairingNotificationBlock.CODE_CHANNEL -> "уведомление ввода кода"
+            PairingNotificationBlock.PROGRESS_CHANNEL -> "уведомления активации"
+            PairingNotificationBlock.APP -> "уведомления HeadSwap"
+        }
+        settingsNavigator.summary("permissions", when {
+            missing.isNotEmpty() -> "Нужно настроить: ${missing.joinToString(", ")}"
+            !battery -> "Разрешения выданы · можно снять ограничение батареи"
+            else -> "Всё готово"
+        })
+        val access = DesktopAccess.isReady(this)
+        activationAccessRow.update(access, if (access) "Права выданы" else "Нужна активация приложения")
+        notificationAccessRow.update(listener, if (listener) "Разрешён · подсказки навигации" else "Не выдан · нужен для подсказок навигации")
+        overlayAccessRow.update(overlay, if (overlay) "Разрешён · шторка сейчас отключена" else "Не выдан · для работы без шторки не требуется")
+        notificationDeliveryRow.update(notificationBlock == null, when (notificationBlock) {
+            null -> "Разрешены · состояние активации и ввод кода"
+            PairingNotificationBlock.APP -> "Выключены · ввод кода в уведомлении недоступен"
+            PairingNotificationBlock.PROGRESS_CHANNEL -> "Канал «Активация HeadSwap» выключен"
+            PairingNotificationBlock.CODE_CHANNEL -> "Канал «Ввод кода сопряжения» выключен"
+        })
+        batteryAccessRow.update(battery, if (battery) "Без ограничений" else "Действует оптимизация Android")
     }
 
     private fun openShadeOverlayPermission() {
-        if (Settings.canDrawOverlays(this)) return
-        AlertDialog.Builder(this).setTitle("Шторка на экране магнитолы")
-            .setMessage("Android запрашивает разрешение «Поверх других приложений». HeadSwap использует его только для панели уведомлений на своём активном экране CarLife. На экране телефона шторка не создаётся.")
+        AlertDialog.Builder(this).setTitle("Показ поверх приложений")
+            .setMessage("Это разрешение было нужно для шторки уведомлений на магнитоле. Сейчас шторка отключена, поэтому выдавать доступ не требуется. Состояние разрешения можно изменить в настройках Android.")
             .setPositiveButton("Открыть разрешение") { _, _ ->
                 try { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
                 catch (_: RuntimeException) { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))) }
@@ -758,14 +862,16 @@ class DexSetupActivity : Activity() {
     }
 
     private fun openSettings(open: Boolean) {
+        if (open && settingsPage.visibility != View.VISIBLE) settingsNavigator.open(null)
         homePage.visibility = if (open) View.GONE else View.VISIBLE
         settingsPage.visibility = if (open) View.VISIBLE else View.GONE
         setTitle(if (open) "Настройки" else "HeadSwap Desktop")
+        if (open) renderSettingsOverview()
     }
 
     @Suppress("DEPRECATION")
     override fun onBackPressed() {
-        if (settingsPage.visibility == View.VISIBLE) openSettings(false) else super.onBackPressed()
+        if (settingsPage.visibility == View.VISIBLE) settingsNavigator.back() else super.onBackPressed()
     }
 
     private fun field(parent: LinearLayout, label: String, initial: String, id: Int, secret: Boolean = false, address: Boolean = false) = EditText(this).apply {
@@ -799,6 +905,7 @@ class DexSetupActivity : Activity() {
             .setSingleChoiceItems(modes.map(::accessLabel).toTypedArray(), modes.indexOf(prefs.accessMode)) { dialog, index ->
                 dialog.dismiss()
                 if (accessChoiceLocked() || modes[index] == prefs.accessMode) return@setSingleChoiceItems
+                if (requireBackendHandoff(modes[index])) return@setSingleChoiceItems
                 cancelContinuation()
                 prefs.accessMode = modes[index]
                 manualAdbOpen = false
@@ -811,6 +918,7 @@ class DexSetupActivity : Activity() {
 
     private fun selectDesktopProfile(mode: Int, entry: DesktopComponentEntry?, mediaAllowed: Boolean) {
         if (accessChoiceLocked()) return
+        if (requireBackendHandoff(prefs.accessModeFor(mode))) return
         if (entry == null) DesktopComponents.clear(this)
         else if (!DesktopComponents.select(this, entry, mediaAllowed)) {
             AlertDialog.Builder(this).setTitle("Компонент изменился")
@@ -826,6 +934,30 @@ class DexSetupActivity : Activity() {
         phonePairOpen = false
         renderAccessControls()
         showAccessSetup()
+    }
+
+    private fun requireBackendHandoff(next: DesktopAccessMode): Boolean {
+        if (!DesktopBackendTransitionPolicy.requiresActivationEnd(DelegatedDesktopAccess.ownsActivation,
+                prefs.accessMode, next)) return false
+        showBackendHandoff(next)
+        return true
+    }
+
+    private fun showBackendHandoff(next: DesktopAccessMode) {
+        AlertDialog.Builder(this).setTitle("Переключение на ${accessLabel(next)}")
+            .setMessage("Сначала завершите действующую активацию. HeadSwap закроется и освободит службу рабочего стола. Затем откройте приложение и повторите выбор.")
+            .setPositiveButton("Завершить доступ и закрыть") { _, _ -> finishActivationForBackendChange() }
+            .setNegativeButton("Отмена", null).show()
+    }
+
+    private fun finishActivationForBackendChange() {
+        if (accessChoiceLocked() || !DelegatedDesktopAccess.ownsActivation) return
+        if (DelegatedDesktopAccess.requestStop()) {
+            endingComputerAccess = true
+            cancelContinuation()
+            showState("Завершаю доступ HeadSwap…", "Приложение закроется после освобождения рабочего стола.", busy = true)
+            renderAccessControls()
+        }
     }
 
     private fun numberField(label: String, value: Int, maxDigits: Int) = EditText(this).apply {
@@ -865,6 +997,33 @@ class DexSetupActivity : Activity() {
                 runCatching { prefs.setCustomDesktopSize(w, h) }
                     .onSuccess { dialog.dismiss(); renderAccessControls() }
                     .onFailure { height.error = it.message ?: "Размер не поддерживается" }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun showCustomBitrate() {
+        val value = numberField("Мбит/с", prefs.desktopBitrateMbps, 2)
+        val fields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(8), dp(24), 0)
+            addView(TextView(this@DexSetupActivity).apply {
+                text = "Целое число от 1 до 20 Мбит/с. Частота кадров подстраивается автоматически. Реальная скорость может снижаться по возможностям магнитолы и соединения."
+            })
+            addView(value)
+        }
+        val dialog = AlertDialog.Builder(this).setTitle("Своя скорость видеопотока")
+            .setView(fields).setPositiveButton("Сохранить", null).setNegativeButton("Отмена", null).create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (accessChoiceLocked()) { dialog.dismiss(); renderAccessControls(); return@setOnClickListener }
+                val mbps = value.text.toString().trim().toIntOrNull()
+                if (mbps == null || mbps !in 1..20) {
+                    value.error = "Введите целое число от 1 до 20"; return@setOnClickListener
+                }
+                prefs.desktopBitrateMbps = mbps
+                dialog.dismiss()
+                renderAccessControls()
             }
         }
         dialog.show()
@@ -925,7 +1084,7 @@ class DexSetupActivity : Activity() {
         shizukuSetup.visibility = View.GONE
         armed = true
         // No local ADB work is needed after activation, irrespective of the CarLife transport.
-        if (WirelessPrefs(this).enabled) {
+        if (!WirelessCarLife.preferUsb(this)) {
             if (retryUsbPermission && WirelessCarLife.missingPermissions(this).isNotEmpty()) {
                 armed = false
                 WirelessCarLife.start(this)
@@ -976,17 +1135,32 @@ class DexSetupActivity : Activity() {
         }
     }
 
+    private fun openActivationSetup() {
+        setupRequested = true
+        openSettings(false)
+        renderAccessControls()
+        homePage.post { homePage.smoothScrollTo(0, 0) }
+    }
+
     private fun showPhoneActivationSetup() {
+        setupRequested = true
         phoneSetupOpen = true
         if (!prefs.hasPaired) phonePairOpen = true
         showState(if (phonePairOpen) "Сопрягите этот телефон" else "Активация на телефоне",
             if (phonePairOpen) "Откройте окно с кодом в настройках беспроводной отладки и введите его ниже."
-            else "Подключитесь к Wi-Fi, включите беспроводную отладку и нажмите «Активировать с телефона». Сохранённое сопряжение будет проверено автоматически.")
+            else "Подключитесь к Wi-Fi, включите беспроводную отладку и нажмите «Активировать по Wi-Fi». Сохранённое сопряжение будет проверено автоматически.")
     }
 
     private fun showComputerActivationHelp() {
-        android.app.AlertDialog.Builder(this).setTitle("Активация с компьютера")
-            .setMessage("Подключите телефон к компьютеру по USB, разрешите USB-отладку и выполните команду из инструкции в комплекте HeadSwap. Wi-Fi не нужен.\n\nДля звука используйте --audio. Для управления панелью используйте --screen. Это временно разрешает управление панелью и чтение времени активности экрана из системной диагностики. Сначала включите нужные опции в настройках.")
+        val body = ui.column().apply { setPadding(dp(18), dp(12), dp(18), dp(16)) }
+        ui.text(body, DesktopActivationGuide.instructions(prefs.usbPlaybackAudio, prefs.desktopPanelControl), 14f)
+            .setTextIsSelectable(true)
+        ui.button(body, "Скачать Android Platform Tools") {
+            runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(DesktopActivationGuide.PLATFORM_TOOLS_URL))) }
+                .onFailure { android.widget.Toast.makeText(this, "Откройте developer.android.com/tools/releases/platform-tools", android.widget.Toast.LENGTH_LONG).show() }
+        }
+        AlertDialog.Builder(this).setTitle("Активация с компьютера")
+            .setView(ScrollView(this).apply { addView(body) })
             .setPositiveButton("Понятно", null).show()
     }
 
@@ -1045,13 +1219,19 @@ class DexSetupActivity : Activity() {
     }
 
     private fun beginPhonePair() {
-        if (!canStartPhoneActivation()) return
-        val value = phonePairCode.text.toString()
-        if (!value.matches(Regex("[0-9]{6}"))) {
+        val value = PairingReplyPolicy.code(phonePairCode.text)
+        if (value == null) {
             phonePairCode.error = "Введите код из 6 цифр"
             phonePairCode.requestFocus()
             return
         }
+        if (PhonePairingService.active) {
+            val attempt = phoneReplyAttempt
+            if (attempt != null && PhonePairingService.submitCode(this, attempt, value)) phonePairCode.text.clear()
+            else phonePairCode.error = "Этот ввод уже завершён. Дождитесь результата активации."
+            return
+        }
+        if (!canStartPhoneActivation()) return
         startPhoneSetupAttempt(value)
     }
 
@@ -1127,10 +1307,12 @@ class DexSetupActivity : Activity() {
                 phoneStatusSeen = key
                 PhonePairingService.onAccessReady(this)
                 phoneLaunchCommitted = false
+                setupRequested = false
+                prefs.initialSetupCompleted = true
                 phoneSetupOpen = false
                 phonePairOpen = false
                 cancelContinuation()
-                showState("Доступ HeadSwap активен", status.message + "\nМожно подключать CarLife. Для USB-соединения Wi-Fi больше не нужен.")
+                showState("Доступ HeadSwap активен", status.message + "\nМожно подключать CarLife. На Android 17 оставьте беспроводную отладку доступной для восстановления службы после переподключения.")
                 if (!stopped && visible) readyWithDesktop()
                 return true
             }
@@ -1187,22 +1369,39 @@ class DexSetupActivity : Activity() {
         catch (_: Exception) { showState("Не удалось открыть Shizuku", "Откройте приложение Shizuku на телефоне и запустите службу.") }
     }
 
-    private fun accessChoiceLocked(): Boolean = PhonePairingService.active || phoneLaunchCommitted || screenBusy || armed || monitorBridge || workerBusy.get() ||
+    private fun accessChoiceLocked(): Boolean = endingComputerAccess || PhonePairingService.active || phoneLaunchCommitted || screenBusy || armed || monitorBridge || workerBusy.get() ||
         BridgeService.alive || DexState.running || restartAt != 0L || permissionAction != null || shizukuPermissionToken != null
 
     private fun renderAccessControls() {
         val desktop = prefs.useDesktopService
         val enabled = !accessChoiceLocked()
         val computerReady = prefs.useDelegated && DelegatedDesktopAccess.isReady(this)
-        val wirelessSelected = WirelessPrefs(this).enabled
-        connectionModeChoice.updateText(if (wirelessSelected) "Подключение: Wi-Fi ▾" else "Подключение: USB ▾")
+        val accessReady = DesktopAccess.isReady(this)
+        if (accessReady && !PhonePairingService.active && !phoneLaunchCommitted && !prefs.initialSetupCompleted) {
+            prefs.initialSetupCompleted = true
+            setupRequested = false
+        }
+        activationHeading.updateText(if (prefs.initialSetupCompleted) "Выдать права приложению" else "Первоначальная настройка")
+        initialSetupIntro.visibility = if (prefs.initialSetupCompleted) View.GONE else View.VISIBLE
+        initialSetupSection.visibility = if (!prefs.initialSetupCompleted || setupRequested || PhonePairingService.active) View.VISIBLE else View.GONE
+        setupDoneButton.visibility = if (setupRequested && !PhonePairingService.active && !phoneLaunchCommitted) View.VISIBLE else View.GONE
+        setupAccessButton.visibility = if (initialSetupSection.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        setupAccessButton.updateText("Выдать права приложению")
+        val wirelessPrefs = WirelessPrefs(this)
+        val wirelessSelected = wirelessPrefs.enabled
+        val transportLabel = when (wirelessPrefs.mode) {
+            CarLifeConnectionMode.USB -> "USB"
+            CarLifeConnectionMode.WIFI -> "Wi-Fi"
+            CarLifeConnectionMode.AUTO -> "Автоматически"
+        }
+        connectionModeChoice.updateText("$transportLabel ▾")
         connectionModeChoice.isEnabled = enabled
         wirelessSetupButton.visibility = if (wirelessSelected) View.VISIBLE else View.GONE
         wirelessSetupButton.isEnabled = enabled
         accessHint.updateText(when {
             computerReady && !DelegatedDesktopInstrumentation.keyboardRoutingReady -> "HeadSwap ожидает клавиатуру для экрана магнитолы."
-            desktop -> "${if (wirelessSelected) "Wi-Fi" else "USB"} CarLife · ${prefs.desktopResolutionLabel}"
-            else -> "${if (wirelessSelected) "Wi-Fi" else "USB"} CarLife · DeX по ADB · 1280 × 720"
+            desktop -> "$transportLabel CarLife · ${prefs.desktopResolutionLabel}"
+            else -> "$transportLabel CarLife · DeX по ADB · 1280 × 720"
         })
         if (desktop) setup.visibility = View.GONE else shizukuSetup.visibility = View.GONE
         adbOptions.visibility = if (desktop) View.GONE else View.VISIBLE
@@ -1222,15 +1421,11 @@ class DexSetupActivity : Activity() {
         accessChangeHint.updateText("Для смены способа активации остановите подключение.")
         computerAccessStatus.visibility = if (computerReady) View.VISIBLE else View.GONE
         computerAccessStatus.updateText("Доступ активен. Следующая активация потребуется после перезагрузки телефона или обновления HeadSwap.")
-        finishComputerAccess.visibility = if (computerReady) View.VISIBLE else View.GONE
-        finishComputerAccess.isEnabled = enabled && computerReady
-        resolutionChoice.visibility = if (desktop) View.VISIBLE else View.GONE
-        fpsChoice.visibility = resolutionChoice.visibility
-        audioSettings.visibility = if (desktop) View.VISIBLE else View.GONE
-        phoneSettings.visibility = if (desktop) View.VISIBLE else View.GONE
+        finishComputerAccess.visibility = if (DelegatedDesktopAccess.ownsActivation) View.VISIBLE else View.GONE
+        finishComputerAccess.isEnabled = enabled && DelegatedDesktopAccess.ownsActivation
         densityChoice.isEnabled = enabled
-        dpiAppsButton.visibility = if (desktop) View.VISIBLE else View.GONE
-        resolutionChoice.isEnabled = enabled
+        dpiAppsButton.isEnabled = desktop
+        resolutionChoice.isEnabled = enabled && desktop
         fpsChoice.isEnabled = enabled && desktop
         resolutionChoice.updateText("Разрешение: ${prefs.desktopResolutionLabel} ▾")
         densityChoice.updateText("Размер интерфейса: ${if (prefs.desktopDensity == 0) "авто" else "${prefs.desktopDensity} DPI"} ▾")
@@ -1246,18 +1441,25 @@ class DexSetupActivity : Activity() {
         applyingAccessChoice = true
         try { usbAudioChoice.control.isChecked = prefs.usbPlaybackAudio } finally { applyingAccessChoice = false }
         usbAudioChoice.setEnabled(enabled && prefs.useDelegated)
+        autoMusicChoice.setEnabled(prefs.useDelegated)
         usbAudioHint.updateText(when {
             !prefs.useDelegated -> "Передача звука в CarLife доступна в режиме «Доступ HeadSwap». Здесь можно оставить звук через Bluetooth автомобиля."
+            !enabled -> "Чтобы изменить передачу звука, остановите подключение. ${if (prefs.usbPlaybackAudio) DesktopAudioState.status else "Звук остаётся на обычном выходе телефона."}"
             !prefs.usbPlaybackAudio -> "Звук остаётся на обычном выходе телефона, например Bluetooth автомобиля."
             !DesktopAudioAccess.hasPermission(this) -> "Передача звука выбрана. Активируйте доступ, чтобы передавать музыку и подсказки телефона в CarLife."
             else -> DesktopAudioState.status
         })
         applyingAccessChoice = true
         try { panelControlChoice.control.isChecked = prefs.desktopPanelControl } finally { applyingAccessChoice = false }
-        panelControlChoice.setEnabled(enabled)
-        phoneControlDetails.visibility = if (prefs.desktopPanelControl) View.VISIBLE else View.GONE
+        panelControlChoice.setEnabled(enabled && desktop)
+        phoneControlDetails.visibility = View.VISIBLE
+        idleModeChoice.isEnabled = desktop && prefs.desktopPanelControl
+        idleTimeoutChoice.isEnabled = desktop && prefs.desktopPanelControl
         panelControlHint.visibility = panelControlChoice.row.visibility
         panelControlHint.updateText(when {
+            !desktop -> "Управление экраном недоступно в резервном ADB-режиме DeX. Используйте Shizuku или профиль Android Desktop."
+            !enabled -> "Чтобы изменить доступ к управлению экраном, остановите подключение. Способ и таймер уже включённой функции можно настроить ниже."
+            !prefs.desktopPanelControl -> "Включите управление экраном, чтобы изменить способ гашения и таймер. Сохранённые значения показаны ниже."
             prefs.phoneScreenMode == PhoneIdleMode.CURTAIN -> "Оставьте HeadSwap открытым на телефоне. Двойное касание снимает затемнение."
             PhonePanelPolicy.prefersCurtain -> "На этой модели аппаратное выключение может погасить изображение на ГУ. Для сохранения изображения выберите «Затемнять экран»."
             DelegatedPanelAccess.unsupportedThisActivation -> PhoneActivationPolicy.PANEL_MESSAGE
@@ -1267,13 +1469,20 @@ class DexSetupActivity : Activity() {
         renderConnectionControl()
         renderPhoneActivationControls()
         renderPhoneScreenControl()
+        renderSettingsOverview()
     }
 
     private fun renderPhoneActivationControls() {
         val ready = DelegatedDesktopAccess.isReady(this)
         phoneActivationSection.visibility = if (prefs.useDelegated && (!ready || phoneLaunchCommitted)) View.VISIBLE else View.GONE
-        phoneActivationDetails.visibility = if (phoneSetupOpen && !phoneLaunchCommitted) View.VISIBLE else View.GONE
-        phonePairSection.visibility = if (phonePairOpen) View.VISIBLE else View.GONE
+        phoneActivationDetails.visibility = if ((phoneSetupOpen || PhonePairingService.active) && !phoneLaunchCommitted) View.VISIBLE else View.GONE
+        val nextReplyAttempt = PhonePairingService.replyAttempt()
+        if (phoneReplyAttempt != null && phoneReplyAttempt != nextReplyAttempt) phonePairCode.text.clear()
+        phoneReplyAttempt = nextReplyAttempt
+        phonePairSection.visibility = if (phonePairOpen || phoneReplyAttempt != null) View.VISIBLE else View.GONE
+        phonePairButton.isEnabled = phoneReplyAttempt != null || (!PhonePairingService.active && !workerBusy.get() && !phoneLaunchCommitted)
+        phonePairCode.isEnabled = phonePairButton.isEnabled
+        phoneActivationButton.updateText(if (phoneSetupOpen && prefs.hasPaired) "Активировать по Wi-Fi" else "По Wi-Fi")
         phoneActivationButton.isEnabled = !PhonePairingService.active && !phoneLaunchCommitted && !screenBusy && !workerBusy.get() &&
             permissionAction == null && !BridgeService.alive && !DexState.running
         phoneActivationHint.updateText(if (phoneLaunchCommitted)
@@ -1291,7 +1500,7 @@ class DexSetupActivity : Activity() {
     }
 
     private fun renderConnectionControl() {
-        val wireless = WirelessPrefs(this).enabled
+        val wireless = !WirelessCarLife.preferUsb(this)
         val passiveWaiting = !wireless && armed && !BridgeService.alive && !CarLifeState.running && !screenBusy &&
             Actions.lastUsbResult.state == Actions.UsbScanState.WAITING_FOR_ACCESSORY
         val state = DesktopConnectionButtonPolicy.state(
@@ -1374,8 +1583,13 @@ class DexSetupActivity : Activity() {
     }
 
     private fun beginConnect(explicit: Boolean) {
-        if (!visible || phoneLaunchCommitted || PhonePairingService.active) return
-        if (!WirelessPrefs(this).enabled) Actions.observeUsbConnection(this)
+        if (!visible || endingComputerAccess || phoneLaunchCommitted || PhonePairingService.active) return
+        if (DesktopBackendTransitionPolicy.blocksProjection(DelegatedDesktopAccess.ownsActivation, prefs.accessMode)) {
+            if (explicit) showBackendHandoff(prefs.accessMode)
+            else showState("Завершите предыдущую активацию", "Нажмите «Завершить доступ и закрыть HeadSwap», затем откройте приложение для подключения через ${accessLabel(prefs.accessMode)}.")
+            return
+        }
+        if (WirelessPrefs(this).mode != CarLifeConnectionMode.WIFI) Actions.observeUsbConnection(this)
         // A deliberate retry must not be superseded by the next refresh noticing
         // the previous Stop (especially while a permission dialog is open).
         if (explicit || !stopped) observedStop = false
@@ -1635,7 +1849,7 @@ class DexSetupActivity : Activity() {
     }
 
     private fun usbAttached() {
-        if (phoneActivationRequested || phoneLaunchCommitted || PhonePairingService.active || WirelessPrefs(this).enabled) return
+        if (phoneActivationRequested || phoneLaunchCommitted || PhonePairingService.active || WirelessPrefs(this).mode == CarLifeConnectionMode.WIFI) return
         Actions.observeUsbConnection(this)
         if (stopped) return
         when {
@@ -1651,7 +1865,7 @@ class DexSetupActivity : Activity() {
     }
 
     private fun scanUsb(retryPermission: Boolean) {
-        if (!visible || stopped || !armed || WirelessPrefs(this).enabled) return
+        if (!visible || stopped || !armed || WirelessPrefs(this).mode == CarLifeConnectionMode.WIFI) return
         if (prefs.useDesktopService && !DesktopAccess.isReady(this)) {
             cancelContinuation()
             showAccessSetup()
@@ -1739,6 +1953,10 @@ class DexSetupActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_SETTINGS_NOTIFICATIONS) {
+            renderSettingsOverview()
+            return
+        }
         if (requestCode == REQUEST_PAIRING_NOTIFICATIONS) {
             val action = pairingPermissionAction
             pairingPermissionAction = null

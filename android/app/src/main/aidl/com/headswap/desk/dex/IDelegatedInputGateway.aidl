@@ -1,6 +1,7 @@
 package com.headswap.desk.dex;
 
 import android.view.InputEvent;
+import com.headswap.desk.dex.IVdmDesktopSession;
 
 /** Private capability passed only to HeadSwap's non-exported producer service. */
 interface IDelegatedInputGateway {
@@ -14,4 +15,6 @@ interface IDelegatedInputGateway {
     void registerFullscreenChild(int parentId, int displayId, IBinder token, int width, int height);
     /** Only the IME visibility bit on a registered child: -1 unknown, 0 hidden, 1 shown. */
     int childImeVisibility(int displayId, IBinder token);
+    /** Protocol 18: one authenticated native display family for this producer generation. */
+    IVdmDesktopSession openVdmSession(IBinder producerLifetime, IBinder parentToken);
 }

@@ -2,6 +2,8 @@ package com.headswap.desk.embed
 
 import com.headswap.desk.dex.DesktopModePolicy
 import com.headswap.desk.dex.IDexUserService
+import android.os.IBinder
+import java.lang.reflect.Proxy
 import com.headswap.desk.shared.DesktopRenderPolicy
 import java.util.concurrent.Executors
 import org.junit.Assert.assertArrayEquals
@@ -9,10 +11,21 @@ import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class DesktopRenderConfigTest {
+    private fun liveService(): IDexUserService = object : IDexUserService.Default() {
+        private val lifetime = Proxy.newProxyInstance(IBinder::class.java.classLoader,
+            arrayOf(IBinder::class.java)) { _, method, _ ->
+            when (method.name) {
+                "isBinderAlive" -> true
+                else -> error("Unexpected Binder method: ${method.name}")
+            }
+        } as IBinder
+        override fun asBinder(): IBinder = lifetime
+    }
+
     @Test fun snapshotBelongsOnlyToTheCurrentDisplayAndProfile() {
         val owner = Any()
         val worker = Executors.newSingleThreadExecutor()
-        val remote = IDexUserService.Default()
+        val remote = liveService()
         try {
             EmbeddedSessionRegistry.activate(owner, remote, 4, worker, DesktopModePolicy.DRIVEDECK, 200, false)
             EmbeddedSessionRegistry.renderConfig(4, false)[0] = 320
@@ -38,7 +51,7 @@ class DesktopRenderConfigTest {
             for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK)) {
                 for (compact in listOf(true, false)) {
                     val owner = Any()
-                    EmbeddedSessionRegistry.activate(owner, IDexUserService.Default(), 42, worker, mode, 160, compact)
+                    EmbeddedSessionRegistry.activate(owner, liveService(), 42, worker, mode, 160, compact)
                     try {
                         val config = EmbeddedSessionRegistry.renderConfig(42, ownDesktop = mode == DesktopModePolicy.ANDROID_DESKTOP)
                         for (pkg in listOf("ru.yandex.yandexmaps", "ru.yandex.yandexnavi", "example.music")) {
@@ -60,7 +73,7 @@ class DesktopRenderConfigTest {
                 val owner = Any()
                 val own = mode == DesktopModePolicy.ANDROID_DESKTOP
                 val selected = mutableSetOf("ru.yandex.yandexnavi", "example.music")
-                EmbeddedSessionRegistry.activate(owner, IDexUserService.Default(), 42, worker, mode, 160, true, selected)
+                EmbeddedSessionRegistry.activate(owner, liveService(), 42, worker, mode, 160, true, selected)
                 try {
                     selected.clear() // Edits belong to the next connection.
                     fun render(pkg: String): IntArray {
@@ -86,7 +99,7 @@ class DesktopRenderConfigTest {
         try {
             for ((enabled, selected) in listOf(true to emptySet<String>(), false to DesktopRenderPolicy.DEFAULT_PACKAGES)) {
                 val owner = Any()
-                EmbeddedSessionRegistry.activate(owner, IDexUserService.Default(), 42, worker,
+                EmbeddedSessionRegistry.activate(owner, liveService(), 42, worker,
                     DesktopModePolicy.DRIVEDECK, 128, enabled, selected)
                 try {
                     for (pkg in listOf(null, "ru.yandex.yandexmaps", "example.music"))

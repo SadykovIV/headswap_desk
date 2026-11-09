@@ -1,6 +1,8 @@
 package com.headswap.desk.notify
 
 import android.app.Notification
+import android.app.PendingIntent
+import java.util.concurrent.ConcurrentHashMap
 import android.app.NotificationManager
 import androidx.core.app.NotificationCompat
 import android.content.Context
@@ -15,19 +17,27 @@ internal object HuNotifications {
     private val main = Handler(Looper.getMainLooper())
     private var accepting = false
     private var app: Context? = null
-    var items: List<NotifEntry> = emptyList()
+    internal data class Action(val key: String, val packageName: String, val postTime: Long, val intent: PendingIntent, val epoch: Any)
+    private val actions = ConcurrentHashMap<String, Action>()
+    @Volatile private var epoch = Any()
+    fun action(key: String, packageName: String): Action? = actions[key]?.takeIf { it.packageName == packageName && current(it) }
+    fun current(action: Action): Boolean = HuNotificationFeature.AVAILABLE && action.epoch === epoch && actions[action.key] === action
+    private fun clearActions() { epoch = Any(); actions.clear(); HuNotificationLaunch.clear() }
+    @Volatile var items: List<NotifEntry> = emptyList()
         private set
     var generation = 0L
         private set
-    var connected = false
+    @Volatile var connected = false
         private set
 
     fun session(context: Context, active: Boolean) {
-        if (accepting == active) return
-        accepting = active
-        app = if (active) context.applicationContext else null
+        val enabled = HuNotificationFeature.enabled(active)
+        if (accepting == enabled && HuNotificationFeature.AVAILABLE) return
+        accepting = enabled
+        app = if (enabled) context.applicationContext else null
+        clearActions()
         replace(emptyList())
-        if (active) resync()
+        if (enabled) resync()
     }
     fun listenerConnected() = onMain {
         connected = true
@@ -35,15 +45,17 @@ internal object HuNotifications {
     }
     fun listenerDisconnected() = onMain {
         connected = false
+        clearActions()
         replace(emptyList())
     }
     fun posted(sbn: StatusBarNotification) = onMain {
         if (!accepting) return@onMain
+        actions.remove(sbn.key)
         val parsed = runCatching { parse(sbn) }.getOrNull()
         replace(if (parsed == null) items.filterNot { it.key == sbn.key } else NotificationsLogic.upsert(items, parsed))
     }
     fun removed(sbn: StatusBarNotification) = onMain {
-        if (sbn.user == Process.myUserHandle()) replace(items.filterNot { it.key == sbn.key })
+        if (sbn.user == Process.myUserHandle()) { actions.remove(sbn.key); replace(items.filterNot { it.key == sbn.key }) }
     }
     fun dismiss(key: String) {
         if (!accepting || items.none { it.key == key }) return
@@ -56,6 +68,7 @@ internal object HuNotifications {
         val listener = ClusterNavigationListener.connected
         connected = listener != null
         if (!accepting || listener == null) return
+        actions.clear()
         val fresh = runCatching { listener.activeNotifications.orEmpty().asSequence()
             .filter { it.user == Process.myUserHandle() }
             .sortedByDescending { it.postTime }
@@ -80,10 +93,17 @@ internal object HuNotifications {
         val composed = NotificationsLogic.compose(label, title, text,
             messages?.text?.toString()?.take(4000), messages?.person?.name?.toString()?.take(256),
             extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)?.toString()?.take(256))
+        n.contentIntent?.takeIf { HuNotificationActionPolicy.allowed(it.isActivity,
+            it.creatorPackage == sbn.packageName, it.creatorUid == sbn.uid,
+            it.creatorUserHandle == Process.myUserHandle()) }?.let {
+            actions[sbn.key] = Action(sbn.key, sbn.packageName, sbn.postTime, it, epoch)
+        }
         return NotifEntry(sbn.key, sbn.packageName, composed.first, composed.second, sbn.postTime, NotificationManager.IMPORTANCE_DEFAULT)
     }
     private fun replace(next: List<NotifEntry>) {
         if (items == next) return
+        val kept = next.mapTo(HashSet()) { it.key }
+        actions.keys.removeAll { it !in kept }
         items = next
         generation++
     }

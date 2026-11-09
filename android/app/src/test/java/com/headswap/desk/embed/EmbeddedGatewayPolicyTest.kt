@@ -30,15 +30,17 @@ class EmbeddedGatewayPolicyTest {
         assertFalse(EmbeddedGatewayPolicy.allowsLauncherPackage(DesktopModePolicy.DRIVEDECK_PACKAGE, host))
     }
 
-    @Test fun onlyTheHostUidMayOpenFullscreenUnderDriveDeck() {
-        EmbeddedGatewayPolicy.requireFullscreenCaller(DesktopModePolicy.DRIVEDECK, 10111, 10111)
-        for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.SAMSUNG_DEX)) {
+    @Test fun onlyTheHostUidMayOpenFullscreenUnderEitherManagedProfile() {
+        for (mode in listOf(DesktopModePolicy.DRIVEDECK, DesktopModePolicy.ANDROID_DESKTOP)) {
+            EmbeddedGatewayPolicy.requireFullscreenCaller(mode, 10111, 10111)
+            for (uid in listOf(0, 2000, 10112)) org.junit.Assert.assertThrows(SecurityException::class.java) {
+                EmbeddedGatewayPolicy.requireFullscreenCaller(mode, uid, 10111)
+            }
+        }
+        for (mode in listOf(DesktopModePolicy.SAMSUNG_DEX, -1, 3, Int.MAX_VALUE)) {
             org.junit.Assert.assertThrows(SecurityException::class.java) {
                 EmbeddedGatewayPolicy.requireFullscreenCaller(mode, 10111, 10111)
             }
-        }
-        org.junit.Assert.assertThrows(SecurityException::class.java) {
-            EmbeddedGatewayPolicy.requireFullscreenCaller(DesktopModePolicy.DRIVEDECK, 10112, 10111)
         }
     }
     @Test fun onlyCurrentPositiveDriveDeckParentCanHostEmbeddedApps() {

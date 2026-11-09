@@ -33,6 +33,8 @@ public final class ProfileContract {
     public static final int MEDIA_NEXT = 3;
     /** The Activity supplies its own dock under the host's navigation window. */
     public static final int CAP_PROFILE_CHROME = 1 << 5;
+    public static final int CAP_NOTIFICATIONS = 1 << 6;
+    public static final int DASH_NOTIFICATIONS = 4;
     public static final int DASH_BACK = 1;
     public static final int DASH_NAVIGATION = 2;
     public static final int DASH_PHONE_TOGGLE = 3;

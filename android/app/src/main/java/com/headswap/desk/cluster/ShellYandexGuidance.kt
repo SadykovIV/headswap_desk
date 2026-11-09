@@ -64,8 +64,8 @@ internal object ShellYandexGuidance {
 
     private data class Target(val task: Int, val pkg: String)
 
-    private fun top(display: Int, owner: Int, user: Int): Target? {
-        ShellDisplayIme.requireOwned(display, owner)
+    private fun top(display: Int, user: Int, requireOwnership: () -> Unit): Target? {
+        requireOwnership()
         // The service filters by display; it returns just the top task, without intent extras.
         val info = (tasks.invoke(manager, 1, false, false, display) as List<*>).firstOrNull()
             as? ActivityManager.RunningTaskInfo ?: return null
@@ -79,9 +79,25 @@ internal object ShellYandexGuidance {
 
     /** Blocking, off the UI/IME/panel thread. Discard late responses and switched/removed tasks. */
     fun read(displayId: Int, displayOwnerUid: Int, userId: Int): ShellManeuverSample {
+        val caller = when (Process.myUid()) {
+            0, 2000 -> "com.android.shell"
+            displayOwnerUid -> BuildConfig.APPLICATION_ID
+            else -> return ShellManeuverSample.Unavailable
+        }
+        return readAuthorized(displayId, userId, caller) { ShellDisplayIme.requireOwned(displayId, displayOwnerUid) }
+    }
+
+    /** Native VDM ownership and the package requesting Assist belong to different UIDs. */
+    fun readDelegated(displayId: Int, userId: Int, requireOwnership: () -> Unit): ShellManeuverSample {
+        if (Process.myUid() % 100000 < 10000) return ShellManeuverSample.Unavailable
+        return readAuthorized(displayId, userId, BuildConfig.APPLICATION_ID, requireOwnership)
+    }
+
+    private fun readAuthorized(displayId: Int, userId: Int, caller: String,
+        requireOwnership: () -> Unit): ShellManeuverSample {
         return try {
             val method = request
-            val target = top(displayId, displayOwnerUid, userId) ?: return ShellManeuverSample.Unavailable
+            val target = top(displayId, userId, requireOwnership) ?: return ShellManeuverSample.Unavailable
             val until = SystemClock.elapsedRealtime() + TIMEOUT_MS
             val answers = ArrayBlockingQueue<ShellManeuverSample>(1)
             val callback = object : Binder() {
@@ -95,7 +111,7 @@ internal object ShellYandexGuidance {
                         val identity = Binder.clearCallingIdentity()
                         try {
                             val structure = b?.getParcelable("structure", AssistStructure::class.java)
-                            if (structure == null || top(displayId, displayOwnerUid, userId) != target ||
+                            if (structure == null || top(displayId, userId, requireOwnership) != target ||
                                 structure.activityComponent?.packageName != target.pkg ||
                                 structureTask.invoke(structure) != target.task) ShellManeuverSample.Unavailable
                             else readStructure(structure, displayId, target.pkg)
@@ -109,16 +125,11 @@ internal object ShellYandexGuidance {
             val receiver = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(receiverType)) { _, m, _ ->
                 if (m.name == "asBinder") callback else null
             }
-            val caller = when (Process.myUid()) {
-                0, 2000 -> "com.android.shell"
-                displayOwnerUid -> BuildConfig.APPLICATION_ID
-                else -> return ShellManeuverSample.Unavailable
-            }
             if (method.invoke(manager, receiver, target.task, caller, null, true) != true)
                 return ShellManeuverSample.Unavailable
             val wait = (until - SystemClock.elapsedRealtime()).coerceAtLeast(0)
             val result = answers.poll(wait, TimeUnit.MILLISECONDS) ?: return ShellManeuverSample.Unavailable
-            if (result != ShellManeuverSample.Unavailable && top(displayId, displayOwnerUid, userId) != target)
+            if (result != ShellManeuverSample.Unavailable && top(displayId, userId, requireOwnership) != target)
                 ShellManeuverSample.Unavailable else result
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()

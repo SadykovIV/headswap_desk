@@ -4,6 +4,14 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DesktopRecoveryPolicyTest {
+    @Test fun anIsolatedDesktopRecoversWithPhoneOffAndPinLocked() {
+        for (interactive in listOf(false, true)) for (locked in listOf(false, true)) {
+            assertTrue(DesktopRecoveryPolicy.phoneStateEligible(interactive, locked, true))
+            assertEquals(interactive && !locked,
+                DesktopRecoveryPolicy.phoneStateEligible(interactive, locked, false))
+        }
+    }
+
     @Test fun wirelessRecoveryDoesNotRequireUsbOrInheritAnOldUsbStop() {
         for (usbStopped in listOf(false, true)) for (accessory in listOf(false, true)) {
             assertTrue(DesktopRecoveryPolicy.transportEligible("tcp6", true, usbStopped, accessory))

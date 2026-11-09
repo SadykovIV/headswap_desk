@@ -27,8 +27,9 @@ import com.headswap.desk.embed.EmbeddedSessionRegistry
 
 internal object HuShadePolicy {
     fun canShow(enabled: Boolean, overlayAllowed: Boolean, sessionRunning: Boolean,
-                displayId: Int, ownedParent: Boolean): Boolean =
-        enabled && overlayAllowed && sessionRunning && displayId > 0 && ownedParent
+                displayId: Int, ownedParent: Boolean,
+                featureAvailable: Boolean = HuNotificationFeature.AVAILABLE): Boolean =
+        featureAvailable && enabled && overlayAllowed && sessionRunning && displayId > 0 && ownedParent
     fun revealText(deviceLocked: Boolean, keyguardLocked: Boolean): Boolean = !deviceLocked && !keyguardLocked
 }
 
@@ -39,12 +40,13 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
     private var manager: WindowManager? = null
     private var uiContext: Context? = null
     private var panel: LinearLayout? = null
-    private var displayId = -1
+    @Volatile private var displayId = -1
     private var expanded = false
     private var lastGeneration = -1L
     private var lastReveal = false
     private var lastConnected = false
-    private var closed = false
+    @Volatile private var closed = false
+    private var lastNativeEntry = false
     private var currentWidth = 0
     private var currentHeight = 0
     private var density = 1f
@@ -56,7 +58,15 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
             main.postDelayed(this, 350)
         }
     }
-    fun start() { main.removeCallbacks(tick); main.post(tick) }
+    fun start() {
+        if (!HuNotificationFeature.AVAILABLE) { close(); return }
+        HuNotificationGateway.attach(this); main.removeCallbacks(tick); main.post(tick)
+    }
+    fun available(id: Int): Boolean = HuNotificationFeature.AVAILABLE && !closed && id > 0 && id == displayId && DexPrefs(app).huNotificationsEnabled &&
+        Settings.canDrawOverlays(app) && DexState.running && CarLifeState.running && EmbeddedSessionRegistry.ownsParentDisplay(id)
+    fun expand(id: Int) { if (available(id)) { expanded = true; render() } }
+    fun collapse() { expanded = false; render() }
+
 
     private fun reconcile() {
         val id = DexState.displayId
@@ -96,7 +106,8 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
             }
         }
         val reveal = mayReveal()
-        if (HuNotifications.generation != lastGeneration || reveal != lastReveal || HuNotifications.connected != lastConnected) render()
+        if (HuNotifications.generation != lastGeneration || reveal != lastReveal || HuNotifications.connected != lastConnected ||
+            HuNotificationGateway.hasNativeEntry(id) != lastNativeEntry) render()
     }
 
     private fun mayReveal(): Boolean {
@@ -107,9 +118,17 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
     }
 
     private fun render() {
+        if (!HuNotificationFeature.AVAILABLE) { detach(); return }
         val ctx = uiContext ?: return
         val wm = manager ?: return
         if (!EmbeddedSessionRegistry.ownsParentDisplay(displayId)) { detach(); return }
+        val nativeEntry = HuNotificationGateway.hasNativeEntry(displayId)
+        lastNativeEntry = nativeEntry
+        if (!expanded && nativeEntry) {
+            panel?.let { runCatching { wm.removeViewImmediate(it) } }
+            panel = null
+            return
+        }
         val reveal = mayReveal()
         lastReveal = reveal
         lastGeneration = HuNotifications.generation
@@ -161,6 +180,11 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
                         setPadding(dp(12), dp(8), dp(12), dp(8))
                         background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.rgb(35, 48, 65)) }
                     }
+                    card.setOnClickListener {
+                        if (mayReveal()) HuNotificationGateway.open(app, displayId, item.key, item.pkg)
+                    }
+                    card.isFocusable = true
+                    card.contentDescription = "Открыть уведомление: ${item.who}"
                     val top = LinearLayout(ctx).apply { gravity = Gravity.CENTER_VERTICAL }
                     top.addView(label(ctx, item.who, 20f, true), LinearLayout.LayoutParams(0, -2, 1f))
                     top.addView(button(ctx, "×") { HuNotifications.dismiss(item.key) }.apply {
@@ -183,7 +207,8 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT).apply {
-                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                gravity = Gravity.TOP or if (nativeEntry) Gravity.START else Gravity.CENTER_HORIZONTAL
+                x = dp(3)
                 y = dp(3)
                 title = "HeadSwapDesk notification shade"
             }
@@ -228,6 +253,7 @@ internal class HuNotificationShade(context: Context) : AutoCloseable {
     }
     override fun close() {
         closed = true
+        HuNotificationGateway.detach(this)
         main.removeCallbacks(tick)
         detach()
         HuNotifications.session(app, false)

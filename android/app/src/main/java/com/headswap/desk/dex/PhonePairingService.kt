@@ -66,6 +66,7 @@ class PhonePairingService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        currentInstance = this
         notifications = getSystemService(NotificationManager::class.java)
         createChannels(this)
     }
@@ -286,6 +287,7 @@ class PhonePairingService : Service() {
         stopSelf()
     }
     override fun onDestroy() {
+        if (currentInstance === this) currentInstance = null
         destroyed = true
         finished = true
         synchronized(attemptLock) { cancelled = true }
@@ -301,6 +303,22 @@ class PhonePairingService : Service() {
     }
 
     companion object {
+        @Volatile private var currentInstance: PhonePairingService? = null
+
+        /** Same one-use reply capability as SystemUI; never persisted or logged. */
+        internal fun replyAttempt(): String? = currentInstance?.let {
+            if (it.waitingCode && !it.cancelled && !it.finished && !it.destroyed) it.replyToken else null
+        }
+
+        internal fun submitCode(context: Context, attempt: String, value: String): Boolean {
+            val code = PairingReplyPolicy.code(value) ?: return false
+            if (!PairingReplyPolicy.accepts(replyAttempt(), attempt, active)) return false
+            val intent = Intent(context, PhonePairingService::class.java).setAction(REPLY).putExtra(TOKEN, attempt)
+            RemoteInput.addResultsToIntent(arrayOf(RemoteInput.Builder(CODE).build()), intent,
+                android.os.Bundle().apply { putCharSequence(CODE, code) })
+            return runCatching { context.startService(intent) != null }.getOrDefault(false)
+        }
+
         private const val START = "com.headswap.desk.activation.START"
         private const val REPLY = "com.headswap.desk.activation.REPLY"
         private const val CANCEL = "com.headswap.desk.activation.CANCEL"

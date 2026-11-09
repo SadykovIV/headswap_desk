@@ -39,17 +39,19 @@ class DexPrefs(context: Context) {
         if (profile == DesktopModePolicy.SAMSUNG_DEX) "dex_access_backend" else "desktop_access_backend"
 
     var accessMode: DesktopAccessMode
-        get() {
-            val profile = desktopMode
-            val saved = prefs.getString(backendKey(profile), null) ?: prefs.getString("access_backend", null)
-            val legacy = if (prefs.contains("use_shizuku")) prefs.getBoolean("use_shizuku", true) else null
-            return DesktopAccessMode.restore(profile, saved, legacy)
-        }
+        get() = accessModeFor(desktopMode)
         set(value) {
             val profile = desktopMode
             require(value in DesktopAccessMode.optionsFor(profile)) { "Этот способ доступа недоступен для выбранного профиля" }
             prefs.edit().putString(backendKey(profile), value.name).apply()
         }
+
+    /** Read a profile's existing backend before changing the profile or component selection. */
+    fun accessModeFor(profile: Int): DesktopAccessMode {
+        val saved = prefs.getString(backendKey(profile), null) ?: prefs.getString("access_backend", null)
+        val legacy = if (prefs.contains("use_shizuku")) prefs.getBoolean("use_shizuku", true) else null
+        return DesktopAccessMode.restore(profile, saved, legacy)
+    }
     var useShizuku: Boolean
         get() = accessMode == DesktopAccessMode.SHIZUKU
         set(value) {
@@ -135,7 +137,7 @@ class DexPrefs(context: Context) {
         get() = prefs.getBoolean("hu_notifications_enabled", false)
         set(value) { prefs.edit().putBoolean("hu_notifications_enabled", value).apply() }
     var initialSetupCompleted: Boolean
-        get() = prefs.getBoolean("initial_setup_completed", hasPaired)
+        get() = prefs.getBoolean("initial_setup_completed", false)
         set(value) { prefs.edit().putBoolean("initial_setup_completed", value).apply() }
 
     var dpiCorrectionPackages: Set<String>

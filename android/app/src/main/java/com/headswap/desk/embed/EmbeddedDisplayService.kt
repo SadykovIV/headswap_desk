@@ -23,13 +23,26 @@ class EmbeddedDisplayService : Service() {
 
     private val gateway = object : IEmbeddedDisplayGateway.Stub() {
         override fun version(): Int = authorized { 1 }
-        override fun capabilities(): Int = authorized { 63 } // Includes parent (bit 4) and per-app (bit 5) render config.
+        override fun capabilities(): Int = authorized { com.headswap.desk.notify.HuNotificationFeature.capabilities(127) }
 
         override fun desktopRenderConfig(parentDisplayId: Int): IntArray = authorized {
             EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false)
         }
         override fun appRenderConfig(parentDisplayId: Int, packageName: String): IntArray = authorized {
             EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false, packageName = packageName)
+        }
+
+        override fun notificationStatus(parentDisplayId: Int, ownerToken: IBinder, visible: Boolean): android.os.Bundle = authorized {
+            EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false)
+            com.headswap.desk.notify.HuNotificationGateway.status(parentDisplayId, ownerToken, visible)
+        }
+        override fun showNotifications(parentDisplayId: Int): Boolean = authorized {
+            EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false)
+            com.headswap.desk.notify.HuNotificationGateway.show(parentDisplayId)
+        }
+        override fun openNotification(parentDisplayId: Int, key: String, packageName: String): Boolean = authorized {
+            EmbeddedSessionRegistry.renderConfig(parentDisplayId, ownDesktop = false)
+            com.headswap.desk.notify.HuNotificationGateway.open(this@EmbeddedDisplayService, parentDisplayId, key, packageName)
         }
 
         override fun create(surface: Surface, ownerToken: IBinder, parentDisplayId: Int,

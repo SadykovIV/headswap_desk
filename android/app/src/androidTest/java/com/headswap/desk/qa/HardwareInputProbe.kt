@@ -20,6 +20,7 @@ internal object HardwareInputProbe {
     @JvmStatic fun run(test: Instrumentation) {
         val result = Bundle()
         var ui: UiAutomation? = null
+        var vdm: AutoCloseable? = null
         try {
             check(Build.HARDWARE in listOf("ranchu", "goldfish")) { "Disposable emulator required" }
             val automation = test.getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
@@ -29,6 +30,7 @@ internal object HardwareInputProbe {
                 DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL, ShellDisplayIme.PERMISSION, "android.permission.DUMP")
             val context = test.targetContext
             val lease = DelegatedDesktopAccess.begin {}
+            vdm = VdmProbeHost.start(test, automation)
             val gateway = DelegatedInputGateway(context)
             val token = Binder()
             gateway.beginGeneration(1, token, true)
@@ -124,7 +126,7 @@ internal object HardwareInputProbe {
                 DexState.displayId = -1; DexState.running = false
             }
         } catch (error: Throwable) { result.putString("error", android.util.Log.getStackTraceString(error)) }
-        finally { ui?.dropShellPermissionIdentity() }
+        finally { runCatching { vdm?.close() }; ui?.dropShellPermissionIdentity() }
         test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
     }
 

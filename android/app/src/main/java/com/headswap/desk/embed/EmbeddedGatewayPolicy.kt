@@ -40,8 +40,8 @@ object EmbeddedGatewayPolicy {
     }
 
     internal fun requireFullscreenCaller(mode: Int, uid: Int, appUid: Int) {
-        if (uid != appUid || mode != DesktopModePolicy.DRIVEDECK) {
-            throw SecurityException("Полноэкранное окно доступно только HeadSwap в профиле DriveDeck")
+        if (uid != appUid || !EmbeddedDisplayPolicy.supportsChildren(mode)) {
+            throw SecurityException("Полноэкранное окно доступно только HeadSwap в профиле Android Desktop или DriveDeck")
         }
     }
 

@@ -16,7 +16,7 @@ object WirelessOptOutProbe {
         val result = Bundle()
         val context = probe.targetContext
         val preferences = WirelessPrefs(context)
-        val original = preferences.enabled
+        val original = preferences.mode
         var peer: Socket? = null
         try {
             check(!BridgeService.alive) { "Run this probe with no existing projection" }
@@ -54,7 +54,7 @@ object WirelessOptOutProbe {
         } finally {
             peer?.close()
             context.stopService(Intent(context, BridgeService::class.java))
-            preferences.enabled = original
+            preferences.mode = original
             probe.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
         }
     }

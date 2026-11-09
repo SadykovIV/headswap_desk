@@ -52,10 +52,27 @@ class DesktopPrefsTest {
         assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 0 }
         assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 21 }
     }
-    @Test fun existingPairingSkipsFirstRunWithoutClaimingBatteryOrNotificationPermission() {
+    @Test fun customBitrateAndGeometryRestoreWithoutOverwritingDpiOrLegacyFps() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        prefs.desktopBitrateMbps = 7 // A manually entered value outside the presets.
+        prefs.setCustomDesktopSize(1440, 810)
+        val restored = DexPrefs(context)
+        assertEquals(7, restored.desktopBitrateMbps)
+        assertEquals("1440 × 810", restored.desktopResolutionLabel)
+        assertEquals(1440, restored.desktopVideoSelection().initialGeometry().outW)
+        assertEquals(810, restored.desktopVideoSelection().initialGeometry().outH)
+        assertEquals(128, restored.desktopDensity)
+        assertEquals(FpsSetting.FPS15, restored.desktopFps)
+        assertThrows(IllegalArgumentException::class.java) { restored.desktopBitrateMbps = Int.MAX_VALUE }
+        assertThrows(IllegalArgumentException::class.java) { restored.setCustomDesktopSize(1441, 810) }
+        assertEquals(7, restored.desktopBitrateMbps)
+        assertEquals("1440 × 810", restored.desktopResolutionLabel)
+    }
+    @Test fun pairingAloneDoesNotCompleteAccessSetupOrClaimPermissions() {
         val context = MemoryPrefs()
         context.values["has_paired"] = true
-        assertTrue(DexPrefs(context).initialSetupCompleted)
+        assertFalse(DexPrefs(context).initialSetupCompleted)
         assertFalse(DexPrefs(context).huNotificationsEnabled)
         context.values["desktop_bitrate_mbps"] = -50
         assertEquals(1, DexPrefs(context).desktopBitrateMbps)
@@ -170,6 +187,19 @@ class DesktopPrefsTest {
         assertEquals(DesktopAccessMode.LEGACY_ADB, DexPrefs(context).accessMode)
         prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
         assertEquals(DesktopAccessMode.COMPUTER, DexPrefs(context).accessMode)
+    }
+
+    @Test fun targetProfileBackendCanBeCheckedBeforeAnyPreferenceMutation() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        prefs.accessMode = DesktopAccessMode.LEGACY_ADB
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        val before = context.values.toMap()
+        assertEquals(DesktopAccessMode.COMPUTER, prefs.accessModeFor(DesktopModePolicy.DRIVEDECK))
+        assertEquals(DesktopAccessMode.LEGACY_ADB, prefs.accessModeFor(DesktopModePolicy.SAMSUNG_DEX))
+        assertEquals(before, context.values)
+        assertEquals(DesktopModePolicy.ANDROID_DESKTOP, prefs.desktopMode)
     }
 
     @Test fun firstActivationOffersAudioAndPanelAndPreservesIndependentOptOutsAfterUpdate() {

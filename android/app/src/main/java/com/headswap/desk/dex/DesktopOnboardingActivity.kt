@@ -50,17 +50,15 @@ class DesktopOnboardingActivity : Activity() {
         }
         ui.brand(header, 64)
         ui.text(header, "HeadSwap Desktop", 27f, true).layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
-        ui.text(body, "Первый запуск · ${step + 1} из 3", 15f)
+        ui.text(body, "Первоначальная настройка · ${step + 1} из 3", 15f)
         when (step) {
             0 -> permissions(body)
             1 -> components(body)
             else -> activation(body)
         }
-        ui.button(body, if (step == 2) "Открыть активацию" else "Далее") {
-            if (step < 2) { step++; render() } else complete()
-        }
+        if (step < 2) ui.button(body, "Далее") { step++; render() }
         if (step > 0) ui.button(body, "Назад") { step--; render() }
-        ui.button(body, "Настроить позже") { complete() }
+        ui.button(body, "Вернуться на главный экран") { finish() }
     }
     private fun permissions(parent: LinearLayout) {
         val card = ui.section(parent, "1. Работа во время поездки")
@@ -73,7 +71,7 @@ class DesktopOnboardingActivity : Activity() {
         }
         val battery = batteryExempt(this)
         ui.button(card, if (battery) "Работа в фоне разрешена ✓" else "Снять ограничение батареи") { requestBatteryExemption(this) }
-        ui.text(card, "Эти разрешения можно настроить позже: «Настройки» → «Первоначальная настройка».", 13f)
+        ui.text(card, "Эти разрешения можно настроить позже: «Настройки» → «Разрешения приложения».", 13f)
     }
     private fun components(parent: LinearLayout) {
         val card = ui.section(parent, "2. Рабочий стол")
@@ -82,20 +80,26 @@ class DesktopOnboardingActivity : Activity() {
         ui.text(card, "Профиль можно выбрать на главном экране после установки компонента.", 13f)
     }
     private fun activation(parent: LinearLayout) {
-        val card = ui.section(parent, "3. Активация на телефоне")
-        ui.text(card, "Подключитесь к Wi-Fi, включите «Беспроводную отладку» в параметрах разработчика и нажмите «Активировать с телефона». При первом запуске HeadSwap предложит ввести код прямо в уведомлении.")
-        ui.text(card, "Для USB CarLife после активации Wi-Fi не нужен. Для беспроводной магнитолы выберите Wi-Fi на главном экране. После перезагрузки телефона или обновления APK повторите активацию, сохранённое сопряжение обычно остаётся.")
+        val card = ui.section(parent, "3. Выдать права приложению")
+        ui.text(card, "По Wi-Fi: подключите телефон к сети и включите «Беспроводную отладку» в параметрах разработчика. При первом сопряжении откройте окно с шестизначным кодом. Его можно ввести в HeadSwap или в уведомлении — оба способа дают один и тот же доступ.")
+        ui.button(card, "По Wi-Fi — открыть активацию") { openActivation(computer = false) }
+        ui.text(card, "С компьютера: установите Android Platform Tools, подключите телефон USB-кабелем и подтвердите USB-отладку. HeadSwap покажет команды для ручной активации.")
+        ui.button(card, "С компьютера — показать команды") { openActivation(computer = true) }
+        ui.text(card, "После перезагрузки телефона или обновления APK повторите активацию; сохранённое сопряжение обычно остаётся. На Android 17 для восстановления независимого экрана после перезапуска службы может понадобиться включённая беспроводная отладка.", 14f)
         ui.text(card, "При выбранных опциях HeadSwap получает временный доступ к воспроизводимому звуку и управлению панелью. Во время подключения экран магнитолы может оставаться доступным при блокировке телефона. Выбор меняется в настройках.", 13f)
     }
-    private fun complete() {
-        DexPrefs(this).initialSetupCompleted = true
+    private fun openActivation(computer: Boolean) {
+        startActivity(Intent(this, DexSetupActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(DexSetupActivity.EXTRA_SHOW_ACTIVATION, true)
+            .putExtra(DexSetupActivity.EXTRA_COMPUTER_ACTIVATION, computer))
         finish()
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == NOTIFICATIONS) render()
     }
-    @Suppress("DEPRECATION") override fun onBackPressed() { if (step > 0) { step--; render() } else complete() }
+    @Suppress("DEPRECATION") override fun onBackPressed() { if (step > 0) { step--; render() } else finish() }
 
     companion object {
         private const val NOTIFICATIONS = 401

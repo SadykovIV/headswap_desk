@@ -5,6 +5,10 @@ import android.app.NotificationManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
+import android.hardware.display.DisplayManager
+import com.headswap.desk.dex.DesktopDisplayIsolation
+import com.headswap.desk.dex.VdmHostLink
+import com.headswap.desk.dex.ShellDisplayIme
 import android.os.Build
 import android.os.Process
 import com.headswap.desk.AppLog
@@ -63,20 +67,19 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
 
     private fun enabled(token: GuidanceInterest) = !closed && token.mode != GuidanceInterest.Mode.NONE &&
         interest() === token && hudPrefs.metaNavi && ClusterNavigationListener.connected != null &&
-        runCatching { !keyguard.isKeyguardLocked && !keyguard.isDeviceLocked &&
-            notifications.isNotificationListenerAccessGranted(listener) }.getOrDefault(false)
+        runCatching { notifications.isNotificationListenerAccessGranted(listener) }.getOrDefault(false)
 
     private fun read(token: GuidanceInterest): ForegroundGuidance {
         val prefs = DexPrefs(app)
         var emptyRoute = false
         for (id in EmbeddedSessionRegistry.guidanceDisplayIds()) {
-            if (id <= 0 || !enabled(token)) continue
+            if (id <= 0 || !enabled(token) || !displayEligible(id)) continue
             val sample = when {
                 prefs.useDelegated -> readActivated(id, token)
                 prefs.useShizuku -> EmbeddedSessionRegistry.readShizukuGuidance(id)
                 else -> return ForegroundGuidance.Unavailable
             }
-            if (!enabled(token) || id !in EmbeddedSessionRegistry.guidanceDisplayIds()) continue
+            if (!enabled(token) || !displayEligible(id) || id !in EmbeddedSessionRegistry.guidanceDisplayIds()) continue
             when (sample) {
                 is ShellManeuverSample.Card -> {
                     val labels = ForegroundYandexManeuver.labels(app, sample.packageName, sample.languageTags)
@@ -92,7 +95,8 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
     }
 
     private fun readActivated(id: Int, token: GuidanceInterest): ShellManeuverSample {
-        if (ShellPanelClient.isConnected) {
+        val nativeOwnership = VdmHostLink.captureOwnedDisplay(id)
+        if (nativeOwnership == null && ShellPanelClient.isConnected) {
             reportBackend("helper")
             return ShellPanelClient.readGuidance(id)
         }
@@ -104,11 +108,26 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
             return ShellManeuverSample.Unavailable
         }
         reportBackend("activation")
-        return EmbeddedSessionRegistry.readDelegatedGuidance(id) {
-            if (!enabled(token)) ShellManeuverSample.Unavailable
-            else ShellYandexGuidance.read(id, Process.myUid(), Process.myUid() / 100000)
+        return EmbeddedSessionRegistry.readDelegatedGuidanceScoped(id) { requireCurrentPane ->
+            if (!enabled(token) || !displayEligible(id)) ShellManeuverSample.Unavailable
+            else ShellYandexGuidance.readDelegated(id, Process.myUid() / 100000) {
+                check(enabled(token) && displayEligible(id)) { "Guidance session ended" }
+                requireCurrentPane()
+                if (nativeOwnership != null) {
+                    nativeOwnership()
+                    ShellDisplayIme.requireOwned(id, 2000)
+                } else ShellDisplayIme.requireOwned(id, Process.myUid())
+            }
         }
     }
+
+    private fun displayEligible(id: Int): Boolean = runCatching {
+        if (!keyguard.isKeyguardLocked && !keyguard.isDeviceLocked) true
+        else id in EmbeddedSessionRegistry.guidanceDisplayIds() &&
+            app.getSystemService(DisplayManager::class.java).getDisplay(id)?.let {
+                DesktopDisplayIsolation.confirmedIndependence(it) == true
+            } == true
+    }.getOrDefault(false)
 
     private fun reportBackend(name: String) {
         if (lastBackend != name) { lastBackend = name; AppLog.i("CLUSTER navigation reader=$name", false) }

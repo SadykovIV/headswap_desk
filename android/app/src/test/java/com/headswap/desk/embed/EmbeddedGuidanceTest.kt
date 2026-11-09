@@ -62,6 +62,22 @@ class EmbeddedGuidanceTest {
                 maneuver
             })
             assertEquals(maneuver, EmbeddedSessionRegistry.readDelegatedGuidance(42) { maneuver })
+            var captured: (() -> Unit)? = null
+            assertEquals(maneuver, EmbeddedSessionRegistry.readDelegatedGuidanceScoped(42) { requireCurrent ->
+                captured = requireCurrent
+                requireCurrent()
+                maneuver
+            })
+            visibility.show(false)
+            visibility.show(true)
+            assertEquals(true, runCatching { captured!!() }.isFailure)
+            assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidanceScoped(42) { requireCurrent ->
+                visibility.show(false)
+                requireCurrent() // The old pane cannot make a request, even before the outer result check.
+                error("retired capability was accepted")
+            })
+            visibility.show(true)
+
             visibility.close()
             visibility.show(true) // late callback after the Activity was destroyed
             assertEquals(emptyList<Int>(), EmbeddedSessionRegistry.guidanceDisplayIds())

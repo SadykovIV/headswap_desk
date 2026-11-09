@@ -71,7 +71,7 @@ class DexUserService private constructor(private val context: Context, private v
 
     private class Session(val epoch: Long, val surface: Surface, val token: IBinder, val death: IBinder.DeathRecipient,
         val density: Int, val desktopMode: Int, val width: Int, val height: Int) {
-        var display: VirtualDisplay? = null
+        var display: OwnedDesktopDisplay? = null
         var linked = false
         val children = LinkedHashMap<IBinder, ChildSession>()
         val contacts = DesktopTouchState()
@@ -86,7 +86,7 @@ class DexUserService private constructor(private val context: Context, private v
     private class ChildSession(val parentEpoch: Long, val surface: Surface, val token: IBinder,
         val death: IBinder.DeathRecipient, var width: Int, var height: Int, var density: Int, val fullscreen: Boolean,
         val displayName: String) {
-        var display: VirtualDisplay? = null
+        var display: OwnedDesktopDisplay? = null
         var linked = false
         var touch = EmbeddedTouchState(width, height)
         val contacts = DesktopTouchState()
@@ -145,7 +145,7 @@ class DexUserService private constructor(private val context: Context, private v
                 ensureActive(epoch)
                 val access = runtime ?: (if (delegated) DelegatedDesktopRuntime(context, checkNotNull(delegatedInputGateway)) else RuntimeAccess(context)).also { runtime = it }
                 ensureActive(epoch)
-                lease.display = access.createDisplay(surface, width, height, density, mode)
+                lease.display = access.createDisplay(surface, width, height, density, mode, producerLifetime, lease.token)
                 // A stop/death that arrived during create must release its late result.
                 ensureActive(epoch)
                 val display = checkNotNull(lease.display) { "Не удалось создать экран DeX" }.display
@@ -169,6 +169,7 @@ class DexUserService private constructor(private val context: Context, private v
                 Log.i(TAG, "started display=$id mode=${DesktopModePolicy.label(mode)} native=${width}x${height} density=$density flags=${DesktopModePolicy.displayFlags(mode, android.os.Build.VERSION.SDK_INT)}")
                 id
             } catch (e: Throwable) {
+                if (e is NativeDisplayReleaseUnconfirmed) terminateStuckService()
                 releaseCurrent()
                 throw e
             }
@@ -411,7 +412,7 @@ class DexUserService private constructor(private val context: Context, private v
             require(surface.isValid && childToken.isBinderAlive) { "Поверхность виджета уже закрыта" }
             return serialized(START_TIMEOUT_MS) {
                 val parent = requireDriveDeckSession()
-                if (fullscreen) check(parent.desktopMode == DesktopModePolicy.DRIVEDECK) { "Полноэкранное окно требует DriveDeck" }
+                if (fullscreen) check(EmbeddedDisplayPolicy.supportsChildren(parent.desktopMode)) { "Полноэкранное окно требует Android Desktop или DriveDeck" }
                 check(!parent.children.containsKey(childToken)) { "Поверхность виджета уже зарегистрирована" }
                 val siblings = parent.children.values.filter { it.fullscreen == fullscreen }
                 EmbeddedDisplayPolicy.requireCapacity(siblings.size, fullscreen)
@@ -430,7 +431,7 @@ class DexUserService private constructor(private val context: Context, private v
                     childToken.linkToDeath(death, 0)
                     child.linked = true
                     ensureChildActive(parent, child, requireDisplay = false)
-                    child.display = checkNotNull(runtime).createChildDisplay(name, surface, width, height, density)
+                    child.display = checkNotNull(runtime).createChildDisplay(checkNotNull(parent.display), name, surface, width, height, density)
                     ensureChildActive(parent, child)
                     val id = checkNotNull(child.display).display.displayId
                     validateChildDisplay(parent, child)
@@ -440,6 +441,7 @@ class DexUserService private constructor(private val context: Context, private v
                     Log.i(TAG, "child display=$id parent=${parent.display?.display?.displayId} size=${width}x$height density=$density")
                     id
                 } catch (error: Throwable) {
+                    if (error is NativeDisplayReleaseUnconfirmed) terminateStuckService()
                     releaseChild(parent, child)
                     throw error
                 }
@@ -476,7 +478,7 @@ class DexUserService private constructor(private val context: Context, private v
         EmbeddedDisplayPolicy.requirePackage(packageName)
         serialized(START_TIMEOUT_MS) {
             val (parent, child) = requireChild(childToken)
-            check(parent.desktopMode == DesktopModePolicy.ANDROID_DESKTOP && !child.fullscreen)
+            check(EmbeddedDisplayPolicy.canTrackHostLaunch(parent.desktopMode, child.fullscreen))
             ensureChildActive(parent, child)
             child.launchedPackage = packageName
             parent.hardwareTarget = child.token
@@ -578,8 +580,7 @@ class DexUserService private constructor(private val context: Context, private v
     override fun childProducerLifetime(childToken: IBinder): IBinder {
         enforceClient()
         return DesktopReadDeadline.call(handler::post, INPUT_TIMEOUT_MS, { error("Служба дисплея занята") }) {
-            requireChild(childToken)
-            producerLifetime
+            checkNotNull(requireChild(childToken).second.display).nativeLifetime
         }
     }
 
@@ -871,7 +872,8 @@ class DexUserService private constructor(private val context: Context, private v
     }
 
     private fun terminateStuckService(): Nothing {
-        // Binder death destroys the owned virtual display even if a framework call never returns.
+        // LOCAL dies here. VDM host observes this producer death and closes/exits;
+        // consumers independently retain their surfaces until that native host really dies.
         Log.e(TAG, "terminating unresponsive dedicated UserService to release display")
         restorePanelBeforeExit()
         Process.killProcess(Process.myPid())
@@ -1000,15 +1002,27 @@ class DexUserService private constructor(private val context: Context, private v
             setActionButton = MotionEvent::class.java.getMethod("setActionButton", Int::class.javaPrimitiveType)
         }
 
-        override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay = checkNotNull(create.invoke(displayManager,
-            "HeadSwap ${DesktopModePolicy.label(mode)}", width, height, density,
-            surface, DesktopModePolicy.displayFlags(mode, android.os.Build.VERSION.SDK_INT,
-                DelegatedDesktopAccess.canKeepDisplayUnlocked(context))) as? VirtualDisplay) { "Android отклонил виртуальный экран" }
+        override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int,
+            producerLifetime: IBinder, sessionToken: IBinder): OwnedDesktopDisplay {
+            val name = "HeadSwap ${DesktopModePolicy.label(mode)}"
+            val flags = DesktopModePolicy.displayFlags(mode, android.os.Build.VERSION.SDK_INT,
+                DelegatedDesktopAccess.canKeepDisplayUnlocked(context))
+            if (DesktopDisplayBackendPolicy.requiresVdm(android.os.Build.VERSION.SDK_INT, mode)) {
+                val remote = VdmHostCore.openLocalSession(context, sessionToken, Process.myPid(), context.applicationInfo.uid)
+                return VdmDisplayFamily(context, remote).create(name, surface, width, height, density, flags, parent = true)
+            }
+            return LocalDesktopDisplay(checkNotNull(create.invoke(displayManager, name, width, height, density,
+                surface, flags) as? VirtualDisplay) { "Android отклонил виртуальный экран" }, producerLifetime)
+        }
 
-        override fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
-            checkNotNull(create.invoke(displayManager, name, width, height, density,
-                surface, EmbeddedDisplayPolicy.displayFlags(android.os.Build.VERSION.SDK_INT,
-                    DelegatedDesktopAccess.canKeepDisplayUnlocked(context))) as? VirtualDisplay) { "Android отклонил экран виджета" }
+        override fun createChildDisplay(parent: OwnedDesktopDisplay, name: String, surface: Surface,
+            width: Int, height: Int, density: Int): OwnedDesktopDisplay {
+            val flags = EmbeddedDisplayPolicy.displayFlags(android.os.Build.VERSION.SDK_INT,
+                DelegatedDesktopAccess.canKeepDisplayUnlocked(context))
+            return parent.family?.create(name, surface, width, height, density, flags, parent = false)
+                ?: LocalDesktopDisplay(checkNotNull(create.invoke(displayManager, name, width, height, density,
+                    surface, flags) as? VirtualDisplay) { "Android отклонил экран виджета" }, parent.nativeLifetime)
+        }
 
         private val displayLocks = HashMap<Int, DexWakeLease>()
 

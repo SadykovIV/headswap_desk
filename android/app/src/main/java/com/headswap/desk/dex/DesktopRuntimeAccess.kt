@@ -1,14 +1,15 @@
 package com.headswap.desk.dex
 
-import android.hardware.display.VirtualDisplay
 import android.os.IBinder
 import android.view.InputEvent
 import android.view.Surface
 
 /** The lease owner is shared; platform access stays separate for shell and a registered app process. */
 internal interface DesktopRuntimeAccess {
-    fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay
-    fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay
+    fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int,
+        producerLifetime: IBinder, sessionToken: IBinder): OwnedDesktopDisplay
+    fun createChildDisplay(parent: OwnedDesktopDisplay, name: String, surface: Surface,
+        width: Int, height: Int, density: Int): OwnedDesktopDisplay
     fun inject(event: InputEvent, id: Int, actionButton: Int = 0)
     fun childTaskState(id: Int, packageName: String): Int
     fun childImeVisibilityQuery(id: Int): () -> Boolean?

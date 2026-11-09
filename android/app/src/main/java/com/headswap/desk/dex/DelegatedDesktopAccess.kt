@@ -23,6 +23,8 @@ object DelegatedDesktopAccess {
 
     fun isReady(context: Context): Boolean = status(context) == Status.READY
 
+    val ownsActivation: Boolean get() = bootstrap.hasOwner()
+
     /** Also usable in the separate app-UID producer process, which has no bootstrap registry. */
     fun hasPermissions(context: Context): Boolean = runCatching {
         context.checkSelfPermission(ADD_TRUSTED_DISPLAY) == PackageManager.PERMISSION_GRANTED &&

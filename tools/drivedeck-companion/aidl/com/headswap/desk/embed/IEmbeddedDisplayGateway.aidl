@@ -1,6 +1,7 @@
 package com.headswap.desk.embed;
 
 import android.view.Surface;
+import android.os.Bundle;
 
 /** Signature-protected companion API. Handles never identify arbitrary Android displays. */
 interface IEmbeddedDisplayGateway {
@@ -25,4 +26,8 @@ interface IEmbeddedDisplayGateway {
     int[] desktopRenderConfig(int parentDisplayId) = 11;
     /** Capability bit 5: [session logical DPI, apply correction 0 or 1] for this exact package. */
     int[] appRenderConfig(int parentDisplayId, String packageName) = 12;
+    /** Capability bit 6: native notification entry. No text, intents or private display IDs. */
+    Bundle notificationStatus(int parentDisplayId, IBinder ownerToken, boolean visible) = 13;
+    boolean showNotifications(int parentDisplayId) = 14;
+    boolean openNotification(int parentDisplayId, String key, String packageName) = 15;
 }

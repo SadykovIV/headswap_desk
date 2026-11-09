@@ -29,6 +29,7 @@ internal class DesktopAppPane(
     private val onHome: () -> Unit,
     private val onError: (String) -> Unit,
     private val fullscreenDriveDeck: Boolean = false,
+    private val ownDesktopProfile: Boolean = !fullscreenDriveDeck,
     private val guidanceVisibility: GuidancePaneVisibility? = null,
 ) : TextureView.SurfaceTextureListener {
     val view = TextureView(activity).apply {
@@ -40,6 +41,7 @@ internal class DesktopAppPane(
     @Volatile private var current: Output? = null
     private var wanted: DesktopAppCatalog.Entry? = null
     private var fromPanel = false
+    private var notification: com.headswap.desk.notify.HuNotificationLaunch.Ticket? = null
     data class DashboardLaunch(val provider: DesktopComponentEntry, val allowTaskMove: Boolean,
         val current: () -> Boolean, val needsConsent: () -> Unit)
     private var dashboardLaunch: DashboardLaunch? = null
@@ -61,6 +63,7 @@ internal class DesktopAppPane(
     private data class Buffer(val width: Int, val height: Int, val density: Int)
 
     fun open(entry: DesktopAppCatalog.Entry, requestedByPanel: Boolean = false, dashboard: DashboardLaunch? = null) {
+        notification = null
         dashboardLaunch = dashboard
         fromPanel = requestedByPanel
         if (component != null) resetChild()
@@ -71,8 +74,22 @@ internal class DesktopAppPane(
         current?.let { launch(it, entry) }
     }
 
+    fun openNotification(ticket: com.headswap.desk.notify.HuNotificationLaunch.Ticket) {
+        resetChild()
+        notification = ticket
+        component = null
+        attachSession = null
+        dashboardLaunch = null
+        fromPanel = false
+        val entry = DesktopAppCatalog.Entry(ticket.action.packageName, "", ticket.action.packageName)
+        wanted = entry
+        request++
+        current?.let { launch(it, entry) }
+    }
+
     fun openComponent(entry: DesktopComponentEntry, attach: (Intent) -> Unit) {
         resetChild()
+        notification = null
         dashboardLaunch = null
         fromPanel = false
         component = entry
@@ -116,6 +133,7 @@ internal class DesktopAppPane(
     }
 
     fun home() {
+        notification = null
         dashboardLaunch = null
         if (component != null) resetChild()
         component = null
@@ -171,7 +189,7 @@ internal class DesktopAppPane(
     // to switch before input is mapped to the new coordinate space.
     private fun configure(output: Output, parent: Int, pkg: String, width: Int, height: Int) {
         if (output.needsFreshChild) releaseChild(output)
-        val policy = EmbeddedSessionRegistry.renderConfig(parent, ownDesktop = !fullscreenDriveDeck, packageName = pkg)
+        val policy = EmbeddedSessionRegistry.renderConfig(parent, ownDesktop = ownDesktopProfile, packageName = pkg)
         val g = DesktopRenderPolicy.geometry(width, height, policy[0], policy[1] == 1)
         val next = Buffer(g[0], g[1], g[2])
         val previous = output.buffer
@@ -180,7 +198,7 @@ internal class DesktopAppPane(
             if (output.handle == 0) {
                 EmbeddedSessionRegistry.releaseOwnSurface(uid, output.token)
                 output.handle = EmbeddedSessionRegistry.create(uid, output.surface, output.token,
-                    parent, next.width, next.height, next.density, ownDesktop = !fullscreenDriveDeck,
+                    parent, next.width, next.height, next.density, ownDesktop = ownDesktopProfile,
                     fullscreen = fullscreenDriveDeck, guidanceVisibility = guidanceVisibility)
             } else if (previous != next) {
                 EmbeddedSessionRegistry.resize(uid, output.handle, next.width, next.height, next.density)
@@ -220,12 +238,22 @@ internal class DesktopAppPane(
         val publicLaunch = fromPanel
         val dashboard = dashboardLaunch
         val attach = attachSession
+        val notificationTicket = notification
         val parent = activity.display?.displayId ?: -1
         val width = view.width
         val height = view.height
         work.execute {
             if (output.retired || request != serial) return@execute
             try {
+                if (notificationTicket != null) {
+                    check(notificationTicket.current(activity))
+                    configure(output, parent, entry.packageName, width, height)
+                    check(request == serial && !output.retired && notificationTicket.current(activity))
+                    EmbeddedSessionRegistry.launchNotification(activity, output.handle, notificationTicket)
+                    output.appPackage = entry.packageName
+                    awaitNotificationPlacement(output, entry, serial, SystemClock.elapsedRealtime() + 7_000)
+                    return@execute
+                }
                 if (provider != null) {
                     configure(output, parent, entry.packageName, width, height)
                     EmbeddedSessionRegistry.launchDesktopComponent(activity, output.handle, provider) { intent, _ ->
@@ -285,7 +313,8 @@ internal class DesktopAppPane(
                     }, 150)
                     return@execute
                 }
-                Log.w(TAG, "Cannot open ${entry.key} on the owned desktop", error)
+                if (notificationTicket != null) Log.w(TAG, "Notification launch failed: ${error.javaClass.simpleName}")
+                else Log.w(TAG, "Cannot open ${entry.key} on the owned desktop", error)
                 main.post {
                     if (!output.retired && request == serial) {
                         if (fullscreenDriveDeck) { wanted = null; request++ } else home()
@@ -294,6 +323,19 @@ internal class DesktopAppPane(
                 }
             }
         }
+    }
+
+    private fun awaitNotificationPlacement(output: Output, entry: DesktopAppCatalog.Entry, serial: Long, deadline: Long) {
+        if (output.retired || request != serial || output.handle <= 0) return
+        val state = runCatching { EmbeddedSessionRegistry.taskState(uid, output.handle, entry.packageName) }.getOrNull()
+        if (state == 2) {
+            main.post { if (!output.retired && request == serial) onOpened() }
+        } else if (SystemClock.elapsedRealtime() >= deadline) {
+            main.post { if (!output.retired && request == serial) {
+                wanted = null; request++
+                onError("Приложение уведомления не появилось на экране магнитолы.")
+            } }
+        } else work.schedule({ awaitNotificationPlacement(output, entry, serial, deadline) }, 200, TimeUnit.MILLISECONDS)
     }
 
     // Launch success alone does not prove placement. ActivityManager observations are

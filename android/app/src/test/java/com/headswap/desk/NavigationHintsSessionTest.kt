@@ -135,6 +135,19 @@ class NavigationHintsSessionTest {
             assertEquals(180, PbReader.int(show, 5))
             assertEquals(2_000L, interval)
             val activeTick = checkNotNull(tick)
+            visible = ForegroundGuidance.Maneuver(ClusterNavigationHint(3, "", 120))
+            activeTick() // The same live maneuver must refresh distance without a new notification/unlock.
+            val closer = PbReader.parse(peer.until(Msg.NAVI_NEXT_TURN_INFO).body)!!
+            assertEquals(2, PbReader.int(closer, 1))
+            assertEquals(3, PbReader.int(closer, 2))
+            assertEquals(120, PbReader.int(closer, 5))
+            visible = ForegroundGuidance.Maneuver(ClusterNavigationHint(7, "", 120))
+            activeTick()
+            val nextTurn = PbReader.parse(peer.until(Msg.NAVI_NEXT_TURN_INFO).body)!!
+            // A new maneuver uses SHOW, matching Baidu/Honda; UPDATE is for its distance only.
+            assertEquals(1, PbReader.int(nextTurn, 1))
+            assertEquals(7, PbReader.int(nextTurn, 2))
+            assertEquals(120, PbReader.int(nextTurn, 5))
             peer.subscription(Msg.CARLIFE_DATA_SUBSCRIBE_STOP, 0)
             assertNull(tick)
             val previous = reads

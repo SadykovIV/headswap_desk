@@ -1,13 +1,30 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application>
+        <activity android:name="com.headswap.desk.qa.FullscreenCallerFixture" android:exported="true"
+            android:permission="android.permission.DUMP" android:resizeableActivity="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen"/>
+        <activity android:name="com.headswap.desk.qa.VdmLatencyFixture" android:exported="true"
+            android:permission="android.permission.DUMP" android:resizeableActivity="true"
+            android:documentLaunchMode="always" android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
+        <activity android:name="com.headswap.desk.qa.VdmImeFixture" android:exported="true"
+            android:permission="android.permission.DUMP" android:resizeableActivity="true"
+            android:documentLaunchMode="always" android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
         <activity android:name="com.headswap.desk.qa.VirtualDeviceLockFixture" android:exported="true"
             android:permission="android.permission.DUMP" android:resizeableActivity="true"
-            android:documentLaunchMode="always" android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen" />
+            android:documentLaunchMode="always" android:theme="@android:style/Theme.Material.Light.NoActionBar.Fullscreen">
+            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+        </activity>
         <!-- This component lives in the separate test APK, with a different playback UID. -->
         <activity android:name="com.headswap.desk.qa.MixToneActivity" android:exported="true"
             android:permission="android.permission.DUMP"/>
         <activity android:name="com.headswap.desk.qa.SilentPlayerActivity" android:exported="true"
             android:permission="android.permission.DUMP"/>
+        <activity android:name="com.headswap.desk.qa.NotificationTargetFixture" android:exported="true" android:resizeableActivity="true" />
         <activity android:name="com.headswap.desk.qa.HardwareInputFixture" android:exported="true"
             android:permission="android.permission.DUMP" android:resizeableActivity="true" android:documentLaunchMode="always"
             android:enableOnBackInvokedCallback="false">

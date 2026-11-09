@@ -157,6 +157,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             lease = DelegatedDesktopAccess.begin { stop.countDown() }
             DexPrefs(context).useDelegated = true
             val token = activationToken ?: DisplayHelperRendezvous.newToken().also { activationToken = it }
+            if (android.os.Build.VERSION.SDK_INT >= 37) VdmHostLink.beginActivation(token)
             // Direct instrumentation entry can issue a token for a later authorized repair, but cannot spawn a shell itself.
             try {
                 val ticks = File("/proc/self/stat").readText().substringAfterLast(')').trim().split(Regex("\\s+"))[19].toLong()
@@ -190,6 +191,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             AppLog.i("ACTIVATION failed: ${PhoneActivationPolicy.logMessage(failureReason)}", false)
             Log.e(DelegatedDesktopAccess.LOG_TAG, "FAILED protocol=1 ${error.javaClass.simpleName}", error)
         } finally {
+            VdmHostLink.endActivation()
             lease?.let(DelegatedDesktopAccess::end) // reject new panel leases before cleanup snapshot
             DesktopMusicPlayback.cancel("activation ended")
             DelegatedPanelAccess.restoreAll()

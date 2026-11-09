@@ -17,6 +17,7 @@ import com.headswap.desk.component.api.ProfileContract
 internal class PanelLaunchSession(
     context: Context,
     private val entry: DesktopComponentEntry,
+    private val parentDisplayId: Int,
     private val isCurrent: () -> Boolean,
     private val mediaForeground: () -> Boolean = { false },
     private val chromeForeground: () -> Boolean = { false },
@@ -27,6 +28,8 @@ internal class PanelLaunchSession(
     private val onLaunch: (ComponentName) -> Unit,
 ) : IDesktopPanelSession.Stub() {
     private val app = context.applicationContext
+    private val notificationToken = android.os.Binder()
+    private val parentProof = com.headswap.desk.embed.EmbeddedSessionRegistry.captureParent(parentDisplayId)
     private val main = Handler(Looper.getMainLooper())
     private val uid = app.packageManager.getPackageUid(entry.packageName, 0)
 
@@ -41,12 +44,24 @@ internal class PanelLaunchSession(
         val chromeCap = if (entry.profileChrome) ProfileContract.CAP_PROFILE_CHROME else 0
         intent.putExtra(ProfileContract.EXTRA_SESSION, Bundle().apply {
             putInt(ProfileContract.API_KEY, ProfileContract.API_MAJOR)
-            putInt(ProfileContract.CAPABILITIES_KEY, ProfileContract.CAP_LAUNCH_APP or ProfileContract.CAP_OPEN_CATALOG or mediaCap or chromeCap)
+            putInt(ProfileContract.CAPABILITIES_KEY, com.headswap.desk.notify.HuNotificationFeature.capabilities(
+                ProfileContract.CAP_LAUNCH_APP or ProfileContract.CAP_OPEN_CATALOG or mediaCap or chromeCap or ProfileContract.CAP_NOTIFICATIONS))
             putBinder(ProfileContract.BINDER_KEY, this@PanelLaunchSession)
         })
     }
 
-    fun revoke() = gate.revoke()
+    fun revoke() { gate.revoke(); com.headswap.desk.notify.HuNotificationGateway.remove(notificationToken) }
+
+    override fun getNotificationStatus(nativeEntryVisible: Boolean): Bundle? {
+        if (!gate.live || Binder.getCallingUid() != uid) return null
+        val identity = Binder.clearCallingIdentity()
+        return try {
+            if (!isCurrent() || !stillSelected() || parentProof == null ||
+                !com.headswap.desk.embed.EmbeddedSessionRegistry.isCurrentParent(parentDisplayId, parentProof)) null
+            else com.headswap.desk.notify.HuNotificationGateway.status(parentDisplayId, notificationToken,
+                nativeEntryVisible && (!entry.profileChrome || chromeVisible()))
+        } finally { Binder.restoreCallingIdentity(identity) }
+    }
 
     override fun requestLaunch(packageName: String?, activityName: String?): Boolean {
         if (!gate.reserve(Binder.getCallingUid(), packageName, activityName, SystemClock.elapsedRealtime())) return false
@@ -95,6 +110,12 @@ internal class PanelLaunchSession(
     }
 
     override fun sendDashboardAction(action: Int): Boolean {
+        if (action == ProfileContract.DASH_NOTIFICATIONS) {
+            if (!gate.reserveCatalog(Binder.getCallingUid(), SystemClock.elapsedRealtime())) return false
+            return submit({ parentProof != null &&
+                com.headswap.desk.embed.EmbeddedSessionRegistry.isCurrentParent(parentDisplayId, parentProof) &&
+                (!entry.profileChrome || chromeVisible()) }) { com.headswap.desk.notify.HuNotificationGateway.show(parentDisplayId) }
+        }
         if (action != ProfileContract.DASH_BACK && action != ProfileContract.DASH_NAVIGATION &&
             action != ProfileContract.DASH_PHONE_TOGGLE) return false
         return chromeRequest(layout = false) { onDashboardAction(action) }
