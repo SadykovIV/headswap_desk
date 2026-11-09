@@ -27,6 +27,8 @@ interface TranscodeOutput {
     /** Кадр энкодера (Annex-B). */
     fun onEncoderFrame(data: ByteArray, key: Boolean)
 
+    fun onEncoderFrameAt(data: ByteArray, key: Boolean, presentationUs: Long) = onEncoderFrame(data, key)
+
     fun onTranscodeError(msg: String)
 
     /** Декодеру нужен новый IDR от AA (кадр потерян). */

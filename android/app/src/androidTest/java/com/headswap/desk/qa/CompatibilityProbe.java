@@ -23,11 +23,19 @@ public final class CompatibilityProbe extends Instrumentation {
         start();
     }
     @Override public void onStart() {
+        if ("branding".equals(probe)) { BrandingProbe.run(this); return; }
+        if ("media-artwork".equals(probe)) { MediaArtworkProbe.run(this); return; }
+        if ("hardware-input".equals(probe)) { HardwareInputProbe.run(this); return; }
+        if ("pairing-ui".equals(probe)) { PhonePairingUiProbe.run(this); return; }
+        if ("notification-shade".equals(probe)) { NotificationShadeProbe.run(this); return; }
+        if ("display-isolation".equals(probe)) { DisplayIsolationProbe.run(this); return; }
         if ("density".equals(probe)) { ProjectionDensityProbe.run(this); return; }
         if ("panel".equals(probe)) { PanelProbe.run(this, panelToken); return; }
         if ("panel-reconnect".equals(probe)) { PanelReconnectProbe.run(this, panelToken); return; }
         if ("offline-ime".equals(probe)) { OfflineImeProbe.run(this); return; }
         if ("usb-music-loss".equals(probe)) { UsbMusicLossProbe.run(this); return; }
+        if ("drivedeck-fullscreen".equals(probe)) { DriveDeckRuntimeProbe.run(this, true); return; }
+        if ("drivedeck".equals(probe)) { DriveDeckRuntimeProbe.run(this); return; }
         if ("components".equals(probe)) { ComponentProbe.run(this); return; }
         if ("settings".equals(probe)) { DesktopSettingsProbe.run(this); return; }
         if ("phone-curtain".equals(probe)) { PhoneCurtainProbe.run(this); return; }
@@ -44,6 +52,7 @@ public final class CompatibilityProbe extends Instrumentation {
             measure(ui, AudioAttributes.USAGE_ALARM, false, result);
             measure(ui, AudioAttributes.USAGE_MEDIA, true, result);
             measure(ui, AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE, true, result);
+            measure(ui, AudioAttributes.USAGE_ASSISTANT, true, result);
             code = Activity.RESULT_OK;
         } catch (Exception | LinkageError e) {
             result.putString("error", android.util.Log.getStackTraceString(e));

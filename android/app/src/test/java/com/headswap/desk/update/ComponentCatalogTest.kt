@@ -17,6 +17,20 @@ class ComponentCatalogTest {
     }
     private fun asset(release: JSONObject) = release.getJSONArray("assets").getJSONObject(0)
     private fun page(vararg items: JSONObject) = JSONArray(items.toList())
+    @Test fun externalPublisherUpdatesUseTheirRepositoryAndVersionFormat() {
+        val spec = DesktopComponent.CARBRIDGE
+        val tag = "v0.52-headswap.2"
+        val name = "CarBridge-0.52-HeadSwap-profile-v2-debug.apk"
+        val a = JSONObject().put("name", name).put("size", 4345554).put("digest", "sha256:$sha")
+            .put("state", "uploaded").put("browser_download_url", "https://github.com/${spec.repository}/releases/download/$tag/$name")
+        val item = JSONObject().put("tag_name", tag).put("assets", JSONArray().put(a))
+        val latest = ComponentCatalog.newest(page(item), spec, null)!!
+        assertEquals(2L, latest.code)
+        assertEquals("0.52-headswap.2", latest.version)
+        assertNull(ComponentCatalog.newest(page(item), dd, null))
+        a.put("browser_download_url", "https://github.com/${UpdateLogic.REPO}/releases/download/$tag/$name")
+        assertNull(ComponentCatalog.newest(page(item), spec, null))
+    }
     @Test fun perAppDpiCompanionCanUpdateAnExistingCode304FromAHostRelease() {
         val old = ComponentCatalog.newest(page(release("v0.4.0", 304, "0.6.8")), dd, null)
         val asset = ComponentCatalog.newest(page(release("v0.4.1", 305, "0.6.8")), dd, old)!!

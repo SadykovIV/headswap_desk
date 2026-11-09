@@ -31,6 +31,10 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
     private val finished = CountDownLatch(1)
     private val resources = CopyOnWriteArrayList<AutoCloseable>()
     private val controlQueue = LinkedBlockingQueue<ByteArray>(128)
+    private val hardwareBack = DesktopBackSequence()
+    private val commands = Executors.newSingleThreadExecutor { r -> Thread(r, "dex-owned-actions").apply { isDaemon = true } }
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
+    @Volatile private var adbConnection: Kadb? = null
     private val scheduler = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "dex-watchdog").apply { isDaemon = true } }
     private val lastVideoAt = AtomicLong(System.nanoTime())
     private val lastResetAt = AtomicLong(0)
@@ -48,6 +52,7 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
         DexState.error = null
         DexState.running = false
         DexState.displayId = -1
+        DexState.independentPhoneLock = null
         worker = Thread({ run() }, "dex-connector").apply { isDaemon = true; start() }
     }
 
@@ -88,6 +93,7 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             val adb = own(DexAccess.connect(context, prefs.connectPort))
             DexAccess.verifyShell(adb, prefs.host, prefs.connectPort)
             ensureActive()
+            adbConnection = adb
             // Recover only an interrupted 0.4.1 change. Normal sessions never write display 0.
             val userId = context.applicationInfo.uid / 100000
             val pending = adb.shell("settings --user $userId get secure ${LegacyDensityRecovery.JOURNAL}")
@@ -197,6 +203,7 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
             core.onAaEnded(established)
             DexState.running = false
             DexState.displayId = -1
+            DexState.independentPhoneLock = null
             DexState.error = failure
             setStatus(failure?.let { "DeX: $it. Нажмите «Остановить DeX», дождитесь остановки и подключите USB CarLife снова." } ?: "DeX остановлен")
             finished.countDown()
@@ -253,13 +260,51 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
 
     override fun sendTouch(action: Int, actionIndex: Int, points: List<TouchPoint>) {
         if (!controlReady || stopping.get()) return
+        synchronized(hardwareBack) { hardwareBack.reset() }
         touch.encode(action, actionIndex, points).forEach(::enqueue)
     }
 
+    override fun sendRotary(delta: Int) { DesktopRotaryInput.keys(delta).forEach(::sendKey) }
+
     override fun sendKey(keycode: Int) {
-        if (keycode !in 0..1000) return
+        if (keycode !in 0..1000 || !controlReady || stopping.get()) return
+        val home = synchronized(hardwareBack) {
+            if (keycode == android.view.KeyEvent.KEYCODE_BACK) {
+                val now = android.os.SystemClock.uptimeMillis()
+                hardwareBack.down(now)
+                hardwareBack.up(now)
+            } else { hardwareBack.reset(); false }
+        }
+        if (home || keycode == android.view.KeyEvent.KEYCODE_HOME) { showDesktop(); return }
+        if (keycode == android.view.KeyEvent.KEYCODE_SEARCH || keycode == android.view.KeyEvent.KEYCODE_VOICE_ASSIST) {
+            val requestedDisplay = displayId
+            main.post {
+                DesktopAssistant.launch(context, requestedDisplay, setOf(requestedDisplay)) {
+                    !stopping.get() && controlReady && streaming && displayId == requestedDisplay
+                }
+            }
+            return
+        }
         enqueue(ScrcpyProtocol.key(0, keycode))
         enqueue(ScrcpyProtocol.key(1, keycode))
+    }
+
+    private fun showDesktop(): Boolean {
+        val connection = adbConnection ?: return false
+        val id = displayId
+        if (!controlReady || stopping.get() || id <= 0) return false
+        return runCatching {
+            commands.execute {
+                if (stopping.get() || adbConnection !== connection || displayId != id) return@execute
+                runCatching {
+                    val command = DesktopModePolicy.homeCommand(DesktopModePolicy.SAMSUNG_DEX, id, context.packageName)
+                        .joinToString(" ", transform = DexOverlayPolicy::quote)
+                    val result = connection.shell(command)
+                    check(result.exitCode == 0) { "Samsung desktop launch was rejected" }
+                }.onFailure { AppLog.i("DEX HOME: owned display launch failed (${it.javaClass.simpleName})", false) }
+            }
+            true
+        }.getOrDefault(false)
     }
 
     override fun requestKeyFrame() {
@@ -292,6 +337,9 @@ class DexConnector(context: Context, private val core: AaBridgeCore) : AaLifecyc
     }
 
     private fun closeResources() {
+        adbConnection = null
+        commands.shutdownNow()
+        synchronized(hardwareBack) { hardwareBack.reset() }
         resources.reversed().forEach { runCatching { it.close() } }
         resources.clear()
     }

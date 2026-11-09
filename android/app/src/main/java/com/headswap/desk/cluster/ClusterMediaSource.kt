@@ -24,6 +24,7 @@ data class ClusterNowPlaying(
     val source: String = "Android",
     val durationSeconds: Int? = null,
     val positionSeconds: Int? = null,
+    val artwork: ClusterArtwork? = null,
 )
 
 /** Returns the current local player in Android priority order; never replace playing music with a paused player. */
@@ -33,7 +34,7 @@ internal fun clusterPlayerIndex(states: List<Int>, retained: Int): Int {
     return if (states.getOrNull(retained) == PlaybackState.STATE_PAUSED) retained else states.indexOf(PlaybackState.STATE_PAUSED)
 }
 
-/** An observer for one CarLife session. It never controls playback or reads artwork, URIs or the playback queue. */
+/** One CarLife session's metadata, including in-memory artwork. Never fetches remote artwork URLs. */
 internal class ClusterMediaSource(context: Context, private val emit: (ClusterNowPlaying?) -> Unit) : AutoCloseable {
     private val app = context.applicationContext
     private val manager = app.getSystemService(MediaSessionManager::class.java)
@@ -50,6 +51,21 @@ internal class ClusterMediaSource(context: Context, private val emit: (ClusterNo
     private var selected: MediaSession.Token? = null
     private var sent = false
     private var last: ClusterNowPlaying? = null
+    private var artworkBitmap: android.graphics.Bitmap? = null
+    private var artworkGeneration = 0
+    private var artwork: ClusterArtwork? = null
+
+    private fun cover(metadata: MediaMetadata): ClusterArtwork? {
+        val bitmap = sequenceOf(MediaMetadata.METADATA_KEY_ALBUM_ART, MediaMetadata.METADATA_KEY_ART,
+            MediaMetadata.METADATA_KEY_DISPLAY_ICON).mapNotNull { metadata.getBitmap(it) }
+            .firstOrNull { !it.isRecycled }
+        if (bitmap == null) { artworkBitmap = null; artwork = null; return null }
+        if (artworkBitmap === bitmap && artworkGeneration == bitmap.generationId) return artwork
+        artworkBitmap = bitmap
+        artworkGeneration = bitmap.generationId
+        artwork = com.headswap.desk.MetaImages.albumJpeg(bitmap)?.let(::ClusterArtwork)
+        return artwork
+    }
 
     @Synchronized fun start() {
         if (closed || worker != null) return
@@ -150,7 +166,7 @@ internal class ClusterMediaSource(context: Context, private val emit: (ClusterNo
             ClusterNowPlaying(title, artist,
                 label(MediaMetadata.METADATA_KEY_ALBUM), state.state == PlaybackState.STATE_PLAYING,
                 durationSeconds = seconds(metadata.getLong(MediaMetadata.METADATA_KEY_DURATION).takeIf { it > 0 }),
-                positionSeconds = seconds(state.position.takeIf { it >= 0 }))
+                positionSeconds = seconds(state.position.takeIf { it >= 0 }), artwork = cover(metadata))
         }.getOrNull()
         publish(track)
     }
@@ -186,6 +202,8 @@ internal class ClusterMediaSource(context: Context, private val emit: (ClusterNo
             observer?.let { runCatching { app.contentResolver.unregisterContentObserver(it) } }
             observer = null
             last = null
+            artworkBitmap = null
+            artwork = null
             handler.looper.quitSafely()
         }
     }

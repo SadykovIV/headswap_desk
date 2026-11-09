@@ -26,15 +26,18 @@ object DesktopModePolicy {
     /** PUBLIC | PRESENTATION | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | TRUSTED | DESTROY_CONTENT. */
     const val ANDROID_DISPLAY_FLAGS = 1 or 2 or 8 or 64 or 1024 or 256
     private const val VIRTUAL_DISPLAY_OWN_FOCUS = 1 shl 14
+    const val VIRTUAL_DISPLAY_OWN_DISPLAY_GROUP = 1 shl 11
+    const val VIRTUAL_DISPLAY_ALWAYS_UNLOCKED = 1 shl 12
 
-    fun displayFlags(mode: Int, sdkInt: Int): Int {
+    @JvmOverloads fun displayFlags(mode: Int, sdkInt: Int, independentLock: Boolean = false): Int {
         requireMode(mode)
         if (mode == SAMSUNG_DEX) return DexUserServicePolicy.VIRTUAL_DISPLAY_FLAGS
         // A tap is forwarded parent -> child. Independent focus prevents the parent's DOWN
         // from clearing the embedded app's pressed state before its UP arrives. Android 13
         // has no per-display flag; retain its existing behavior. Do not disable stealing top
         // focus: that separate flag prevents the child from showing its software keyboard.
-        return ANDROID_DISPLAY_FLAGS or (if (sdkInt >= 34) VIRTUAL_DISPLAY_OWN_FOCUS else 0)
+        return ANDROID_DISPLAY_FLAGS or (if (sdkInt >= 34) VIRTUAL_DISPLAY_OWN_FOCUS else 0) or
+            (if (independentLock) VIRTUAL_DISPLAY_OWN_DISPLAY_GROUP or VIRTUAL_DISPLAY_ALWAYS_UNLOCKED else 0)
     }
 
     /** Every launch names the owned secondary display; no default-display or phone-HOME fallback. */

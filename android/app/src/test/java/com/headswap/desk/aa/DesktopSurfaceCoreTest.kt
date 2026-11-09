@@ -41,6 +41,7 @@ class DesktopSurfaceCoreTest {
         val transport = TranscodeLink()
         val encoders = CopyOnWriteArrayList<Encoder>()
         val compressedFactories = AtomicInteger()
+        val presentationTimes = CopyOnWriteArrayList<Long>()
         var createGate: CountDownLatch? = null
         val createEntered = CountDownLatch(1)
         var failCreation = false
@@ -57,6 +58,14 @@ class DesktopSurfaceCoreTest {
         }
         override fun sendVideo(payload: ByteArray) = transport.sendVideo(payload)
         override fun sendVideoTakeover(payload: ByteArray) = transport.sendVideoTakeover(payload)
+        override fun sendVideoAt(payload: ByteArray, presentationUs: Long?): Boolean {
+            presentationTimes.add(presentationUs ?: -1)
+            return sendVideo(payload)
+        }
+        override fun sendVideoTakeoverAt(payload: ByteArray, presentationUs: Long?): Boolean {
+            presentationTimes.add(presentationUs ?: -1)
+            return sendVideoTakeover(payload)
+        }
     }
 
     private data class Event(val kind: String, val generation: Long, val heldMonitor: Boolean)
@@ -150,6 +159,44 @@ class DesktopSurfaceCoreTest {
         assertEquals(1, f.link.transport.sent.size)
         encoder.output.onEncoderFrame(idr, true)
         assertEquals(2, f.link.transport.sent.size)
+    }
+
+    @Test fun presentationTimeSurvivesTakeoverInterframesAndRecoveryIdr() = Fixture().use { f ->
+        val generation = f.start()
+        val encoder = f.link.encoders.single()
+        f.core.desktopSurfaceReady(generation)
+        encoder.output.onEncoderConfig(cfg)
+        encoder.output.onEncoderFrameAt(idr, true, 1_000_000)
+        f.event("first")
+        encoder.output.onEncoderFrameAt(p, false, 1_040_000)
+        f.link.transport.accept = false
+        encoder.output.onEncoderFrameAt(p, false, 1_080_000)
+        f.link.transport.accept = true
+        encoder.output.onEncoderFrameAt(p, false, 1_120_000) // Depends on the rejected frame: must not be sent.
+        encoder.output.onEncoderFrameAt(idr, true, 1_160_000)
+        assertEquals(listOf(1_000_000L, 1_040_000L, 1_080_000L, 1_160_000L), f.link.presentationTimes)
+        assertEquals(3, f.link.transport.sent.size)
+    }
+
+    @Test fun encoderTuningReadsCurrentCeilingAfterWaitAndRejectsAnOldLink() = Fixture().use { f ->
+        f.start()
+        val encoder = f.link.encoders.single()
+        val policy = BitratePolicy(8_000_000)
+        val entered = CountDownLatch(1)
+        val finished = CountDownLatch(1)
+        synchronized(f.core) {
+            Thread {
+                entered.countDown()
+                try { f.core.applyVideoTuning(f.link, bitrate = { policy.current }) }
+                finally { finished.countDown() }
+            }.start()
+            assertTrue(entered.await(2, TimeUnit.SECONDS))
+            assertTrue(policy.lowerCeiling(2_000_000))
+        }
+        assertTrue(finished.await(2, TimeUnit.SECONDS))
+        assertEquals(2_000_000, encoder.appliedBitrate)
+        assertFalse(f.core.applyVideoTuning(TranscodeLink(), bitrate = { error("Stale owner read policy") }))
+        assertEquals(2_000_000, encoder.appliedBitrate)
     }
 
     @Test fun usbReconnectClosesProducerBeforeEncoderAndBeforeCreatingNextEncoder() = Fixture().use { f ->

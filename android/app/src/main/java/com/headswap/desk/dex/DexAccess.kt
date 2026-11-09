@@ -22,6 +22,11 @@ import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONObject
 
 /** All connections are to the phone itself. There is no arbitrary host or shell-command UI. */
+/** The name shown in Android's paired wireless-debugging devices. Keys remain app-private. */
+internal object AdbClientIdentity {
+    const val NAME = "headswap-desk"
+}
+
 object DexAccess {
     private var configured = false
 
@@ -51,7 +56,7 @@ object DexAccess {
             // in a preliminary TCP probe or terminating the end-to-end TLS connection.
             PairingTunnel(address, port, onConnected = { operation.stage(DexAccessStage.PAIR_HANDSHAKE) }).use { tunnel ->
                 try {
-                    Kadb.pair("127.0.0.1", tunnel.port, code, "HeadSwap DeX")
+                    Kadb.pair("127.0.0.1", tunnel.port, code, AdbClientIdentity.NAME)
                 } catch (e: Exception) {
                     // The client's SSL close is only a consequence when the target refused
                     // TCP or the deadline expired. Preserve the original transport failure.

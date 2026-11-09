@@ -76,6 +76,9 @@ class DexUserService private constructor(private val context: Context, private v
         val children = LinkedHashMap<IBinder, ChildSession>()
         val contacts = DesktopTouchState()
         var touchDownTime = 0L
+        val hardwareBack = DesktopBackSequence()
+        var backHomePending = false
+        val keyTargets = HashMap<Int, IBinder>()
         var backTarget: IBinder? = null // Keep hardware BACK's UP on the same lease as its DOWN.
     }
 
@@ -179,6 +182,7 @@ class DexUserService private constructor(private val context: Context, private v
         enforceClient()
         serialized(INPUT_TIMEOUT_MS) {
             val active = requireSession()
+            if (action == MotionEvent.ACTION_DOWN) active.hardwareBack.reset()
             val events = mouse.events(action, x, y, buttons)
             val access = checkNotNull(runtime)
             for (event in events) {
@@ -208,10 +212,14 @@ class DexUserService private constructor(private val context: Context, private v
         serialized(if (keycode == KeyEvent.KEYCODE_HOME || keycode == KeyEvent.KEYCODE_APP_SWITCH) START_TIMEOUT_MS else INPUT_TIMEOUT_MS) {
             val active = requireSession()
             if (DesktopModePolicy.consumesNavigationKey(active.desktopMode, keycode)) {
+                active.hardwareBack.reset()
                 if (action == KeyEvent.ACTION_UP) launchDesktop(active)
             } else if (keycode == KeyEvent.KEYCODE_BACK) {
                 hardwareBack(active, action)
-            } else injectKeyInto(active, action, keycode)
+            } else {
+                active.hardwareBack.reset()
+                hardwareKey(active, action, keycode)
+            }
         }
     }
 
@@ -221,6 +229,7 @@ class DexUserService private constructor(private val context: Context, private v
         DesktopTouchState.validate(action, actionIndex, pointerIds, xs, ys)
         serialized(INPUT_TIMEOUT_MS) {
             val active = requireSession()
+            if (action == MotionEvent.ACTION_DOWN) active.hardwareBack.reset()
             check(active.desktopMode != DesktopModePolicy.SAMSUNG_DEX) { "DeX uses mouse input" }
             for (event in active.contacts.events(action, actionIndex, pointerIds, xs, ys, active.width, active.height)) {
                 ensureActive(active.epoch)
@@ -273,6 +282,18 @@ class DexUserService private constructor(private val context: Context, private v
     }
 
     private fun hardwareBack(active: Session, action: Int) {
+        val now = SystemClock.uptimeMillis()
+        if (action == KeyEvent.ACTION_DOWN) {
+            if (active.backTarget != null || active.backHomePending) return
+            active.backHomePending = active.hardwareBack.down(now)
+            if (active.backHomePending) return
+        } else {
+            val home = active.hardwareBack.up(now)
+            val consumed = active.backHomePending
+            active.backHomePending = false
+            if (home) { launchDesktop(active); return }
+            if (consumed) return
+        }
         val parentId = checkNotNull(active.display).display.displayId
         if (action == KeyEvent.ACTION_DOWN) {
             if (active.backTarget != null) return
@@ -294,6 +315,27 @@ class DexUserService private constructor(private val context: Context, private v
             // A closed child cannot redirect half of a gesture into the desktop or a new child.
             if (target != null) injectKeyInto(active, action, KeyEvent.KEYCODE_BACK, target)
             else keyDownTimes.remove(KeyEvent.KEYCODE_BACK)
+        }
+    }
+
+    private fun hardwareKey(active: Session, action: Int, keycode: Int) {
+        val parentId = checkNotNull(active.display).display.displayId
+        val children = active.children.values.mapNotNull { child ->
+            child.display?.display?.takeIf { it.isValid }?.let { it.displayId to child }
+        }.toMap()
+        if (action == KeyEvent.ACTION_DOWN) {
+            if (active.keyTargets.containsKey(keycode)) return
+            val query = checkNotNull(runtime)
+            val target = DesktopReadDeadline.call({ observations.execute(it); true }, 150, { parentId }) {
+                query.focusedDisplay(parentId, children.keys)
+            }
+            active.keyTargets[keycode] = children[target]?.token ?: active.token
+            try { injectKeyInto(active, action, keycode, target) }
+            catch (error: Exception) { active.keyTargets.remove(keycode); keyDownTimes.remove(keycode); throw error }
+        } else {
+            val token = active.keyTargets.remove(keycode) ?: return
+            val target = if (token == active.token) parentId else active.children[token]?.display?.display?.takeIf { it.isValid }?.displayId
+            if (target != null) injectKeyInto(active, action, keycode, target) else keyDownTimes.remove(keycode)
         }
     }
 
@@ -860,7 +902,7 @@ class DexUserService private constructor(private val context: Context, private v
     }
 
     /** Only hash-pinned code shipped in this APK is loaded, directly from memory (no writable DEX files). */
-    private class RuntimeAccess(context: Context) : DesktopRuntimeAccess {
+    private class RuntimeAccess(private val context: Context) : DesktopRuntimeAccess {
         private val userId = context.applicationInfo.uid / 100000
         private val loader: ClassLoader
         private val displayManager: Any
@@ -905,20 +947,43 @@ class DexUserService private constructor(private val context: Context, private v
 
         override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay = checkNotNull(create.invoke(displayManager,
             "HeadSwap ${DesktopModePolicy.label(mode)}", width, height, density,
-            surface, DesktopModePolicy.displayFlags(mode, android.os.Build.VERSION.SDK_INT)) as? VirtualDisplay) { "Android отклонил виртуальный экран" }
+            surface, DesktopModePolicy.displayFlags(mode, android.os.Build.VERSION.SDK_INT,
+                DelegatedDesktopAccess.canKeepDisplayUnlocked(context))) as? VirtualDisplay) { "Android отклонил виртуальный экран" }
 
         override fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
             checkNotNull(create.invoke(displayManager, name, width, height, density,
-                surface, EmbeddedDisplayPolicy.displayFlags(android.os.Build.VERSION.SDK_INT)) as? VirtualDisplay) { "Android отклонил экран виджета" }
+                surface, EmbeddedDisplayPolicy.displayFlags(android.os.Build.VERSION.SDK_INT,
+                    DelegatedDesktopAccess.canKeepDisplayUnlocked(context))) as? VirtualDisplay) { "Android отклонил экран виджета" }
 
-        override fun registerParentDisplay(id: Int, token: IBinder, width: Int, height: Int) = enableLocalIme(id)
-        override fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) = enableLocalIme(id)
+        private val displayLocks = HashMap<Int, DexWakeLease>()
+
+        override fun registerParentDisplay(id: Int, token: IBinder, width: Int, height: Int) { enableLocalIme(id); holdDisplay(id) }
+        override fun registerChildDisplay(parentId: Int, id: Int, token: IBinder, width: Int, height: Int, fullscreen: Boolean) {
+            enableLocalIme(id); holdDisplay(id)
+        }
+        override fun unregisterDisplay(id: Int, token: IBinder) { displayLocks.remove(id)?.let { runCatching { it.release() } } }
+
+        private fun holdDisplay(id: Int) {
+            try {
+                val global = Class.forName("android.hardware.display.DisplayManagerGlobal")
+                val manager = global.getMethod("getInstance").invoke(null)
+                val info = global.getMethod("getDisplayInfo", Int::class.javaPrimitiveType).invoke(manager, id) ?: return
+                val flags = info.javaClass.getField("flags").getInt(info)
+                val group = info.javaClass.getField("displayGroupId").getInt(info)
+                val independent = DesktopDisplayIsolation.independent(flags, group)
+                Log.i(TAG, "DESKTOP LOCK: display=$id group=$group independent=$independent")
+                if (id > 0 && independent && group > 0) displayLocks[id] = newWakeLockForDisplay(id).also { it.acquire() }
+            } catch (error: Exception) { Log.w(TAG, "Independent display wake lock unavailable", error) }
+        }
 
         private fun enableLocalIme(id: Int) {
             try { ShellDisplayIme.enable(id, Process.myUid()) }
             catch (e: Exception) { Log.w(TAG, "Local IME unavailable for HeadSwap display $id", e) }
             catch (e: LinkageError) { Log.w(TAG, "Local IME API unavailable", e) }
         }
+
+        override fun focusedDisplay(parentId: Int, children: Set<Int>): Int =
+            DesktopInputTarget.resolve(parentId, children, DesktopFocusReader.current())
 
         override fun childImeVisibilityQuery(id: Int): () -> Boolean? = { try { ShellDisplayIme.isVisible(id, Process.myUid()) }
             catch (e: Exception) { Log.w(TAG, "Cannot read IME on child $id", e); null }
@@ -968,7 +1033,10 @@ class DexUserService private constructor(private val context: Context, private v
                 .invoke(trust, userId, 0) == false
         }
 
-        override fun newPanelWakeLock(): DexWakeLease {
+        override fun newPanelWakeLock(): DexWakeLease = newWakeLockForDisplay(0)
+
+        private fun newWakeLockForDisplay(displayId: Int): DexWakeLease {
+            require(displayId >= 0)
             // Match the target framework's PowerManager.WakeLock Binder calls directly: its SDK
             // wrapper assumes application caches/context attribution unavailable in app_process.
             val binder = Class.forName("android.os.ServiceManager").getMethod("getService", String::class.java).invoke(null, "power")
@@ -983,7 +1051,7 @@ class DexUserService private constructor(private val context: Context, private v
             return DexWakeLease(
                 acquireRemote = {
                     // SCREEN_BRIGHT_WAKE_LOCK=10; no ACQUIRE_CAUSES_WAKEUP or ON_AFTER_RELEASE.
-                    acquire.invoke(power, token, 10, "HeadSwapDeX:PanelOff", "com.android.shell", null, null, 0, null)
+                    acquire.invoke(power, token, 10, "headswap-desk:display:$displayId", "com.android.shell", null, null, displayId, null)
                     Unit
                 },
                 releaseRemote = { release.invoke(power, token, 0); Unit },

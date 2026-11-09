@@ -5,6 +5,26 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DesktopVideoQualityTest {
+    @Test fun receiverEncoderTargetCannotOverrideSelectedOrThermalBitrate() {
+        val selected = DesktopVideoQuality.bitratePolicy(BitrateProfile.USB, 1_000_000)
+        assertEquals(1_000_000, DesktopVideoQuality.encoderBitrate(selected, 3_840_000))
+        val adaptive = DesktopVideoQuality.bitratePolicy(BitrateProfile.USB, 8_000_000)
+        adaptive.lowerCeiling(3_840_000)
+        assertEquals(3_840_000, DesktopVideoQuality.encoderBitrate(adaptive, 3_840_000))
+        adaptive.update(0, 750.0, 0.0)
+        assertTrue(DesktopVideoQuality.encoderBitrate(adaptive, 3_840_000) < 3_840_000)
+        adaptive.setThermalCap(1_500_000)
+        assertEquals(1_500_000, DesktopVideoQuality.encoderBitrate(adaptive, 3_840_000))
+        assertEquals(1_000_000, DesktopVideoQuality.encoderBitrate(adaptive, 1_000_000))
+    }
+    @Test fun blockedFirstWriteAdaptsBeforeFirstDrainSampleAndHonorsSelectedCeiling() {
+        val policy = DesktopVideoQuality.bitratePolicy(BitrateProfile.USB, 4_000_000)
+        assertEquals(4_000_000, policy.current)
+        for (now in 0L..4000L step 100) policy.update(now, 750.0, 0.0)
+        assertTrue(policy.current < 2_000_000)
+        for (now in 4100L..300000L step 100) policy.update(now, 0.0, 2_000_000.0)
+        assertEquals(4_000_000, policy.current)
+    }
     @Test
     fun fastUsbKeepsEightMegabitsWithoutChangingLegacy720() {
         val policy = DesktopVideoQuality.bitratePolicy(BitrateProfile.USB)

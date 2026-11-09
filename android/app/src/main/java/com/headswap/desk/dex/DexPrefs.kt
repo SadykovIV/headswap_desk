@@ -124,6 +124,20 @@ class DexPrefs(context: Context) {
     var desktopFps: FpsSetting
         get() = prefs.getString("desktop_fps", null).let { name -> FpsSetting.entries.firstOrNull { it.name == name } ?: FpsSetting.FPS15 }
         set(value) { prefs.edit().putString("desktop_fps", value.name).apply() }
+    /** A transport budget, not a forced frame rate. Existing FPS values remain readable for migration. */
+    var desktopBitrateMbps: Int
+        get() = prefs.getInt("desktop_bitrate_mbps", 8).coerceIn(1, 20)
+        set(value) { require(value in 1..20); prefs.edit().putInt("desktop_bitrate_mbps", value).apply() }
+    var autoMusicPlayback: Boolean
+        get() = prefs.getBoolean("auto_music_playback", true)
+        set(value) { prefs.edit().putBoolean("auto_music_playback", value).apply() }
+    var huNotificationsEnabled: Boolean
+        get() = prefs.getBoolean("hu_notifications_enabled", false)
+        set(value) { prefs.edit().putBoolean("hu_notifications_enabled", value).apply() }
+    var initialSetupCompleted: Boolean
+        get() = prefs.getBoolean("initial_setup_completed", hasPaired)
+        set(value) { prefs.edit().putBoolean("initial_setup_completed", value).apply() }
+
     var dpiCorrectionPackages: Set<String>
         get() = prefs.getStringSet("dpi_correction_packages", null)?.toSet()
             ?: com.headswap.desk.shared.DesktopRenderPolicy.DEFAULT_PACKAGES
@@ -152,6 +166,8 @@ object DexState {
     @Volatile var error: String? = null
     @Volatile var running: Boolean = false
     @Volatile var displayId: Int = -1
+    /** Measured on the actual current display, never inferred solely from a permission grant. */
+    @Volatile var independentPhoneLock: Boolean? = null
     /** Last acknowledged override for this session; never persisted or enabled automatically. */
     @Volatile var phoneScreenOff: Boolean = false
     @Volatile var phoneScreenBusy: Boolean = false

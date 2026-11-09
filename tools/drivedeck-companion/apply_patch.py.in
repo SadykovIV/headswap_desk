@@ -11,9 +11,9 @@ import zipfile
 import zlib
 from pathlib import Path
 
-SOURCE = "bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4"
+SOURCE = "@SOURCE_SHA256@"
 RESULT = "@APK_SHA256@"
-DEFAULT_OUTPUT = "DriveDeck-HeadSwap-0.6.8-code305.apk"
+DEFAULT_OUTPUT = "@TARGET_NAME@"
 PATCH_DIR = Path(__file__).resolve().parent
 
 
@@ -66,11 +66,11 @@ def apply_delta(source, patch):
 
 
 def restore(source_path):
-    if source_path.stat().st_size != 822209:
-        raise ValueError("Размер оригинала не совпал. Нужен DriveDeck 0.6.8 stable, code300.")
+    if source_path.stat().st_size != @SOURCE_SIZE@:
+        raise ValueError("Размер оригинала не совпал. Нужен DriveDeck @VERSION@ stable, code@UPSTREAM_CODE@.")
     original = source_path.read_bytes()
     if sha256(original) != SOURCE:
-        raise ValueError("SHA-256 оригинала не совпал. Нужен DriveDeck 0.6.8 stable, code300.")
+        raise ValueError("SHA-256 оригинала не совпал. Нужен DriveDeck @VERSION@ stable, code@UPSTREAM_CODE@.")
     delta = read_asset("delta.bin", "@DELTA_SHA256@")
     deflate_spans = json.loads(read_asset("deflate.json", "@DEFLATE_SHA256@"))
 
@@ -94,8 +94,8 @@ def restore(source_path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Применить патч DriveDeck 0.6.8 code300 → HeadSwap code305.")
-    parser.add_argument("original", type=Path, help="оригинальный DriveDeck 0.6.8 stable code300")
+    parser = argparse.ArgumentParser(description="Применить патч DriveDeck @VERSION@ code@UPSTREAM_CODE@ → HeadSwap code@TARGET_CODE@.")
+    parser.add_argument("original", type=Path, help="оригинальный DriveDeck @VERSION@ stable code@UPSTREAM_CODE@")
     parser.add_argument("-o", "--output", type=Path, default=Path(DEFAULT_OUTPUT),
                         help="путь к новому APK (существующий файл не перезаписывается)")
     args = parser.parse_args()

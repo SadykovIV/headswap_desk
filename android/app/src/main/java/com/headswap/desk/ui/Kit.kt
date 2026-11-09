@@ -74,6 +74,14 @@ fun Context.icon(res: Int, sizeDp: Number, tint: Int): ImageView = ImageView(thi
     layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
 }
 
+/** Brand artwork keeps its own colors; action glyphs continue to use [icon]. */
+fun Context.brandIcon(sizeDp: Number): ImageView = ImageView(this).apply {
+    setImageBitmap(com.headswap.desk.BrandArtwork.bitmap(resources))
+    scaleType = ImageView.ScaleType.FIT_CENTER
+    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+    layoutParams = LinearLayout.LayoutParams(dp(sizeDp), dp(sizeDp))
+}
+
 fun Context.vbox(gapDp: Number = 0): LinearLayout = LinearLayout(this).apply {
     orientation = LinearLayout.VERTICAL
     if (gapDp.toInt() > 0) {

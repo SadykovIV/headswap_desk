@@ -37,10 +37,12 @@ internal object UsbMusicLossProbe {
                 DelegatedDesktopAccess.REAL_GET_TASKS, DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL)
             val prefs = DexPrefs(context)
             val previous = prefs.accessMode
+            val previousAutoplay = prefs.autoMusicPlayback
             val lease = DelegatedDesktopAccess.begin {}
             var player: MediaController? = null
             try {
                 prefs.useDelegated = true
+                prefs.autoMusicPlayback = true
                 check(DelegatedDesktopAccess.isReady(context)) { "Missing media/session grants" }
                 val manager = context.getSystemService(MediaSessionManager::class.java)
                 check(manager.getActiveSessions(null).none {
@@ -57,15 +59,44 @@ internal object UsbMusicLossProbe {
                     player != null
                 }
                 exercise(test, checkNotNull(player), result)
+                exerciseAutoplay(test, checkNotNull(player), prefs, result)
             } finally {
                 test.runOnMainSync { DesktopMusicPlayback.cancel("QA finished") }
                 player?.transportControls?.stop()
                 prefs.accessMode = previous
+                prefs.autoMusicPlayback = previousAutoplay
                 DelegatedDesktopAccess.end(lease)
                 ui.dropShellPermissionIdentity()
             }
         } catch (error: Throwable) { result.putString("error", android.util.Log.getStackTraceString(error)) }
         test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK, result)
+    }
+
+    private fun exerciseAutoplay(test: Instrumentation, player: MediaController, prefs: DexPrefs, result: Bundle) {
+        test.runOnMainSync { DesktopMusicPlayback.cancel("QA independent autoplay") }
+        player.transportControls.pause()
+        await(2_000, "Fixture did not pause") { player.playbackState?.state == PlaybackState.STATE_PAUSED }
+        val playsBefore = player.extras?.getInt("plays") ?: error("Missing fixture count")
+        val audio = AtomicBoolean(false)
+        test.runOnMainSync {
+            DesktopMusicPlayback.attach(test.targetContext, Any(), Any(), true, { true }, audio::get)
+        }
+        SystemClock.sleep(700)
+        check(player.extras?.getInt("plays") == playsBefore) { "Autoplay preceded audio readiness" }
+        audio.set(true)
+        await(3_000, "Selected paused player did not start after delayed audio readiness") {
+            player.playbackState?.state == PlaybackState.STATE_PLAYING && player.extras?.getInt("plays") == playsBefore + 1
+        }
+        test.runOnMainSync { DesktopMusicPlayback.cancel("QA autoplay disabled") }
+        prefs.autoMusicPlayback = false
+        player.transportControls.pause()
+        await(2_000, "Fixture did not pause for negative control") { player.playbackState?.state == PlaybackState.STATE_PAUSED }
+        test.runOnMainSync {
+            DesktopMusicPlayback.attach(test.targetContext, Any(), Any(), true, { true }, { true })
+        }
+        SystemClock.sleep(700)
+        check(player.playbackState?.state == PlaybackState.STATE_PAUSED && player.extras?.getInt("plays") == playsBefore + 1)
+        result.putString("automaticPlayback", "waited for audio; selected paused session started; disabled option respected")
     }
 
     private fun exercise(test: Instrumentation, player: MediaController, result: Bundle) {
@@ -74,7 +105,7 @@ internal object UsbMusicLossProbe {
         val transport = StreamTransport.fromPfd(fd, TransportCaps.USB_AOA, "QA accessory")
         lateinit var session: CarLifeSession
         session = CarLifeSession(transport, SessionConfig(), AaBridgeCore(log = { _, _ -> }),
-            onUsbOutputLost = { owner, picture -> DesktopMusicPlayback.usbOutputLost(service, owner, picture) },
+            onDesktopOutputLost = { owner, picture -> DesktopMusicPlayback.usbOutputLost(service, owner, picture) },
             onClosed = { DesktopMusicPlayback.linkClosed(session) })
         try {
             test.runOnMainSync { DesktopMusicPlayback.attach(test.targetContext, service, session, true, { true }, { true }) }

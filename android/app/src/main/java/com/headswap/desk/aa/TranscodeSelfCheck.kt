@@ -144,7 +144,9 @@ object TranscodeSelfCheck {
                 override fun onError(msg: String, t: Throwable?) {
                     AppLog.e("transcode_test: ОШИБКА заглушки $msg", t)
                 }
-            }).also { it.banner = "test"; it.start(); AppLog.i("transcode_test: заглушка ${it.encoderName} запущена") }
+            }, brandArtwork = com.headswap.desk.BrandArtwork.bitmap(ctx.resources)).also {
+                it.banner = "test"; it.start(); AppLog.i("transcode_test: заглушка ${it.encoderName} запущена")
+            }
         } catch (e: Exception) {
             AppLog.e("transcode_test: заглушка не создана", e)
             null

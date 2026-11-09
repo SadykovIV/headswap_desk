@@ -532,7 +532,7 @@ class AaTranscoder(
                             }
                             winOut.incrementAndGet()
                             totalOut.incrementAndGet()
-                            out.onEncoderFrame(data, info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0)
+                            out.onEncoderFrameAt(data, info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0, info.presentationTimeUs)
                         }
                     }
                     c.releaseOutputBuffer(idx, false)

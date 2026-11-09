@@ -274,7 +274,19 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
         }
     }
 
+    override fun sendRotary(delta: Int) { DesktopRotaryInput.keys(delta).forEach(::sendKey) }
+
     override fun sendKey(keycode: Int) {
+        if (keycode == android.view.KeyEvent.KEYCODE_SEARCH || keycode == android.view.KeyEvent.KEYCODE_VOICE_ASSIST) {
+            val requestedDisplay = displayId
+            main.post {
+                DesktopAssistant.launch(context, requestedDisplay,
+                    DelegatedInputGateway.ownedDisplayIds() + requestedDisplay) {
+                    !stopping.get() && firstFrame && displayId == requestedDisplay && requestedDisplay > 0
+                }
+            }
+            return
+        }
         if (keycode !in 0..1000) return
         enqueue { it.injectKey(0, keycode); it.injectKey(1, keycode) }
     }

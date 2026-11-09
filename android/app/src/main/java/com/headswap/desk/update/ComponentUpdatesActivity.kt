@@ -87,13 +87,13 @@ class ComponentUpdatesActivity : Activity() {
         install = button("Продолжить установку") { installPrepared() }
         remove = button("Удалить компонент…") {
             work("Проверяю установленный компонент…", {
-                check(DexPrefs(this).desktopMode != DesktopModePolicy.DRIVEDECK || !CarLifeState.running) {
-                    "Остановите сеанс DriveDeck и повторите действие."
+                check(!componentInUse()) {
+                    "Остановите сеанс компонента и повторите действие."
                 }
                 ComponentPackages.builtinRemoval(this, spec)
             }) { launchSystem(it, REMOVE) }
         }
-        status = ui.text(card, state?.getString("status") ?: "Проверяются только выпуски HeadSwap. Установка — с подтверждением Android.", 15f)
+        status = ui.text(card, state?.getString("status") ?: "APK загружается из проверенного репозитория компонента. Проверяются подпись и контрольная сумма. Установку подтверждает Android.", 15f)
         profiles = InstalledProfileCards(this, ui, root, worker, state)
         refresh()
     }
@@ -137,15 +137,15 @@ class ComponentUpdatesActivity : Activity() {
 
     private fun query() {
         available = null
-        work("Проверяю выпуски HeadSwap…", {
+        work("Проверяю выпуски ${spec.title}…", {
             var latest: ComponentAsset? = null
-            ReleaseFeed.pages { latest = ComponentCatalog.newest(it, spec, latest) }
+            ReleaseFeed.pages(spec.repository) { latest = ComponentCatalog.newest(it, spec, latest) }
             latest
         }) { newest ->
             available = newest
             val current = ComponentPackages.installed(this, spec)
             status.text = when {
-                newest == null -> "В выпусках HeadSwap пока нет этого компонента."
+                newest == null -> "Совместимый выпуск компонента не найден."
                 current == null -> "Доступна установка."
                 current.longVersionCode >= newest.code -> "Обновление не требуется."
                 else -> "Доступна новая версия."
@@ -165,9 +165,13 @@ class ComponentUpdatesActivity : Activity() {
         work("Проверяю APK…", { ComponentPackages.validate(this, spec, f) }) { apk -> handoff(apk) }
     }
 
+    private fun componentInUse(): Boolean = CarLifeState.running && (
+        (spec == DesktopComponent.DRIVEDECK && DexPrefs(this).desktopMode == DesktopModePolicy.DRIVEDECK) ||
+        com.headswap.desk.component.DesktopComponents.selected(this)?.packageName == spec.pkg)
+
     private fun handoff(apk: PreparedComponent) {
-        if (DexPrefs(this).desktopMode == DesktopModePolicy.DRIVEDECK && CarLifeState.running) {
-            status.text = "Остановите сеанс DriveDeck и нажмите «Продолжить установку»."
+        if (componentInUse()) {
+            status.text = "Остановите сеанс компонента и нажмите «Продолжить установку»."
             return
         }
         if (!packageManager.canRequestPackageInstalls()) {

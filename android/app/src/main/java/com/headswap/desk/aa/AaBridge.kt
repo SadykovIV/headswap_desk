@@ -20,6 +20,8 @@ interface CarlifeLink {
      * Заглушку останавливать всё равно через hidePlaceholder.
      */
     fun sendVideoTakeover(payload: ByteArray): Boolean = sendVideo(payload)
+    fun sendVideoAt(payload: ByteArray, presentationUs: Long?): Boolean = sendVideo(payload)
+    fun sendVideoTakeoverAt(payload: ByteArray, presentationUs: Long?): Boolean = sendVideoTakeover(payload)
 
     /** Связь по воздуху (6 TCP-сокетов), а не USB / tcp-debug. */
     val isAir: Boolean get() = false
@@ -35,6 +37,10 @@ interface CarlifeLink {
 
     /** Аудио-сообщение CarLife: канал 3 MEDIA / 4 TTS, тип (INIT/DATA/STOP), тело. false = отброшено. */
     fun sendAudio(channel: Int, type: Int, payload: ByteArray): Boolean
+
+    /** Monotonic capture PTS, used by native desktop PCM. Legacy sinks retain their protocol behavior. */
+    fun sendAudioAt(channel: Int, type: Int, payload: ByteArray, capturedAtUs: Long): Boolean =
+        sendAudio(channel, type, payload)
 
     /** MODULE_STATUS об одном модуле CarLife (CarlifeAudio.MODULE_NAVI / MODULE_MUSIC / ...), как Baidu ModuleStatusManage. false = не ушло. */
     fun sendModuleStatus(module: Int, status: Int): Boolean
@@ -1431,7 +1437,10 @@ class AaBridgeCore(
         while (off < out.size) {
             val n = minOf(chunkMax, out.size - off)
             val chunk = if (off == 0 && n == out.size) out else out.copyOfRange(off, off + n)
-            if (!link.sendAudio(ch, CarlifeAudio.dataType(ch), chunk)) {
+            val sent = if (desktopInputEnabled && ch == CarlifeAudio.CH_MEDIA)
+                link.sendAudioAt(ch, CarlifeAudio.dataType(ch), chunk, ptsUs + off * 1_000_000L / (mediaRateLogged * 4L))
+            else link.sendAudio(ch, CarlifeAudio.dataType(ch), chunk)
+            if (!sent) {
                 audioDropped++
             } else {
                 audioBytes += n
@@ -2646,6 +2655,7 @@ class AaBridgeCore(
         }
         override fun onEncoderConfig(csd: ByteArray) = current { this@AaBridgeCore.onEncoderConfig(csd) }
         override fun onEncoderFrame(data: ByteArray, key: Boolean) = current { this@AaBridgeCore.onEncoderFrame(data, key) }
+        override fun onEncoderFrameAt(data: ByteArray, key: Boolean, presentationUs: Long) = current { this@AaBridgeCore.onEncoderFrameAt(data, key, presentationUs) }
         override fun onTranscodeError(msg: String) = current { this@AaBridgeCore.onTranscodeError(msg) }
         override fun onNeedAaKeyFrame() {} // There is no decoder in direct-surface mode.
     }
@@ -2714,8 +2724,13 @@ class AaBridgeCore(
     }
 
     /** Кадр энкодера -> CarLife. Первое сообщение источника = SPS+PPS+IDR (SPS/PPS склеиваем), P до IDR выбрасываем. */
+    override fun onEncoderFrame(data: ByteArray, key: Boolean) = forwardEncoderFrame(data, key, null)
+
+    override fun onEncoderFrameAt(data: ByteArray, key: Boolean, presentationUs: Long) =
+        forwardEncoderFrame(data, key, presentationUs.takeIf { desktopSurfaceEnabled })
+
     @Synchronized
-    override fun onEncoderFrame(data: ByteArray, key: Boolean) {
+    private fun forwardEncoderFrame(data: ByteArray, key: Boolean, presentationUs: Long?) {
         if (desktopSurfaceEnabled && (!desktopSurfaceReady || !desktopSurfaceCsdVerified || desktopVideoError != null)) {
             encDropped++
             return
@@ -2744,7 +2759,7 @@ class AaBridgeCore(
                 AnnexB.glue(cfg, data)
             }
             val takeover = active != Source.AA
-            if (!(if (takeover) link.sendVideoTakeover(payload) else link.sendVideo(payload))) {
+            if (!(if (takeover) link.sendVideoTakeoverAt(payload, presentationUs) else link.sendVideoAt(payload, presentationUs))) {
                 encDropped++
                 requestIdrOnOverflow()
                 return
@@ -2774,7 +2789,7 @@ class AaBridgeCore(
             if (huVw20082138 || huMobisNx4c) link.onEncodedKeyFrame(payload.size)
             return
         }
-        if (!link.sendVideo(data)) {
+        if (!link.sendVideoAt(data, presentationUs)) {
             // кадр не принят (очередь CarLife переполнена): дальше P нельзя, до следующего IDR всё выбрасывается выше
             outGotIdr = false
             encDropped++
@@ -2811,6 +2826,16 @@ class AaBridgeCore(
     fun setTargetFps(fps: Int): Boolean {
         val t = transcoder ?: return false
         t.setTargetFps(fps)
+        return true
+    }
+
+    /** Sample current policies only after owning the encoder, and ignore an obsolete link's timer. */
+    @Synchronized
+    fun applyVideoTuning(owner: CarlifeLink, bitrate: (() -> Int)? = null, fps: (() -> Int)? = null): Boolean {
+        if (link !== owner) return false
+        val t = transcoder ?: return false
+        bitrate?.let { t.setBitrate(it()) }
+        fps?.let { t.setTargetFps(it()) }
         return true
     }
 

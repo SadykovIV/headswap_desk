@@ -61,7 +61,8 @@ internal class RegisteredPlaybackMix private constructor(
             val ruleBuilder = Class.forName(ruleClass.name + "\$Builder").getConstructor().newInstance()
             val addRule = ruleBuilder.javaClass.getMethod("addRule", AudioAttributes::class.java, Int::class.java)
             val usageRule = ruleClass.getField("RULE_MATCH_ATTRIBUTE_USAGE").getInt(null)
-            for (usage in intArrayOf(AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)) {
+            for (usage in intArrayOf(AudioAttributes.USAGE_MEDIA, AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE,
+                AudioAttributes.USAGE_ASSISTANT)) {
                 addRule.invoke(ruleBuilder, AudioAttributes.Builder().setUsage(usage).build(), usageRule)
             }
             val userId = UserHandle::class.java.getMethod("getIdentifier").invoke(Process.myUserHandle())

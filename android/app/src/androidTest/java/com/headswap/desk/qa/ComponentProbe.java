@@ -33,6 +33,17 @@ final class ComponentProbe {
             rejection("download_integrity", "Контрольная сумма", result, () -> {
                 try (FileInputStream in = new FileInputStream(companion)) { ComponentPackages.INSTANCE.stage(ctx, dd, in, mismatch); }
             });
+            DesktopComponent bridge = DesktopComponent.CARBRIDGE;
+            PackageInfo bridgeCurrent = ComponentPackages.INSTANCE.installed(ctx, bridge);
+            if (bridgeCurrent != null && bridgeCurrent.applicationInfo != null) {
+                File bridgeApk = new File(bridgeCurrent.applicationInfo.sourceDir);
+                // validate checks pinned publisher, profile metadata, isolated task support and SDK
+                // before reaching the already-installed version guard.
+                rejection("carbridge_publisher_profile", "уже установлена", result,
+                    () -> ComponentPackages.INSTANCE.validate(ctx, bridge, bridgeApk));
+                rejection("carbridge_wrong_package", "пакет com.example.carbridge.headswap", result,
+                    () -> ComponentPackages.INSTANCE.validate(ctx, bridge, companion));
+            } else result.putString("carbridge_publisher_profile", "not installed; not tested");
             code = Activity.RESULT_OK;
         } catch (Exception | AssertionError e) {
             result.putString("error", android.util.Log.getStackTraceString(e));

@@ -17,31 +17,33 @@ import android.view.Surface
 /** Real app Context only: no shell attribution, app_process workarounds, commands or UiAutomation IPC. */
 internal class DelegatedDesktopRuntime(private val context: Context, private val inputGateway: IDelegatedInputGateway) : DesktopRuntimeAccess {
     private val displays = checkNotNull(context.getSystemService(DisplayManager::class.java))
-    // On Samsung registered virtual displays stay in group 0; its input-event marker
-    // suppresses HU pokes. Other manufacturers can isolate the clocks with a display group.
-    private val powerGroupFlag = if (!Build.MANUFACTURER.equals("samsung", true) && DexPrefs(context).desktopPanelControl &&
-        context.checkSelfPermission(PhonePowerActivity.PERMISSION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
-        1 shl 11 /* VIRTUAL_DISPLAY_FLAG_OWN_DISPLAY_GROUP */ else 0
+    private val independentLock = DelegatedDesktopAccess.canKeepDisplayUnlocked(context)
     // TestApi input access is process-local. Only the instrumented main process may
     // set display/actionButton; this ordinary helper owns and releases the producers.
     private val inputLeases = HashMap<Int, IBinder>() // Worker only, just like the display leases.
 
-    // The public IntDef omits the permission-gated OWN_DISPLAY_GROUP flag used by the USB panel timer.
-    @SuppressLint("WrongConstant")
     override fun createDisplay(surface: Surface, width: Int, height: Int, density: Int, mode: Int): VirtualDisplay {
         DelegatedDesktopPolicy.requireMode(mode)
-        return checkNotNull(displays.createVirtualDisplay("HeadSwap ${DesktopModePolicy.label(mode)}",
-            width, height, density, surface, DesktopModePolicy.displayFlags(mode, Build.VERSION.SDK_INT) or powerGroupFlag)) {
-            "Android отклонил доверенный виртуальный экран"
-        }
+        return create("HeadSwap ${DesktopModePolicy.label(mode)}", surface, width, height, density,
+            DesktopModePolicy.displayFlags(mode, Build.VERSION.SDK_INT, independentLock))
     }
 
-    // TRUSTED / DESTROY_CONTENT / SUPPORTS_TOUCH are permission-gated platform flags
-    // omitted by the public SDK IntDef. The shared engine verifies the returned display.
-    @SuppressLint("WrongConstant")
     override fun createChildDisplay(name: String, surface: Surface, width: Int, height: Int, density: Int): VirtualDisplay =
-        checkNotNull(displays.createVirtualDisplay(name, width, height, density,
-            surface, EmbeddedDisplayPolicy.displayFlags(Build.VERSION.SDK_INT) or powerGroupFlag)) { "Android отклонил экран виджета" }
+        create(name, surface, width, height, density, EmbeddedDisplayPolicy.displayFlags(Build.VERSION.SDK_INT, independentLock))
+
+    // Permission-gated flags are intentionally absent from the SDK IntDef. A vendor refusing
+    // lock isolation must still permit normal projection with the previously supported flags.
+    @SuppressLint("WrongConstant")
+    private fun create(name: String, surface: Surface, width: Int, height: Int, density: Int, flags: Int): VirtualDisplay {
+        val isolation = DesktopModePolicy.VIRTUAL_DISPLAY_OWN_DISPLAY_GROUP or DesktopModePolicy.VIRTUAL_DISPLAY_ALWAYS_UNLOCKED
+        return checkNotNull(try {
+            displays.createVirtualDisplay(name, width, height, density, surface, flags)
+        } catch (denied: SecurityException) {
+            if (flags and isolation == 0) throw denied
+            com.headswap.desk.AppLog.i("DESKTOP LOCK: isolation rejected by framework, creating normal display", false)
+            displays.createVirtualDisplay(name, width, height, density, surface, flags and isolation.inv())
+        }) { "Android отклонил доверенный виртуальный экран" }
+    }
 
     override fun inject(event: InputEvent, id: Int, actionButton: Int) {
         check(id > 0) { "Ввод на основной экран запрещён" }
@@ -120,6 +122,9 @@ internal class DelegatedDesktopRuntime(private val context: Context, private val
         check(parentId > 0) { "Неизвестный собственный рабочий стол" }
         inputGateway.setPhonePanelOff(parentId, checkNotNull(inputLeases[parentId]) { "Рабочий стол уже закрыт" }, off)
     }
+
+    override fun focusedDisplay(parentId: Int, children: Set<Int>): Int = DesktopInputTarget.resolve(
+        parentId, children, inputGateway.focusedDisplay(parentId, checkNotNull(inputLeases[parentId])))
 
     override fun childTaskState(id: Int, packageName: String) = childTaskQuery(id, packageName)()
     override fun childImeVisibilityQuery(id: Int): () -> Boolean? {

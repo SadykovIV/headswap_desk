@@ -21,6 +21,7 @@ internal object DesktopMusicPlayback {
     private val link = DesktopMusicUsbLink(BridgeHost.GRACE_MS)
     private var ready: (() -> Boolean)? = null
     private var audioReady: (() -> Boolean)? = null
+    private var autoplayAttempted = false
     private var watched: MediaController? = null
     private var callback: MediaController.Callback? = null
     private var mediaManager: MediaSessionManager? = null
@@ -35,7 +36,13 @@ internal object DesktopMusicPlayback {
             if (!allowed(app)) { clear("access ended"); return }
             val systemReady = receivingVideo()
             if (systemReady) link.markReady()
-            if (policy.hasPending) checkPending(systemReady && runCatching { audioReady?.invoke() == true }.getOrDefault(false))
+            val outputReady = systemReady && runCatching { audioReady?.invoke() == true }.getOrDefault(false)
+            val pending = policy.hasPending
+            if (pending) checkPending(outputReady)
+            if (outputReady && !autoplayAttempted) {
+                autoplayAttempted = true
+                if (!pending && DexPrefs(app).autoMusicPlayback) startSelectedPlayer(app)
+            }
             scheduleNext()
         }
     }
@@ -47,8 +54,26 @@ internal object DesktopMusicPlayback {
         link.attach(serviceOwner, owner, SystemClock.elapsedRealtime())
         this.ready = ready
         this.audioReady = audioReady
+        autoplayAttempted = false
         main.removeCallbacks(tick)
         tick.run()
+    }
+
+    /** User opt-in resumes only Android's selected local media session, never an arbitrary app. */
+    private fun startSelectedPlayer(app: Context) {
+        runCatching {
+            val manager = app.getSystemService(MediaSessionManager::class.java)
+            val selected = manager.mediaKeyEventSession ?: return
+            val players = manager.getActiveSessions(null)
+            if (players.any { it.playbackState?.state == PlaybackState.STATE_PLAYING }) return
+            val target = players.firstOrNull { it.sessionToken == selected } ?: return
+            val state = target.playbackState ?: return
+            if (state.state != PlaybackState.STATE_PAUSED || state.actions and PlaybackState.ACTION_PLAY == 0L) return
+            if (target.playbackInfo?.playbackType != MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL ||
+                target.playbackInfo?.audioAttributes?.usage != AudioAttributes.USAGE_MEDIA) return
+            target.transportControls.play()
+            AppLog.i("DESKTOP MUSIC: automatic playback of selected paused media session", false)
+        }
     }
 
     /** An old session cannot retire a replacement session. Physical detach may be reported later. */
@@ -153,6 +178,7 @@ internal object DesktopMusicPlayback {
 
     private fun checkPending(systemReady: Boolean, playbackCallback: Boolean = false, event: PlaybackState? = null) {
         val app = context ?: return
+        if (!DexPrefs(app).autoMusicPlayback) { cancelPending("automatic playback disabled"); return }
         val target = watched ?: return
         try {
             if (app.checkSelfPermission(android.Manifest.permission.MEDIA_CONTENT_CONTROL) != PackageManager.PERMISSION_GRANTED) {
@@ -180,7 +206,7 @@ internal object DesktopMusicPlayback {
 
     private fun scheduleNext() {
         main.removeCallbacks(tick)
-        val delay = if (link.owner != null && !link.outputLost && (!link.sawReady || policy.hasPending)) 250L
+        val delay = if (link.owner != null && !link.outputLost && (!link.sawReady || policy.hasPending || !autoplayAttempted)) 250L
             else policy.nextDeadlineDelay(SystemClock.elapsedRealtime())
         if (delay != null) main.postDelayed(tick, delay)
     }

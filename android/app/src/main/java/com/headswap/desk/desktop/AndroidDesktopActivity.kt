@@ -128,6 +128,7 @@ class AndroidDesktopActivity : Activity() {
         // Shell may launch this Activity before the connector receives start()'s display ID.
         // Render a neutral first frame; reveal the catalog only after the client confirms ownership.
         if (currentDisplayId() <= 0) { finish(); return }
+        setShowWhenLocked(true)
         AppLog.init(this)
         autoOpenPanel = savedInstanceState?.getBoolean("auto_open_panel", true) ?: true
         buildView()
@@ -230,7 +231,7 @@ class AndroidDesktopActivity : Activity() {
         rail = ListView(this).apply {
             adapter = railAdapter
             divider = null
-            setSelector(android.R.color.transparent)
+            setSelector(android.graphics.drawable.ColorDrawable(Color.argb(105, 70, 165, 110)))
             contentDescription = "Панель приложений"
             setOnItemClickListener { _, _, position, _ -> pinnedEntries.getOrNull(position)?.let { launchApp(it) } }
             setOnItemLongClickListener { _, row, position, _ ->
@@ -317,7 +318,7 @@ class AndroidDesktopActivity : Activity() {
             verticalSpacing = dp(12)
             setPadding(dp(8), dp(4), dp(8), dp(12))
             clipToPadding = false
-            setSelector(android.R.color.transparent)
+            setSelector(android.graphics.drawable.ColorDrawable(Color.argb(105, 70, 165, 110)))
             adapter = this@AndroidDesktopActivity.adapter
             setOnItemClickListener { _, _, position, _ -> entries.getOrNull(position)?.let { launchApp(it) } }
             setOnItemLongClickListener { _, card, position, _ ->
@@ -494,8 +495,9 @@ class AndroidDesktopActivity : Activity() {
         lateinit var session: PanelLaunchSession
         val current = { visible && !isDestroyed && !isFinishing && panelSession === session && panelPlaced && ownsDisplay() }
         val lock = getSystemService(KeyguardManager::class.java)
-        val foreground = { current() && CarLifeState.running && !CarLifeState.wirelessSession &&
-            !lock.isDeviceLocked && !lock.isKeyguardLocked && providerPane.isComponentForeground(entry) && current() }
+        val foreground = { current() && CarLifeState.running &&
+            (!lock.isDeviceLocked && !lock.isKeyguardLocked || display?.let { com.headswap.desk.dex.DesktopDisplayIsolation.independent(it) } == true) &&
+            providerPane.isComponentForeground(entry) && current() }
         try {
             session = PanelLaunchSession(this, entry, current, mediaForeground = {
                 (!dashboard || musicVisible) && foreground() &&

@@ -35,11 +35,14 @@ class StreamTransport(
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
 ) : CarTransport {
 
-    private class Out(val chan: Int, val inner: ByteArray)
-
-    private val queue = LinkedBlockingQueue<Out>()
+    private val queue = LinkedBlockingQueue<QueuedTransportPacket>()
     private val videoBytes = AtomicLong()
     private val videoFrames = AtomicInteger()
+    private val audioExpired = AtomicLong()
+    private val audioOverflow = AtomicLong()
+    override val audioOverflowPackets: Long get() = audioOverflow.get()
+    override val audioExpiredPackets: Long get() = audioExpired.get()
+    @Volatile private var videoWriteStartedMs = -1L
     private val drain = DrainMeter()
     private val parser = FrameParser()
     private val assembler = InnerAssembler()
@@ -62,6 +65,7 @@ class StreamTransport(
     override val rxBytes: Long get() = rx
     override val queuedVideoBytes: Long get() = videoBytes.get()
     override val queuedVideoFrames: Int get() = videoFrames.get()
+    override val videoWriteAgeMs: Long get() = videoWriteStartedMs.let { if (it < 0) 0L else (clock() - it).coerceAtLeast(0) }
     override val drainBytesPerSec: Double get() = drain.bytesPerSec
     override fun queueSize(chan: Int): Int = queue.size
 
@@ -85,13 +89,19 @@ class StreamTransport(
         reader = Thread({ readLoop(sink, onClosed) }, "cl-reader").also { it.start() }
     }
 
-    override fun send(chan: Int, inner: ByteArray) {
+    override fun send(chan: Int, inner: ByteArray) = enqueue(chan, inner, Long.MAX_VALUE)
+
+    override fun sendTimed(chan: Int, inner: ByteArray, maxAgeMs: Long) =
+        enqueue(chan, inner, AudioPacketDeadline.deadline(chan, inner, clock(), maxAgeMs))
+
+    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long) {
         if (closed.get()) return
         if (chan == Ch.VIDEO) {
             videoBytes.addAndGet(inner.size.toLong())
             videoFrames.incrementAndGet()
         }
-        queue.put(Out(chan, inner))
+        AudioQueueAdmission.offer(queue, QueuedTransportPacket(chan, inner, deadlineMs), clock(),
+            { audioExpired.addAndGet(it) }, { audioOverflow.addAndGet(it) })
     }
 
     override fun close() {
@@ -146,17 +156,26 @@ class StreamTransport(
         try {
             while (!closed.get()) {
                 val o = queue.take()
-                val video = o.chan == Ch.VIDEO
-                if (video) {
-                    videoBytes.addAndGet(-o.inner.size.toLong())
-                    videoFrames.decrementAndGet()
+                if (o.deadlineMs != Long.MAX_VALUE && clock() >= o.deadlineMs) {
+                    audioExpired.incrementAndGet()
+                    continue
                 }
+                val video = o.chan == Ch.VIDEO
+                if (video) videoWriteStartedMs = clock()
                 // заголовок отдельным write, тело следом кусками <= 16384 (спека §1.4); Mobis CCNC - тело одним write, как Baidu
                 val t0 = System.nanoTime()
                 val parts = if (wholeWrites) Wire.writeWhole(o.chan, o.inner) else Wire.writeSequence(o.chan, o.inner)
-                endpointIo {
-                    for (part in parts) output.write(part)
-                    output.flush()
+                try {
+                    endpointIo {
+                        for (part in parts) output.write(part)
+                        output.flush()
+                    }
+                } finally {
+                    if (video) {
+                        videoWriteStartedMs = -1L
+                        videoBytes.addAndGet(-o.inner.size.toLong())
+                        videoFrames.decrementAndGet()
+                    }
                 }
                 drain.onWrite(clock(), video, o.inner.size, System.nanoTime() - t0)
                 onWritten(o.chan, o.inner)

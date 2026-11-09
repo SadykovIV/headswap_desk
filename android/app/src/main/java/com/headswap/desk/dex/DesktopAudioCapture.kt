@@ -18,7 +18,7 @@ object DesktopAudioAccess {
 }
 
 object DesktopAudioState {
-    @Volatile var status = "Звук по USB выключен"
+    @Volatile var status = "Звук CarLife выключен"
     @Volatile var running = false
     @Volatile var error: String? = null
     @Volatile var pcmBytes = 0L
@@ -72,7 +72,7 @@ class DesktopAudioCapture(context: Context) {
         canCaptureOutput = null
         usb = false
         DesktopAudioState.running = false
-        DesktopAudioState.status = if (DexPrefs(context).usbPlaybackAudio) "Звук: ожидаю подключение CarLife по USB" else "Звук по USB выключен"
+        DesktopAudioState.status = if (DexPrefs(context).usbPlaybackAudio) "Звук: ожидаю подключение CarLife" else "Звук CarLife выключен"
     }
 
     fun close() { detach(); closed = true }
@@ -96,14 +96,14 @@ class DesktopAudioCapture(context: Context) {
             failed = false // a user setting/access/session transition allows a fresh attempt
             DesktopAudioState.running = false
             DesktopAudioState.status = when {
-                !enabled -> "Звук по USB выключен"
-                !delegated -> "Звук по USB доступен в режиме «Доступ с компьютера»"
+                !enabled -> "Звук CarLife выключен"
+                !delegated -> "Звук CarLife доступен в режиме «Доступ с компьютера»"
                 !ready -> "Для звука активируйте доступ HeadSwap"
                 !permission -> "Для звука повторно активируйте доступ с параметром --audio"
-                !usb -> "Звук: ожидаю подключение CarLife по USB"
+                !usb -> "Звук: ожидаю подключение CarLife"
                 !current.isCarlifeStarted -> "Звук: ожидаю запуск CarLife"
                 !current.audioViaUsb -> "Магнитола запросила звук по Bluetooth"
-                !outputFresh -> "Звук приостановлен: магнитола не принимает USB"
+                !outputFresh -> "Звук приостановлен: магнитола не принимает поток"
                 else -> "Звук: соединение закрыто"
             }
         } else if (worker == null && !failed) {
@@ -112,7 +112,7 @@ class DesktopAudioCapture(context: Context) {
             DesktopAudioState.error = null
             DesktopAudioState.pcmBytes = 0
             DesktopAudioState.nonSilentBuffers = 0
-            DesktopAudioState.status = "Подключаю звук по USB…"
+            DesktopAudioState.status = "Подключаю звук CarLife…"
             Thread({ runCapture(capture) }, "headswap-playback-audio").start()
         }
     }
@@ -120,8 +120,8 @@ class DesktopAudioCapture(context: Context) {
     private fun updateSignalStatus(capture: Capture, hasSignal: Boolean) {
         main.post {
             if (worker === capture && !capture.cancelled.get()) {
-                DesktopAudioState.status = if (hasSignal) "Звук передаётся по USB"
-                    else "USB-звук подключён. Ожидаю музыку или подсказку"
+                DesktopAudioState.status = if (hasSignal) "Звук передаётся в CarLife"
+                    else "Звук CarLife подключён. Ожидаю музыку или подсказку"
             }
         }
     }
@@ -147,15 +147,17 @@ class DesktopAudioCapture(context: Context) {
             }
             main.post { if (worker === capture && !capture.cancelled.get()) {
                 DesktopAudioState.running = true
-                DesktopAudioState.status = "USB-звук подключён. Ожидаю музыку или подсказку"
+                DesktopAudioState.status = "Звук CarLife подключён. Ожидаю музыку или подсказку"
             } }
-            AppLog.i("DESKTOP AUDIO: registered AudioMix LOOP_BACK media/navigation; PCM 48000 Hz stereo16 started")
+            AppLog.i("DESKTOP AUDIO: registered AudioMix LOOP_BACK media/navigation/assistant; PCM 48000 Hz stereo16 started")
             var nextReport = SystemClock.elapsedRealtime() + 10_000L
             var intervalPeak = 0
             var reportedSignal = false
             var intervalHadSignal = false
             val input = ByteArray(DesktopAudioPolicy.READ_BYTES)
             val frames = DesktopPcmFrames()
+            val clock = DesktopAudioClock(bufferCapacityFrames = audio.bufferSizeInFrames)
+            val stamp = android.media.AudioTimestamp()
             while (!capture.cancelled.get()) {
                 val count = audio.read(input, 0, input.size, AudioRecord.READ_NON_BLOCKING)
                 check(count >= 0) { "Ошибка чтения звука Android: $count" }
@@ -183,9 +185,14 @@ class DesktopAudioCapture(context: Context) {
                     updateSignalStatus(capture, hasSignal = true)
                 }
                 intervalPeak = maxOf(intervalPeak, peak)
+                val hasTimestamp = runCatching {
+                    audio.getTimestamp(stamp, android.media.AudioTimestamp.TIMEBASE_MONOTONIC) == AudioRecord.SUCCESS
+                }.getOrDefault(false)
+                val capturedAtUs = clock.read(pcm.size / DesktopAudioPolicy.BYTES_PER_FRAME, System.nanoTime() / 1000,
+                    stamp.framePosition.takeIf { hasTimestamp }, (stamp.nanoTime / 1000).takeIf { hasTimestamp })
                 sessions.runIfCurrent(capture.generation) {
                     if (!capture.cancelled.get()) capture.core.onAudioData(DesktopAudioPolicy.MEDIA_CHANNEL, pcm,
-                        SystemClock.elapsedRealtimeNanos() / 1000)
+                        capturedAtUs)
                 }
             }
         } catch (error: Exception) {
@@ -208,7 +215,7 @@ class DesktopAudioCapture(context: Context) {
                     if (error != null && core === capture.core && !capture.cancelled.get()) {
                         failed = true
                         DesktopAudioState.error = "${error.javaClass.simpleName}: ${error.message}"
-                        DesktopAudioState.status = "Android не открыл USB-звук. Повторите активацию с включённым звуком и подключитесь снова."
+                        DesktopAudioState.status = "Android не открыл звук CarLife. Повторите активацию с включённым звуком и подключитесь снова."
                     }
                 }
             }

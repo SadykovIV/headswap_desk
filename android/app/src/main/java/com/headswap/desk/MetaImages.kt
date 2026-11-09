@@ -25,35 +25,53 @@ object MetaImages {
 
     /** Обложка -> JPEG; null, если картинка не декодируется или не влезает в лимит [maxBytes] даже 160x160 q10. */
     fun albumJpeg(src: ByteArray, maxBytes: Int = MAX_BYTES): ByteArray? {
-        val bmp = BitmapFactory.decodeByteArray(src, 0, src.size) ?: return null
-        try {
-            for (side in intArrayOf(ART_SIDE, ART_SMALL)) {
-                val scaled = if (bmp.width > side || bmp.height > side) Bitmap.createScaledBitmap(bmp, side, side, true) else bmp
-                try {
-                    // JPEG без альфы: прозрачное на чёрный фон
-                    val opaque = Bitmap.createBitmap(scaled.width, scaled.height, Bitmap.Config.ARGB_8888)
-                    Canvas(opaque).apply {
-                        drawColor(Color.BLACK)
-                        drawBitmap(scaled, 0f, 0f, null)
-                    }
-                    var q = 90
-                    while (q >= 10) {
-                        val out = compress(opaque, Bitmap.CompressFormat.JPEG, q)
-                        if (out.size < maxBytes) {
-                            opaque.recycle()
-                            return out
-                        }
-                        q -= 10
-                    }
-                    opaque.recycle()
-                } finally {
-                    if (scaled !== bmp) scaled.recycle()
-                }
-            }
-            return null
-        } finally {
-            bmp.recycle()
+        if (src.isEmpty() || src.size > 8 * 1024 * 1024) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(src, 0, src.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        if (bounds.outMimeType == "image/jpeg" && src.size < maxBytes &&
+            maxOf(bounds.outWidth, bounds.outHeight) <= ART_SIDE) return src.copyOf()
+        val options = BitmapFactory.Options().apply { inSampleSize = 1 }
+        while (maxOf(bounds.outWidth, bounds.outHeight) / options.inSampleSize > ART_SIDE * 2) {
+            options.inSampleSize *= 2
         }
+        val bmp = BitmapFactory.decodeByteArray(src, 0, src.size, options) ?: return null
+        try {
+            return albumJpeg(bmp, maxBytes)
+        } finally { bmp.recycle() }
+    }
+
+    /** MediaSession owns this bitmap. Bound the output without recycling its shared source. */
+    fun albumJpeg(bmp: Bitmap, maxBytes: Int = MAX_BYTES): ByteArray? {
+        if (bmp.isRecycled || bmp.width <= 0 || bmp.height <= 0 || maxBytes <= 0) return null
+        for (side in intArrayOf(ART_SIDE, ART_SMALL)) {
+            val ratio = minOf(1f, side.toFloat() / maxOf(bmp.width, bmp.height))
+            val scaled = if (ratio < 1f) Bitmap.createScaledBitmap(bmp,
+                maxOf(1, (bmp.width * ratio).toInt()), maxOf(1, (bmp.height * ratio).toInt()), true) else bmp
+            var software: Bitmap? = null
+            var opaque: Bitmap? = null
+            try {
+                software = if (scaled.config == Bitmap.Config.HARDWARE) scaled.copy(Bitmap.Config.ARGB_8888, false) else scaled
+                val drawable = software ?: return null
+                // JPEG has no alpha; blend the cover onto a bounded opaque image.
+                opaque = Bitmap.createBitmap(drawable.width, drawable.height, Bitmap.Config.ARGB_8888)
+                Canvas(opaque).apply {
+                    drawColor(Color.BLACK)
+                    drawBitmap(drawable, 0f, 0f, null)
+                }
+                var q = 90
+                while (q >= 10) {
+                    val out = compress(opaque, Bitmap.CompressFormat.JPEG, q)
+                    if (out.size < maxBytes) return out
+                    q -= 10
+                }
+            } finally {
+                opaque?.recycle()
+                if (software !== scaled) software?.recycle()
+                if (scaled !== bmp) scaled.recycle()
+            }
+        }
+        return null
     }
 
     /** Стрелка манёвра nextTurn (коды CarLife): белая с тёмной обводкой на прозрачном фоне, PNG 128x128. */

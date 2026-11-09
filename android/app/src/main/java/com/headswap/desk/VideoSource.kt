@@ -4,7 +4,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
@@ -29,6 +28,8 @@ class VideoSource(
     private val area: Rect? = null,
     /** Энкодер в формате Baidu (Mobis CCNC, h242): VBR, level 256, повтор кадра 100 мс. */
     private val baidu: Boolean = false,
+    /** Shared read-only image supplied by the application; this encoder never recycles it. */
+    private val brandArtwork: Bitmap? = null,
 ) {
     interface Listener {
         fun onConfig(csd: ByteArray)
@@ -39,7 +40,7 @@ class VideoSource(
     @Volatile var framesRendered = 0L
         private set
 
-    /** Текст заглушки: крупная надпись и живой индикатор вместо видео AA. */
+    /** Текст состояния под изображением приложения вместо ещё не готового рабочего стола. */
     @Volatile var banner: String? = null
 
     @Volatile private var running = false
@@ -50,7 +51,7 @@ class VideoSource(
     var encoderName: String = "?"
         private set
 
-    private val fill = Paint()
+    private val image = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.DEFAULT_BOLD }
 
     @Synchronized
@@ -241,50 +242,55 @@ class VideoSource(
         val w = area?.width() ?: width
         val h = area?.height() ?: height
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        drawBanner(Canvas(bmp), w, h, msg, framesRendered, Paint(text), Paint(fill))
+        drawBanner(Canvas(bmp), w, h, msg, Paint(text), Paint(image))
         return bmp
     }
 
     private fun drawBanner(c: Canvas, msg: String) {
-        val a = area ?: return drawBanner(c, width, height, msg, framesRendered, text, fill)
+        val a = area ?: return drawBanner(c, width, height, msg, text, image)
         c.drawColor(BG)
         c.save()
         c.translate(a.left.toFloat(), a.top.toFloat())
         c.clipRect(0, 0, a.width(), a.height())
-        drawBanner(c, a.width(), a.height(), msg, framesRendered, text, fill)
+        drawBanner(c, a.width(), a.height(), msg, text, image)
         c.restore()
     }
 
-    private fun drawBanner(c: Canvas, width: Int, height: Int, msg: String, n: Long, text: Paint, fill: Paint) {
+    private fun drawBanner(c: Canvas, width: Int, height: Int, msg: String, text: Paint, image: Paint) {
         val w = width.toFloat()
         val h = height.toFloat()
         // плоские цвета: на CBR 4 Мбит/с градиенты слабого энкодера идут полосами
         c.drawColor(BG)
-        drawLogo(c, w / 2, h * 0.34f, minOf(h * 0.36f, w * 0.3f), n / fps.toFloat(), fill)
+        brandArtwork?.let { artwork ->
+            val side = minOf(h * 0.52f, w * 0.48f)
+            val scale = side / maxOf(artwork.width, artwork.height)
+            val aw = artwork.width * scale
+            val ah = artwork.height * scale
+            c.drawBitmap(artwork, null, RectF((w - aw) / 2, h * 0.32f - ah / 2,
+                (w + aw) / 2, h * 0.32f + ah / 2), image)
+        }
 
-        // словесный знак: Head белым, swap янтарным
-        text.textAlign = Paint.Align.LEFT
+        text.textAlign = Paint.Align.CENTER
         text.typeface = WORDMARK
-        text.textSize = h * 0.085f
-        val head = "Head"
-        val swap = "swap"
-        val wHead = text.measureText(head)
-        var x = w / 2 - (wHead + text.measureText(swap)) / 2
-        val yWord = h * 0.66f
+        text.textSize = h * 0.075f
+        val title = "HeadSwap Desktop"
+        if (text.measureText(title) > w * 0.88f) text.textSize *= w * 0.88f / text.measureText(title)
         text.color = Color.WHITE
-        c.drawText(head, x, yWord, text)
-        x += wHead
-        text.color = AMBER
-        c.drawText(swap, x, yWord, text)
+        c.drawText(title, w / 2, h * 0.66f, text)
 
         // статус моста: по нему видно, чего ждём (сервер ГУ, разблокировка, кадр)
         text.typeface = Typeface.DEFAULT_BOLD
         text.textAlign = Paint.Align.CENTER
         text.color = STATUS
-        text.textSize = h * 0.065f
+        text.textSize = h * 0.052f
+        var lines = wrapBalanced(msg, w * 0.88f, text)
+        while (lines.size * text.textSize * 1.25f > h * 0.23f && text.textSize > h * 0.032f) {
+            text.textSize *= 0.9f
+            lines = wrapBalanced(msg, w * 0.88f, text)
+        }
         val lh = text.textSize * 1.25f
-        var y = h * 0.81f
-        for (l in wrapBalanced(msg, w * 0.88f, text)) {
+        var y = h * 0.73f + (h * 0.23f - lines.size * lh) / 2 - text.fontMetrics.ascent
+        for (l in lines) {
             c.drawText(l, w / 2, y, text)
             y += lh
         }
@@ -327,62 +333,6 @@ class VideoSource(
         return best
     }
 
-    /**
-     * Глиф иконки (ic_launcher_foreground.xml, 48×48): дуги-стрелки раз в [SWAP_S] меняются местами
-     * поворотом на 180° вокруг экрана, на каждом обмене от логотипа расходится янтарное кольцо.
-     * Состояние только от t: snapshot() с любой нити рисует тот же кадр.
-     */
-    private fun drawLogo(c: Canvas, cx: Float, cy: Float, size: Float, t: Float, p: Paint) {
-        val phase = t % SWAP_S
-        val k = (phase / SPIN_S).coerceAtMost(1f)
-        val ease = k * k * (3 - 2 * k)
-        val angle = (t / SWAP_S).toInt() * 180f + ease * 180f
-
-        val s = size / 48f
-        c.save()
-        c.translate(cx - 24f * s, cy - 24f * s)
-        c.scale(s, s)
-
-        // волна обмена: кольцо от радиуса дуг наружу, тает к концу цикла
-        val r = phase / SWAP_S
-        p.style = Paint.Style.STROKE
-        p.strokeWidth = 1.2f
-        p.color = AMBER
-        p.alpha = ((1 - r) * 110).toInt()
-        c.drawCircle(24f, 24f, 15f + r * 9f, p)
-        p.alpha = 255
-
-        p.strokeCap = Paint.Cap.ROUND
-        p.strokeJoin = Paint.Join.ROUND
-        c.save()
-        c.rotate(angle, 24f, 24f)
-        drawArrow(c, ARC_WHITE, HEAD_WHITE, Color.WHITE, p)
-        drawArrow(c, ARC_AMBER, HEAD_AMBER, AMBER, p)
-        c.restore()
-
-        // экран в центре неподвижен
-        p.style = Paint.Style.STROKE
-        p.color = Color.WHITE
-        p.strokeWidth = 2f
-        c.drawRoundRect(16.5f, 19.25f, 31.5f, 29.25f, 2.2f, 2.2f, p)
-        p.color = AMBER
-        p.strokeWidth = 1.8f
-        c.drawLine(19.6f, 25.4f, 28.4f, 25.4f, p)
-        c.restore()
-        p.strokeCap = Paint.Cap.BUTT
-        p.style = Paint.Style.FILL
-    }
-
-    private fun drawArrow(c: Canvas, arc: Path, head: Path, color: Int, p: Paint) {
-        p.color = color
-        p.style = Paint.Style.STROKE
-        p.strokeWidth = 3.2f
-        c.drawPath(arc, p)
-        p.style = Paint.Style.FILL_AND_STROKE
-        p.strokeWidth = 1f
-        c.drawPath(head, p)
-    }
-
     private fun draw(c: Canvas) {
         drawBanner(c, banner ?: "")
     }
@@ -391,25 +341,8 @@ class VideoSource(
         const val MIME = "video/avc"
 
         private val BG = Color.rgb(0x0E, 0x14, 0x1A) // фон иконки
-        private val AMBER = Color.rgb(0xF2, 0xB3, 0x3D)
         private val STATUS = Color.rgb(0xB8, 0xC4, 0xCC)
         private val WORDMARK: Typeface = Typeface.create("sans-serif-black", Typeface.NORMAL)
 
-        /** Цикл обмена стрелок и длительность самого поворота внутри него, секунды. */
-        private const val SWAP_S = 2.2f
-        private const val SPIN_S = 0.8f
-
-        // дуги — окружность r=15 вокруг (24,24): 195°..318° и её отражение 15°..138°
-        private val ARC_WHITE = Path().apply { addArc(RectF(9f, 9f, 39f, 39f), 195f, 123f) }
-        private val ARC_AMBER = Path().apply { addArc(RectF(9f, 9f, 39f, 39f), 15f, 123f) }
-        private val HEAD_WHITE = triangle(39.24f, 10.28f, 40.5f, 19.9f, 31.06f, 17.64f)
-        private val HEAD_AMBER = triangle(8.76f, 37.72f, 7.5f, 28.1f, 16.94f, 30.36f)
-
-        private fun triangle(x1: Float, y1: Float, x2: Float, y2: Float, x3: Float, y3: Float) = Path().apply {
-            moveTo(x1, y1)
-            lineTo(x2, y2)
-            lineTo(x3, y3)
-            close()
-        }
     }
 }

@@ -93,6 +93,11 @@ internal object EmbeddedSessionRegistry {
         intArrayOf(active.density, if (corrected) 1 else 0)
     }
 
+    /** UI overlays can target only the current live parent, never display 0 or an unrelated monitor. */
+    fun ownsParentDisplay(id: Int): Boolean = synchronized(lock) {
+        id > 0 && parent?.let { it.displayId == id && it.remote.asBinder().isBinderAlive } == true
+    }
+
     fun isAndroidDesktop(id: Int): Boolean = synchronized(lock) {
         id > 0 && parent?.let { it.displayId == id && it.mode == DesktopModePolicy.ANDROID_DESKTOP } == true
     }

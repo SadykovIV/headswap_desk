@@ -36,8 +36,7 @@ final class ProjectionDensityProbe {
             Context context = test.getTargetContext();
             DisplayManager dm = context.getSystemService(DisplayManager.class);
             int original = dpi(dm.getDisplay(Display.DEFAULT_DISPLAY));
-            for (int mode : new int[]{DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK,
-                                      DesktopModePolicy.SAMSUNG_DEX}) {
+            for (int mode : new int[]{DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK}) {
                 int projected = original == 128 ? 200 : 128;
                 try (ImageReader parentPixels = ImageReader.newInstance(1280,720,PixelFormat.RGBA_8888,2);
                      ImageReader childPixels = ImageReader.newInstance(576,684,PixelFormat.RGBA_8888,2)) {
@@ -61,6 +60,7 @@ final class ProjectionDensityProbe {
                 }
                 if (dpi(dm.getDisplay(0)) != original) throw new IllegalStateException("VD release changed primary DPI");
             }
+            result.putString("profiles", "Android Desktop, DriveDeck; native Samsung DeX requires a Samsung device");
             result.putBoolean("primaryUnchanged",true);
             result.putInt("primaryDpi",original);
             code=Activity.RESULT_OK;

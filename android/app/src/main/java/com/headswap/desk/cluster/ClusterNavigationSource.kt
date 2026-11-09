@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import com.headswap.desk.notify.HuNotifications
 import com.headswap.desk.AppLog
 import com.headswap.desk.embed.EmbeddedSessionRegistry
 import java.util.concurrent.Executors
@@ -17,20 +18,27 @@ class ClusterNavigationListener : NotificationListenerService() {
         super.onListenerConnected()
         connected = this
         source?.refresh(this)
+        HuNotifications.listenerConnected()
     }
     override fun onListenerDisconnected() {
-        if (connected === this) { connected = null; source?.disconnected() }
+        if (connected === this) { connected = null; source?.disconnected(); HuNotifications.listenerDisconnected() }
         super.onListenerDisconnected()
     }
     override fun onDestroy() {
-        if (connected === this) { connected = null; source?.disconnected() }
+        if (connected === this) { connected = null; source?.disconnected(); HuNotifications.listenerDisconnected() }
         super.onDestroy()
     }
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        if (connected === this && accepts(sbn)) source?.posted(sbn)
+        if (connected === this) {
+            if (accepts(sbn)) source?.posted(sbn)
+            HuNotifications.posted(sbn)
+        }
     }
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (connected === this && accepts(sbn)) source?.removed(sbn.key)
+        if (connected === this) {
+            if (accepts(sbn)) source?.removed(sbn.key)
+            HuNotifications.removed(sbn)
+        }
     }
     companion object {
         @Volatile internal var source: ClusterNavigationSource? = null

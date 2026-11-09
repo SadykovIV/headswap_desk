@@ -1,11 +1,6 @@
-<?xml version='1.0' encoding='utf-8'?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
-  <path android:pathData="M33,36 H75 Q80,36 80,41 L78.5,66 Q78,71 73.5,71 H34.5 Q30,71 29.5,66 L28,41 Q28,36 33,36 Z" android:strokeColor="#ECF4F4" android:strokeWidth="2.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
-  <path android:pathData="M34,42 H74 V58 H34 Z" android:fillColor="#263D4C" />
-  <path android:pathData="M34,60 H74" android:strokeColor="#99B0BD" android:strokeWidth="1.4" android:strokeLineCap="round" android:strokeLineJoin="round" />
-  <path android:pathData="M46,54 L51,49 H58 L63,44" android:strokeColor="#ECF4F4" android:strokeWidth="2.1" android:strokeLineCap="round" android:strokeLineJoin="round" />
-  <path android:pathData="M58.7,44.3 L65.5,42 L63.4,48.8 Z" android:fillColor="#F2B33D" />
-  <path android:pathData="M34.75,65.15 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0" android:strokeColor="#F2B33D" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
-  <path android:pathData="M69.45,65.15 a1.9,1.9 0 1,0 3.8,0 a1.9,1.9 0 1,0 -3.8,0" android:strokeColor="#F2B33D" android:strokeWidth="1.5" android:strokeLineCap="round" android:strokeLineJoin="round" />
-  <path android:pathData="M46,65.2 H52 M56,65.2 H62" android:strokeColor="#99B0BD" android:strokeWidth="1.8" android:strokeLineCap="round" android:strokeLineJoin="round" />
-</vector>
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Preserve the supplied artwork; keep both devices inside adaptive icon masks. -->
+<inset xmlns:android="http://schemas.android.com/apk/res/android" android:inset="22.22%">
+    <bitmap android:src="@drawable/headswap_brand" android:gravity="fill"
+        android:filter="true" android:dither="true" />
+</inset>

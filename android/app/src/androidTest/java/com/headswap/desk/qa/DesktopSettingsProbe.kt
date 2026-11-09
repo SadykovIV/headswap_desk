@@ -127,12 +127,14 @@ internal object DesktopSettingsProbe {
         val originalTimerEnabled = prefs.phoneTimerEnabled
         val originalTimeout = prefs.phoneIdleTimeout
         val originalNav = AaPrefs(context).metaNavi
+        val originalSetupCompleted = prefs.initialSetupCompleted
         val originalCompact = prefs.compactMapSymbols
         val originalPackages = prefs.dpiCorrectionPackages
         var activity: Activity? = null
         var components: Activity? = null
         val monitor = test.addMonitor(ComponentUpdatesActivity::class.java.name, null, false)
         try {
+            prefs.initialSetupCompleted = true
             prefs.useDelegated = true
             prefs.desktopPanelControl = true
             prefs.phoneTimerEnabled = true
@@ -199,6 +201,7 @@ internal object DesktopSettingsProbe {
             prefs.accessMode = originalAccess
             prefs.desktopMode = originalMode
             AaPrefs(context).metaNavi = originalNav
+            prefs.initialSetupCompleted = originalSetupCompleted
             prefs.compactMapSymbols = originalCompact
             prefs.dpiCorrectionPackages = originalPackages
         }

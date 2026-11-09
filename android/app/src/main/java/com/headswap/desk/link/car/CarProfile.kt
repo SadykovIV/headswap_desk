@@ -45,8 +45,8 @@ class CarProfile(ctx: Context) {
     companion object {
         /** Включить/выключить ресивер ACL. Включается, только если машина выбрана и сборка с бетой беспровода. */
         fun enableTrigger(ctx: Context, on: Boolean) {
-            if (!BuildConfig.WIRELESS_BETA) return // Desktop does not declare the ACL receiver.
-            val enable = on && CarProfile(ctx).isSet
+            if (!BuildConfig.WIRELESS_BETA) return
+            val enable = on && WirelessPrefs(ctx).enabled && CarProfile(ctx).isSet
             ctx.packageManager.setComponentEnabledSetting(
                 component(ctx),
                 if (enable) PackageManager.COMPONENT_ENABLED_STATE_ENABLED else PackageManager.COMPONENT_ENABLED_STATE_DISABLED,

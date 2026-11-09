@@ -105,6 +105,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                 DexState.error = null
                 DexState.running = false
                 DexState.displayId = -1
+                DexState.independentPhoneLock = null
                 resetPhonePowerState()
                 core.onAaConnecting()
                 core.peer = this
@@ -165,6 +166,8 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
             }
             check(id > 0) { "Не удалось создать отдельный экран" }
             displayId = id
+            DexState.independentPhoneLock = context.getSystemService(android.hardware.display.DisplayManager::class.java)
+                .getDisplay(id)?.let(DesktopDisplayIsolation::confirmedIndependence)
             if (stopping.get() || !core.desktopSurfaceReady(generation)) {
                 onSurfaceClosing(generation)
                 return
@@ -202,6 +205,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
         generationStartedAt = 0
         DexState.running = false
         DexState.displayId = -1
+        DexState.independentPhoneLock = null
         val remote = service
         val binder = serviceBinder
         if (remote != null && binder?.isBinderAlive == true && serviceDied.count != 0L) {
@@ -257,7 +261,19 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
         }
     }
 
+    override fun sendRotary(delta: Int) { DesktopRotaryInput.keys(delta).forEach(::sendKey) }
+
     override fun sendKey(keycode: Int) {
+        if (keycode == android.view.KeyEvent.KEYCODE_SEARCH || keycode == android.view.KeyEvent.KEYCODE_VOICE_ASSIST) {
+            val requestedDisplay = displayId
+            main.post {
+                DesktopAssistant.launch(context, requestedDisplay,
+                    DelegatedInputGateway.ownedDisplayIds() + requestedDisplay) {
+                    !stopping.get() && firstFrame && displayId == requestedDisplay && requestedDisplay > 0
+                }
+            }
+            return
+        }
         if (keycode !in 0..1000) return
         enqueue { it.injectKey(0, keycode); it.injectKey(1, keycode) }
     }
@@ -391,6 +407,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                 core.onAaEnded(established)
                 DexState.running = false
                 DexState.displayId = -1
+                DexState.independentPhoneLock = null
                 DexState.error = failure
                 status(failure?.let { "DeX: $it" } ?: "DeX остановлен")
                 finished.countDown()

@@ -19,10 +19,10 @@ android {
         minSdk = 33
         targetSdk = 37
         testInstrumentationRunner = "com.headswap.desk.qa.CompatibilityProbe"
-        versionCode = 42
-        versionName = "0.5.1"
-        // Wireless ADB only activates the desktop; projection uses USB CarLife.
-        buildConfigField("boolean", "WIRELESS_BETA", "false")
+        versionCode = 43
+        versionName = "0.6.0"
+        // Wireless CarLife uses the same desktop source and channel protocol as USB.
+        buildConfigField("boolean", "WIRELESS_BETA", "true")
     }
 
     buildFeatures {

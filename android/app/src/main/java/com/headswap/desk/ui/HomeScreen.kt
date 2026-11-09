@@ -45,8 +45,7 @@ class HomeScreen(host: MainActivity) : Screen(host) {
         val header = c.hbox().apply {
             pad(c, 20, 8, 8, 0)
             val chip = FrameLayout(c).apply {
-                background = c.shape(c.clr(R.color.pri), 10)
-                addView(c.icon(R.drawable.ic_logo, 22, c.clr(R.color.onpri)), FrameLayout.LayoutParams(c.dp(22), c.dp(22), Gravity.CENTER))
+                addView(c.brandIcon(32), FrameLayout.LayoutParams(c.dp(32), c.dp(32), Gravity.CENTER))
             }
             addView(chip, lp(c.dp(32), c.dp(32)))
             addView(c.text("Headswap", 22f, 600).apply { letterSpacing = -0.01f }, lp(WRAP, WRAP).margins(c, 10))

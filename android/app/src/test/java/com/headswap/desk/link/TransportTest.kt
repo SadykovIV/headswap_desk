@@ -95,6 +95,153 @@ class TransportTest {
     }
 
     @Test
+    fun blockedVideoWriteRemainsVisibleToBackpressureUntilFlush() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val written = CountDownLatch(2)
+        val clockMs = java.util.concurrent.atomic.AtomicLong(1_000L)
+        val output = object : OutputStream() {
+            override fun write(value: Int) { entered.countDown(); release.await() }
+            override fun write(data: ByteArray, offset: Int, length: Int) { entered.countDown(); release.await() }
+        }
+        val transport = StreamTransport(BlockingIn(), output, TransportCaps.USB_AOA, "blocked", clock = { clockMs.get() })
+        val first = Wire.dataInner(Msg.VIDEO_DATA, 1, ByteArray(800_000))
+        val second = Wire.dataInner(Msg.VIDEO_DATA, 2, ByteArray(1_000))
+        try {
+            transport.start({ _, _ -> }, { _, _ -> written.countDown() }, { })
+            transport.send(Ch.VIDEO, first)
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            clockMs.set(1_750L)
+            transport.send(Ch.VIDEO, second)
+            transport.send(Ch.MEDIA, Wire.dataInner(0x00030006, 1, ByteArray(100)))
+            assertEquals(2, transport.queuedVideoFrames)
+            assertEquals((first.size + second.size).toLong(), transport.queuedVideoBytes)
+            assertEquals(750L, transport.videoWriteAgeMs)
+            assertEquals(1, transport.dropQueued(Ch.MEDIA) { true })
+            assertEquals((first.size + second.size).toLong(), transport.queuedVideoBytes)
+            release.countDown()
+            assertTrue(written.await(3, TimeUnit.SECONDS))
+            assertEquals(0, transport.queuedVideoFrames)
+            assertEquals(0L, transport.queuedVideoBytes)
+            assertEquals(0L, transport.videoWriteAgeMs)
+        } finally { release.countDown(); transport.close() }
+    }
+
+    @Test
+    fun failedVideoWriteRetiresOnlyItsOwnBacklog() {
+        val failed = CountDownLatch(1)
+        val output = object : OutputStream() {
+            override fun write(value: Int): Unit = throw java.io.IOException("device disconnected")
+        }
+        val transport = StreamTransport(BlockingIn(), output, TransportCaps.USB_AOA, "failed", clock = clock)
+        try {
+            transport.start({ _, _ -> }, { _, _ -> fail("failed write cannot complete") }, { failed.countDown() })
+            transport.send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, 1, ByteArray(800_000)))
+            assertTrue(failed.await(3, TimeUnit.SECONDS))
+            assertEquals(0L, transport.queuedVideoBytes)
+            assertEquals(0, transport.queuedVideoFrames)
+            assertEquals(0L, transport.videoWriteAgeMs)
+        } finally { transport.close() }
+    }
+
+    @Test
+    fun stalePcmBehindBlockedWriteExpiresButAudioControlAndFreshPcmSurvive() {
+        for (wireless in listOf(false, true)) {
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val completed = CountDownLatch(3)
+            val now = java.util.concurrent.atomic.AtomicLong(1_000L)
+            val sent = Collections.synchronizedList(mutableListOf<ByteArray>())
+            val output = object : OutputStream() {
+                override fun write(value: Int) { entered.countDown(); release.await() }
+                override fun write(bytes: ByteArray, offset: Int, length: Int) { entered.countDown(); release.await() }
+            }
+            val input = BlockingIn()
+            val transport: CarTransport = if (!wireless) {
+                StreamTransport(input, output, TransportCaps.USB_AOA, "timed", clock = { now.get() })
+            } else {
+                val socket = object : Socket() {
+                    override fun getInputStream(): InputStream = input
+                    override fun getOutputStream(): OutputStream = output
+                    override fun close() { input.close(); release.countDown() }
+                }
+                MultiSocketTransport(mapOf(Ch.MEDIA to socket), mapOf(Ch.MEDIA to 9240), "timed", {}, { now.get() })
+            }
+            val init = Wire.dataInner(0x00030001, 0, ByteArray(8))
+            val stale = Wire.dataInner(0x00030006, 1, byteArrayOf(1, 2))
+            val pause = Wire.dataInner(0x00030003, 0, ByteArray(0))
+            val fresh = Wire.dataInner(0x00030006, 2, byteArrayOf(3, 4))
+            try {
+                transport.start({ _, _ -> }, { _, packet -> sent += packet; completed.countDown() }, { })
+                transport.send(Ch.MEDIA, init)
+                assertTrue(entered.await(3, TimeUnit.SECONDS))
+                transport.sendTimed(Ch.MEDIA, stale, 150)
+                transport.sendTimed(Ch.MEDIA, pause, 150)
+                now.set(2_000L)
+                transport.sendTimed(Ch.MEDIA, fresh, 150)
+                release.countDown()
+                assertTrue(completed.await(3, TimeUnit.SECONDS))
+                assertEquals(3, sent.size)
+                assertArrayEquals(init, sent[0])
+                assertArrayEquals(pause, sent[1])
+                assertArrayEquals(fresh, sent[2])
+                assertEquals(1L, transport.audioExpiredPackets)
+            } finally { release.countDown(); transport.close() }
+        }
+    }
+
+    @Test
+    fun blockedWirelessMediaStaysBoundedWhileVideoDrainsAndAudioControlsSurvive() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val now = java.util.concurrent.atomic.AtomicLong(1_000L)
+        val mediaSent = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val videoDrained = CountDownLatch(500)
+        val mediaInput = BlockingIn()
+        val videoInput = BlockingIn()
+        val blocked = object : OutputStream() {
+            override fun write(value: Int) { entered.countDown(); release.await() }
+            override fun write(bytes: ByteArray, offset: Int, length: Int) { entered.countDown(); release.await() }
+        }
+        fun socket(input: InputStream, output: OutputStream) = object : Socket() {
+            override fun getInputStream() = input
+            override fun getOutputStream() = output
+            override fun close() { input.close(); release.countDown() }
+        }
+        val transport = MultiSocketTransport(mapOf(Ch.MEDIA to socket(mediaInput, blocked),
+            Ch.VIDEO to socket(videoInput, ByteArrayOutputStream())), mapOf(Ch.MEDIA to 9240, Ch.VIDEO to 8240),
+            "audio stalled", {}, { now.get() })
+        val init = Wire.dataInner(0x00030001, 0, ByteArray(8))
+        val pause = Wire.dataInner(0x00030003, 0, ByteArray(0))
+        val pcm = Wire.dataInner(0x00030006, 0, ByteArray(3840))
+        try {
+            transport.start({ _, _ -> }, { channel, packet ->
+                if (channel == Ch.VIDEO) videoDrained.countDown() else mediaSent += packet
+            }, {})
+            transport.send(Ch.MEDIA, init)
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            transport.sendTimed(Ch.MEDIA, pause, 150)
+            repeat(500) {
+                now.addAndGet(20)
+                transport.sendTimed(Ch.MEDIA, pcm, 150)
+                transport.send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, it, byteArrayOf(1)))
+                assertTrue("PCM must expire on admission, not wait for blocked writer", transport.queueSize(Ch.MEDIA) <= 9)
+            }
+            assertTrue(videoDrained.await(3, TimeUnit.SECONDS))
+            assertTrue(transport.audioExpiredPackets >= 490)
+            // Even a burst with a non-advancing clock is bounded by bytes as well as age.
+            repeat(200) { transport.sendTimed(Ch.MEDIA, pcm, 150) }
+            assertTrue(transport.queueSize(Ch.MEDIA) <= 1 + AudioQueueAdmission.MAX_PENDING_PCM_BYTES / pcm.size)
+            assertTrue(transport.audioOverflowPackets > 100)
+            release.countDown()
+            val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+            while (mediaSent.size < 2 && System.nanoTime() < deadline) Thread.sleep(10)
+            assertArrayEquals(init, mediaSent[0])
+            assertArrayEquals(pause, mediaSent[1])
+        } finally { release.countDown(); transport.close() }
+    }
+
+    @Test
     fun streamDropQueuedRemovesOnlyMatchingMediaData() {
         // писатель не запущен: всё лежит в очереди. h425: из неё уходит только MEDIA_DATA, остальное на месте
         val out = RecordingOut()
@@ -125,7 +272,7 @@ class TransportTest {
             val peer = PipedOutputStream(input)
             val transport = StreamTransport(input, ByteArrayOutputStream(), caps, "test", closeFd = { events += "fd closed" }, clock = clock)
             val session = CarLifeSession(transport, SessionConfig(), AaBridgeCore(log = { _, _ -> }),
-                onUsbOutputLost = { _, hadPicture -> events += "lost (picture=$hadPicture)" },
+                onDesktopOutputLost = { _, hadPicture -> events += "lost (picture=$hadPicture)" },
                 onClosed = { closed.countDown() })
             try {
                 session.start()
@@ -402,6 +549,7 @@ class TransportTest {
             hu.socks.getValue(Ch.TOUCH).close()
             assertTrue("сессия не зависла", done.await(5, TimeUnit.SECONDS))
             assertTrue(reason.get(), reason.get().startsWith("tcp6 TOUCH("))
+            assertTrue("wireless output loss is visible before teardown", t.outputEndpointLost)
             // остальные сокеты транспорт закрыл сам
             val cmd = hu.socks.getValue(Ch.CMD)
             cmd.soTimeout = 3000
@@ -413,6 +561,43 @@ class TransportTest {
         } finally {
             hu.close()
         }
+    }
+
+    @Test
+    fun tcp6OutputLossNotifiesPlayerButExplicitStopDoesNot() {
+        for (disconnect in listOf(true, false)) {
+            val (_, transport, hu) = up()
+            val ended = CountDownLatch(1)
+            val events = Collections.synchronizedList(mutableListOf<String>())
+            val session = CarLifeSession(transport, SessionConfig(), AaBridgeCore(log = { _, _ -> }),
+                onDesktopOutputLost = { _, picture -> events += "lost:$picture" },
+                onClosed = { events += "closed"; ended.countDown() })
+            try {
+                session.start()
+                if (disconnect) hu.socks.getValue(Ch.VIDEO).close() else session.close("Stop")
+                assertTrue(ended.await(3, TimeUnit.SECONDS))
+                assertEquals(if (disconnect) listOf("lost:false", "closed") else listOf("closed"), events)
+                assertEquals(disconnect, transport.outputEndpointLost)
+            } finally {
+                session.close("test finished")
+                hu.close()
+            }
+        }
+    }
+
+    @Test
+    fun cancellingIncompleteWirelessConnectionClosesAcceptedChannels() {
+        val listener = Tcp6Listener(InetAddress.getLoopbackAddress(), zeroPorts, dataPort = null, clock = clock).open()
+        val hu = Hu(connect(listener, listOf(Ch.CMD, Ch.VIDEO)))
+        try {
+            listener.abort()
+            try { listener.await(500, "cancelled"); fail("an aborted attempt must never connect") }
+            catch (_: LinkSetupException) { }
+            for (socket in hu.socks.values) {
+                socket.soTimeout = 1000
+                assertEquals(-1, try { socket.getInputStream().read() } catch (_: java.net.SocketException) { -1 })
+            }
+        } finally { listener.close(); hu.close() }
     }
 
     @Test

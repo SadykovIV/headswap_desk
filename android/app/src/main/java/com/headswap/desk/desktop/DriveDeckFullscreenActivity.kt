@@ -42,6 +42,7 @@ class DriveDeckFullscreenActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (config() == null) { finish(); return }
+        setShowWhenLocked(true)
         if (Build.VERSION.SDK_INT == Build.VERSION_CODES.TIRAMISU) {
             // A touchable host can otherwise take focus from the Android 13 child between DOWN and UP.
             window.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)

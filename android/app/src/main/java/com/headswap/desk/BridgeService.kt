@@ -64,6 +64,9 @@ import com.headswap.desk.link.car.CarNetState
 import com.headswap.desk.link.car.CarNetwork
 import com.headswap.desk.link.car.CarProfile
 import com.headswap.desk.link.car.CarWifi
+import com.headswap.desk.link.car.WirelessPrefs
+import com.headswap.desk.link.car.WirelessCarLife
+import com.headswap.desk.link.car.WirelessConnectionPolicy
 import com.headswap.desk.link.diag.NetProbe
 import com.headswap.desk.link.diag.WLog
 import com.headswap.desk.link.wifi.HotspotBeacon
@@ -88,6 +91,7 @@ class BridgeService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private var session: CarLifeSession? = null
     private var clusterMedia: ClusterMediaSource? = null
+    private var notificationShade: com.headswap.desk.notify.HuNotificationShade? = null
     private var clusterNavigation: ClusterNavigationSource? = null
     private var foregroundGuidance: CarLifeForegroundGuidance? = null
     private var unobserveNavigationHints: (() -> Unit)? = null
@@ -102,6 +106,8 @@ class BridgeService : Service() {
     private var pendingDesktopRecovery: Recovery? = null
     /** debug tcp6: слушатель ждёт 6/6 (нить debug-tcp6); Стоп его отменяет. */
     @Volatile private var pendingTcp6: Tcp6Listener? = null
+    private val linkLock = Any()
+    @Volatile private var linkEpoch = 0L
     /** Идёт подъём tcp6/беспровода (от старта до 6/6 или отказа); сервис в это время не гасим. Только главная нить. */
     private var linkWaiting = false
     /** Беспровод (бета, ветка B) включён пользователем: после обрыва снова ждём машину. Пишет главная нить, читает и коннектор. */
@@ -190,7 +196,10 @@ class BridgeService : Service() {
         com.headswap.desk.dex.DesktopMusicPlayback.physicalDetach(this)
         cancelDesktopRecovery()
         Actions.onUsbDetached()
-        autoMode = false
+        // Preserve a deliberate wireless opt-in when the already-selected car is still nearby.
+        // An unplug from an ordinary computer never arms wireless on its own.
+        autoMode = WirelessConnectionPolicy.retainAutoAfterUsbDetach(
+            WirelessPrefs(this).enabled, CarProfile(this).isSet, autoMode)
         wifiBMode = false
         autoStarted = false
         usbToAirPending = false
@@ -199,7 +208,7 @@ class BridgeService : Service() {
         cancelAutoOff()
         cancelHint()
         stopCarNet(CarNetEvent.STOP, "usb-detach")
-        pendingTcp6?.abort()
+        cancelLinkWait()
         CarLifeState.wireless = null
         btProbe.stop("USB отключён")
         AppLog.i("DESKTOP USB detached: keep 8s desktop grace and activation ($reason)", false)
@@ -217,6 +226,7 @@ class BridgeService : Service() {
         nm.createNotificationChannel(NotificationChannel(CHANNEL, getString(R.string.notif_channel_bridge), NotificationManager.IMPORTANCE_LOW))
         registerReceiver(detachReceiver, IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED), Context.RECEIVER_EXPORTED)
         audioDiag.start(this)
+        notificationShade = com.headswap.desk.notify.HuNotificationShade(this).also { it.start() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -266,7 +276,7 @@ class BridgeService : Service() {
     private fun onStickyRestart() {
         AppLog.i("сервис: перезапущен системой после убийства процесса")
         val mac = CarProfile(this).btMac
-        if (!BuildConfig.WIRELESS_BETA || mac == null) {
+        if (!BuildConfig.WIRELESS_BETA || mac == null || WirelessCarLife.unavailableReason(this) != null) {
             WLog.ev(WLog.TRIGGER, "sticky-restart", "resume" to false, "why" to "no-car")
             finish()
             return
@@ -292,7 +302,7 @@ class BridgeService : Service() {
             stopCarNet(CarNetEvent.STOP, "stop")
             CarLifeState.wireless = null
             btProbe.stop("стоп")
-            pendingTcp6?.abort()
+            cancelLinkWait()
             val s = session
             if (s != null) {
                 s.close("остановлено пользователем")        // onSessionClosed увидит stopRequested: AA закрывается сразу
@@ -343,8 +353,9 @@ class BridgeService : Service() {
         }
         // беспровод, ветка B (хотспот телефона + маяк): кнопка в настройках бета-сборки или debug-вход
         if (intent?.action == ACTION_WIFI_B || DebugTransport.wifiB(intent)) {
-            if (!BuildConfig.WIRELESS_BETA) {
-                AppLog.i("сервис: беспровод в этой сборке выключен")
+            val unavailable = WirelessCarLife.unavailableReason(this)
+            if (unavailable != null) {
+                CarLifeState.status = unavailable
                 failStart()
                 return
             }
@@ -401,7 +412,7 @@ class BridgeService : Service() {
             stopCarNet(CarNetEvent.USB_WINS, "usb")
             CarLifeState.wireless = null
             btProbe.stop("кабель")
-            pendingTcp6?.abort()
+            cancelLinkWait()
         }
         startSession(StreamTransport.fromPfd(pfd, TransportCaps.USB_AOA, MainActivity.describe(acc)))
     }
@@ -423,10 +434,11 @@ class BridgeService : Service() {
             bindNetwork = carNetwork,
             onIfaces = { list ->
                 // Wi-Fi Direct-машине хотспот не нужен, а включённый он занимает Wi-Fi Direct (h214): не просим его включить
-                CarLifeState.wireless = if (list.isEmpty()) {
-                    if (wifiDirectCar) waitingText("Wi-Fi Direct") else getString(R.string.wl_state_no_hotspot)
+                if (wifiBMode && !stopRequested) {
+                    CarLifeState.wireless = if (list.isEmpty()) {
+                        if (wifiDirectCar) waitingText("Wi-Fi Direct") else getString(R.string.wl_state_no_hotspot)
+                    } else waitingText(list.joinToString(", ") { it.name })
                 }
-                else waitingText(list.joinToString(", ") { it.name })
             },
         )
         startTcp6("wifi-b", "0.0.0.0", WIFI_B_WAIT_MS, beacon)
@@ -576,8 +588,9 @@ class BridgeService : Service() {
 
     /** ACL_CONNECTED выбранной машины: ждать по Wi-Fi, пока она рядом. Идущую сессию (USB или воздух) не трогаем. */
     private fun onCarAuto() {
-        if (!BuildConfig.WIRELESS_BETA) {
-            AppLog.i("сервис: беспровод в этой сборке выключен")
+        val unavailable = WirelessCarLife.unavailableReason(this)
+        if (unavailable != null) {
+            CarLifeState.status = unavailable
             failStart()
             return
         }
@@ -639,7 +652,7 @@ class BridgeService : Service() {
             CarLifeState.wireless = null
             btProbe.stop("машина ушла")
             stopCarNet(CarNetEvent.AUTO_OFF, "auto-off")
-            pendingTcp6?.abort()
+            cancelLinkWait()
             WLog.ev(WLog.TRIGGER, "auto-off", "stopped" to true)
             failStart()
         } else {
@@ -665,11 +678,12 @@ class BridgeService : Service() {
         WLog.ev(WLog.LINK, "usb-to-air")
         AppLog.i("сервис: кабель отключён, машина рядом по Bluetooth - жду её по воздуху")
         val open = PendingIntent.getActivity(
-            this, 5, Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            this, 5, Intent(this, com.headswap.desk.dex.DexSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_headswap)
+            .setLargeIcon(BrandArtwork.bitmap(resources))
             .setContentTitle(getString(R.string.wl_usb_to_air_title))
             .setContentText(getString(R.string.wl_usb_to_air_text))
             .setContentIntent(open)
@@ -718,6 +732,7 @@ class BridgeService : Service() {
         )
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_headswap)
+            .setLargeIcon(BrandArtwork.bitmap(resources))
             .setContentTitle(getString(R.string.wl_wifi_off_title))
             .setContentText(getString(R.string.wl_wifi_off_text))
             .setStyle(Notification.BigTextStyle().bigText(getString(R.string.wl_wifi_off_text)))
@@ -741,6 +756,7 @@ class BridgeService : Service() {
         )
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_headswap)
+            .setLargeIcon(BrandArtwork.bitmap(resources))
             .setContentTitle(getString(R.string.wl_hint_title))
             .setContentText(getString(R.string.wl_hint_text))
             .setContentIntent(open)
@@ -778,6 +794,7 @@ class BridgeService : Service() {
         )
         val n = Notification.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_headswap)
+            .setLargeIcon(BrandArtwork.bitmap(resources))
             .setContentTitle(getString(R.string.wl_bt_hint_title))
             .setContentText(getString(R.string.wl_bt_hint_text))
             .setContentIntent(open)
@@ -788,12 +805,24 @@ class BridgeService : Service() {
         WLog.ev(WLog.TRIGGER, "bt-hint", "carBt" to carBt, "mode" to mode.name)
     }
 
+    /** Invalidates both a waiting listener and a worker which has not opened its sockets yet. */
+    private fun cancelLinkWait() {
+        synchronized(linkLock) {
+            linkEpoch++
+            pendingTcp6?.abort()
+            pendingTcp6 = null
+        }
+        linkWaiting = false
+        restartingForCarNet = false
+    }
+
     private fun startTcp6(kind: String, bind: String, waitMs: Long, beacon: HotspotBeacon?) {
         if (linkWaiting) {
             AppLog.i("сервис: $kind: уже жду ГУ, повторный старт игнорирую")
             return
         }
         linkWaiting = true
+        val attempt = synchronized(linkLock) { ++linkEpoch }
         sixReady = false
         WLog.begin(kind, "bind" to bind, "ACCESS_LOCAL_NETWORK" to NetProbe.localNetworkGranted(this))
         AppLog.i("сервис: $kind, слушаю 6 портов на $bind, жду ГУ ${waitMs / 1000} с")
@@ -804,22 +833,30 @@ class BridgeService : Service() {
             val result: Any = try {
                 val peerOk: (java.net.InetAddress) -> Boolean =
                     if (beacon == null) { _ -> true } else { a -> beacon.current.any { it.contains(a) } || btProbe.ownsPeer(a) }
-                val l = Tcp6Listener(java.net.InetAddress.getByName(bind), peerOk = peerOk).open()
-                pendingTcp6 = l
-                beacon?.start()
+                val l = synchronized(linkLock) {
+                    if (attempt != linkEpoch) throw LinkSetupException("подключение отменено")
+                    Tcp6Listener(java.net.InetAddress.getByName(bind), peerOk = peerOk).open().also {
+                        pendingTcp6 = it
+                        beacon?.start()
+                    }
+                }
                 l.await(waitMs, "$kind $bind").also { hotspotPeer = beacon != null && l.peerAddress?.let { !btProbe.ownsPeer(it) } == true }
             } catch (e: Exception) {
                 e
             } finally {
-                pendingTcp6 = null
+                synchronized(linkLock) { if (attempt == linkEpoch) pendingTcp6 = null }
             }
             beacon?.stop(if (result is CarTransport) "6/6" else "нет ГУ")
             main.post {
+                if (attempt != linkEpoch || stopRequested) {
+                    if (result is CarTransport) result.close()
+                    return@post
+                }
                 linkWaiting = false
                 val restarting = restartingForCarNet
                 restartingForCarNet = false
                 when {
-                    result is CarTransport && session != null -> result.close()
+                    result is CarTransport && !WirelessConnectionPolicy.acceptAttempt(attempt, linkEpoch, stopRequested, session != null) -> result.close()
                     result is CarTransport -> {
                         sixReady = true
                         // подключение без Wi-Fi Direct: этой машине P2P не нужен (если в этом ожидании TARGET_INFO был, режим не трогаем)
@@ -891,12 +928,14 @@ class BridgeService : Service() {
         val desktopSelection = dexPrefs.desktopVideoSelection()
         val desktopVideo = desktopSelection.takeIf { dexPrefs.useDesktopService }
         val screenOn = getSystemService(PowerManager::class.java).isInteractive
-        val clusterTransport = transport.caps.kind == TransportCaps.USB_AOA.kind ||
-            transport.caps.kind == TransportCaps.TCP_DEBUG.kind
+        val desktopOutput = transport.caps.kind == TransportCaps.USB_AOA.kind ||
+            transport.caps.kind == TransportCaps.TCP6.kind
+        val clusterTransport = desktopOutput || transport.caps.kind == TransportCaps.TCP_DEBUG.kind
         val cfg = SessionConfig(
-            screenOn, false, if (desktopVideo != null) dexPrefs.desktopFps else aaPrefs.fpsSetting,
+            screenOn, false, if (desktopVideo != null) com.headswap.desk.aa.FpsSetting.AUTO else aaPrefs.fpsSetting,
             metaMusic = clusterTransport && aaPrefs.metaMusic, metaNavi = clusterTransport && aaPrefs.metaNavi,
             naviField6 = aaPrefs.naviField6, desktopVideo = desktopVideo,
+            desktopBitrateBps = dexPrefs.desktopBitrateMbps * 1_000_000,
         )
         MetaRelay.PROGRESS_UNIT = if (aaPrefs.progressSeconds) 1 else 1000
 
@@ -934,9 +973,10 @@ class BridgeService : Service() {
 
         val sref = arrayOfNulls<CarLifeSession>(1)
         val s = CarLifeSession(transport, cfg, h.core, PhoneThermal(this), CallStateSource.NONE,
+            brandArtwork = BrandArtwork.bitmap(resources),
             onHuSize = { w, hh -> aaPrefs.saveHuSize(w, hh) },
             onNavigationInterestChanged = { main.post { if (!stopRequested && session === sref[0]) clusterNavigation?.subscriptionChanged() } },
-            onUsbOutputLost = { owner, hadPicture -> main.post {
+            onDesktopOutputLost = { owner, hadPicture -> main.post {
                 if (!stopRequested && session === owner)
                     com.headswap.desk.dex.DesktopMusicPlayback.usbOutputLost(this, owner, hadPicture && DexState.running)
             } }
@@ -944,18 +984,18 @@ class BridgeService : Service() {
         sref[0] = s
         session = s
         com.headswap.desk.dex.DesktopMusicPlayback.attach(applicationContext, this, s,
-            transport.caps.kind == TransportCaps.USB_AOA.kind,
+            desktopOutput,
             ready = { session === s && DexState.running && s.hasFreshDesktopVideo() },
             audioReady = { !DexPrefs(this).usbPlaybackAudio || !h.core.audioViaUsb ||
                 com.headswap.desk.dex.DesktopAudioState.running })
-        desktopAudio.attach(h.core, transport.caps.kind == TransportCaps.USB_AOA.kind) {
+        desktopAudio.attach(h.core, desktopOutput) {
             session === s && s.canCaptureDesktopAudio()
         }
         com.headswap.desk.dex.DelegatedPanelAccess.attachOutput(s) {
-            session === s && transport.caps.kind == TransportCaps.USB_AOA.kind && s.canCaptureDesktopAudio()
+            session === s && desktopOutput && s.canCaptureDesktopAudio()
         }
         phoneIdleTimer?.stop()
-        phoneIdleTimer = if (transport.caps.kind == TransportCaps.USB_AOA.kind) {
+        phoneIdleTimer = if (desktopOutput) {
             com.headswap.desk.dex.CarLifePhoneIdleTimer(this,
                 sessionReady = { !stopRequested && session === s && DexState.running && s.healthyDesktopForIdleTimer() },
                 requestOff = { session === s && h.setPhoneScreenOff(true) }).also { it.start() }
@@ -1235,6 +1275,8 @@ class BridgeService : Service() {
         } catch (_: Exception) {
         }
         stopRequested = true
+        notificationShade?.close()
+        notificationShade = null
         stopClusterSources()
         cancelDesktopRecovery()
         alive = false
@@ -1242,7 +1284,7 @@ class BridgeService : Service() {
         cancelAutoOff()
         cancelHint()
         stopCarNet(CarNetEvent.DESTROY, "destroy")
-        pendingTcp6?.abort()
+        cancelLinkWait()
         btProbe.stop("сервис уничтожен")
         phoneIdleTimer?.stop()
         phoneIdleTimer = null

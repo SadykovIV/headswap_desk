@@ -14,4 +14,6 @@ interface IDelegatedInputGateway {
     void registerFullscreenChild(int parentId, int displayId, IBinder token, int width, int height);
     /** Only the IME visibility bit on a registered child: -1 unknown, 0 hidden, 1 shown. */
     int childImeVisibility(int displayId, IBinder token);
+    /** Returns only this live parent or one of its registered children, never display 0. */
+    int focusedDisplay(int parentId, IBinder token);
 }

@@ -29,6 +29,8 @@ interface CarTransport {
     val caps: TransportCaps
     /** True only after the USB fd itself returned EOF or a terminal read/write error. */
     val usbEndpointLost: Boolean get() = false
+    /** A physical USB endpoint or a wireless channel was lost; explicit Stop is excluded. */
+    val outputEndpointLost: Boolean get() = usbEndpointLost
 
     /** Для лога и экрана: описание аксессуара или адреса ГУ. */
     val label: String
@@ -52,6 +54,12 @@ interface CarTransport {
     /** Неблокирующая постановка inner в очередь канала. */
     fun send(chan: Int, inner: ByteArray)
 
+    /** Audio data may expire while waiting; framing/control messages must never be dropped. */
+    fun sendTimed(chan: Int, inner: ByteArray, maxAgeMs: Long) = send(chan, inner)
+    val audioExpiredPackets: Long get() = 0L
+    /** Timed PCM evicted to enforce the waiting queue byte/packet budget. */
+    val audioOverflowPackets: Long get() = 0L
+
     /** Закрыть всё, разбудить нити. Идемпотентно, onClosed не зовёт. */
     fun close()
 
@@ -67,9 +75,27 @@ interface CarTransport {
      */
     fun dropQueued(chan: Int, pred: (ByteArray) -> Boolean): Int = 0
 
+    /** Pending video includes the frame currently blocked in the transport write. */
     val queuedVideoBytes: Long
     val queuedVideoFrames: Int
+    /** Age of the video write currently in progress, or zero when no video is being written. */
+    val videoWriteAgeMs: Long get() = 0L
 
     /** Скорость слива видео, байт/с (0 = ещё не измерена). */
     val drainBytesPerSec: Double
+}
+
+/** Only PCM DATA packets are allowed to expire, independent of a caller's chosen channel. */
+internal object AudioPacketDeadline {
+    fun deadline(chan: Int, inner: ByteArray, nowMs: Long, maxAgeMs: Long): Long {
+        if (maxAgeMs <= 0 || inner.size < 12) return Long.MAX_VALUE
+        val expected = when (chan) {
+            3 -> 0x00030006
+            4 -> 0x00040003
+            5 -> 0x00050003
+            else -> return Long.MAX_VALUE
+        }
+        if (com.headswap.desk.Wire.u32(inner, 8) != expected) return Long.MAX_VALUE
+        return if (nowMs > Long.MAX_VALUE - maxAgeMs) Long.MAX_VALUE else nowMs + maxAgeMs
+    }
 }

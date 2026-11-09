@@ -230,7 +230,7 @@ public final class EmbeddedDisplayClient {
         try {
             int missing = prefs.getString("slot_0", "").isEmpty() ? 0 : prefs.getString("slot_1", "").isEmpty() ? 1 : -1;
             if (missing >= 0) activity.getClass().getMethod("i", int.class).invoke(activity, missing);
-            else activity.getClass().getMethod("z").invoke(activity);
+            else activity.getClass().getMethod(CompanionSymbols.OPEN_SPLIT).invoke(activity);
         } catch (ReflectiveOperationException error) { Log.e(TAG, "Cannot open internal split page", error); }
     }
     private static int parentDensity(View renderer) {
@@ -247,7 +247,7 @@ public final class EmbeddedDisplayClient {
     }
     private static EmbeddedRenderProfile.Geometry legacyGeometry(View renderer, String selected, boolean extended, int width, int height) {
         int parent = parentDensity(renderer);
-        int percent = integer(renderer, "L", 100);
+        int percent = integer(renderer, CompanionSymbols.SCALE, 100);
         int pane = Math.round(parent * Math.max(50, Math.min(120, percent)) / 100f);
         return EmbeddedRenderProfile.geometry(selected, highResolutionSupported, extended, width, height, parent, pane);
     }
@@ -318,7 +318,7 @@ public final class EmbeddedDisplayClient {
             views.add(host.getWindow().getDecorView());
             while (!views.isEmpty()) {
                 View view = views.removeFirst();
-                if ("c.Y7".equals(view.getClass().getName())) restoreRenderer(view, ticket);
+                if (CompanionSymbols.RENDERER_CLASS.equals(view.getClass().getName())) restoreRenderer(view, ticket);
                 else if (view instanceof ViewGroup) {
                     ViewGroup group = (ViewGroup) view;
                     for (int i = 0; i < group.getChildCount(); i++) views.addLast(group.getChildAt(i));
@@ -366,7 +366,7 @@ public final class EmbeddedDisplayClient {
     private static void restoreRenderer(View renderer, EmbeddedResumeGate.Ticket ticket) {
         int parent = DisplayOnlyLaunch.displayId(renderer.getContext());
         if (!ticket.isCurrent(parent) || !renderer.isAttachedToWindow() || !renderer.isShown()
-                || bool(renderer, "A") || bool(renderer, "B") || !bool(renderer, "c0")) return;
+                || bool(renderer, CompanionSymbols.CLOSED) || bool(renderer, CompanionSymbols.RELEASING) || !bool(renderer, CompanionSymbols.ENABLED)) return;
         String selected = selectedPackage(renderer);
         if (selected == null || selected.isEmpty()) return;
         boolean hasHostConfig = (gatewayCapabilities & HOST_RENDER_CONFIG) != 0;
@@ -579,7 +579,7 @@ public final class EmbeddedDisplayClient {
     private static void attach(View renderer, SurfaceTexture texture, int width, int height,
                                EmbeddedResumeGate.Ticket restore) {
         if (texture == null || texture.isReleased() || width <= 0 || height <= 0 || !renderer.isShown()
-                || bool(renderer, "A") || bool(renderer, "B") || !bool(renderer, "c0")) return;
+                || bool(renderer, CompanionSymbols.CLOSED) || bool(renderer, CompanionSymbols.RELEASING) || !bool(renderer, CompanionSymbols.ENABLED)) return;
         int parent = DisplayOnlyLaunch.displayId(renderer.getContext());
         if (parent <= 0) return;
         bind(renderer.getContext());
@@ -673,7 +673,7 @@ public final class EmbeddedDisplayClient {
     private static void notifyReady(Lease lease) {
         MAIN.post(() -> {
             if (lease.closed) return;
-            Object ready = field(lease.renderer, "S");
+            Object ready = field(lease.renderer, CompanionSymbols.READY);
             if (ready instanceof Runnable) lease.renderer.post((Runnable) ready);
         });
     }
@@ -688,7 +688,7 @@ public final class EmbeddedDisplayClient {
         if (lease.handle <= 0) scheduleCreate(lease, 0); else requestResize(lease);
     }
     public static void scale(View renderer, int percent) {
-        set(renderer, "L", Math.max(50, Math.min(120, percent)));
+        set(renderer, CompanionSymbols.SCALE, Math.max(50, Math.min(120, percent)));
         if ((gatewayCapabilities & HOST_RENDER_CONFIG) != 0) return;
         resize(renderer, renderer.getWidth(), renderer.getHeight());
     }
@@ -698,7 +698,7 @@ public final class EmbeddedDisplayClient {
             View child = controls.getChildAt(i);
             if (child != hint) child.setVisibility(View.GONE);
         }
-        hint.setText(gateway != null ? "Размер интерфейса выбирается в HeadSwap → Дополнительно → Размер интерфейса."
+        hint.setText(gateway != null ? "Размер интерфейса выбирается в HeadSwap → Настройки → Размер интерфейса."
                 : "Параметры окна будут доступны после подключения HeadSwap.");
     }
     public static boolean launch(int handle, String packageName) {
@@ -964,7 +964,7 @@ public final class EmbeddedDisplayClient {
     }
     private static ArrayList<Lease> leases() { synchronized (LOCK) { return new ArrayList<>(LEASES.values()); } }
     private static void setHandle(View renderer, int handle) {
-        try { renderer.getClass().getMethod("o", int.class).invoke(renderer, handle); }
+        try { renderer.getClass().getMethod(CompanionSymbols.SET_HANDLE, int.class).invoke(renderer, handle); }
         catch (ReflectiveOperationException error) { Log.e(TAG, "Renderer handle update failed", error); }
     }
     private static void clearRetiredHandle(Lease lease) {
@@ -976,7 +976,7 @@ public final class EmbeddedDisplayClient {
             setHandle(lease.renderer, -1);
         });
     }
-    private static void setSize(View renderer, int width, int height, int dpi) { set(renderer, "H", width); set(renderer, "I", height); set(renderer, "M", dpi); }
+    private static void setSize(View renderer, int width, int height, int dpi) { set(renderer, CompanionSymbols.WIDTH, width); set(renderer, CompanionSymbols.HEIGHT, height); set(renderer, CompanionSymbols.DENSITY, dpi); }
     private static Object field(Object object, String name) {
         try { return object.getClass().getField(name).get(object); }
         catch (ReflectiveOperationException | NullPointerException error) { return null; }

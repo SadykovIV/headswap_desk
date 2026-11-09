@@ -3,6 +3,7 @@
 All outputs stay below --work. No device/ADB operations are performed.
 """
 import argparse, pathlib, hashlib, subprocess, shutil, zipfile, json, sys
+from profiles import select, generate_symbols
 p=argparse.ArgumentParser()
 for name in ('original', 'work', 'jdk', 'sdk', 'keystore', 'apktool'):
     p.add_argument('--' + name, type=pathlib.Path, required=True)
@@ -15,7 +16,7 @@ if work == base:
     p.error('--work must be a separate build-output directory')
 work.mkdir(exist_ok=True, parents=True)
 def sha(p):return hashlib.sha256(p.read_bytes()).hexdigest()
-assert sha(a.original)=='bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4','Unexpected original APK'
+profile = select(sha(a.original))
 tool=a.apktool
 assert sha(tool)=='dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423','Unexpected Apktool'
 java=a.jdk/'bin/java';javac=a.jdk/'bin/javac';bt=a.sdk/'build-tools/36.0.0';android=a.sdk/'platforms/android-37.0/android.jar'
@@ -24,7 +25,7 @@ def run(*args):
 decoded=work/'decoded';framework=work/'framework'
 run(java,'-jar',tool,'d',a.original,'-f','-o',decoded,'-p',framework)
 run(sys.executable,'-m','unittest','discover','-s',base/'tests','-p','test_*.py')
-run(sys.executable,base/'patch.py',decoded)
+run(sys.executable,base/profile.patch,decoded)
 classes=work/'helper-classes';dex=work/'helper-dex'
 for folder in (classes,dex):
     if folder.exists():shutil.rmtree(folder)
@@ -32,6 +33,7 @@ for folder in (classes,dex):
 generated=work/'generated-aidl'
 if generated.exists():shutil.rmtree(generated)
 generated.mkdir()
+generate_symbols(profile, decoded, generated/'ru/drivedeck/headswap/CompanionSymbols.java')
 run(bt/'aidl','-I'+str(base/'aidl'),'-p'+str(android.parent/'framework.aidl'),'-o'+str(generated),base/'aidl/com/headswap/desk/embed/IEmbeddedDisplayGateway.aidl')
 profile_tests=work/'profile-tests'
 profile_tests.mkdir(exist_ok=True)
@@ -41,21 +43,21 @@ for test in ('EmbeddedRenderProfileTest','EmbeddedRetryGateTest','EmbeddedSurfac
     run(java,'-cp',profile_tests,'ru.drivedeck.headswap.'+test)
 run(javac,'--release','8','-classpath',android,'-d',classes,shared_policy,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
 run(java,'-cp',bt/'lib/d8.jar','com.android.tools.r8.D8','--lib',android,'--min-api','26','--output',dex,*sorted(classes.rglob('*.class')))
-unsigned=work/'DriveDeck-HeadSwap-0.6.8-unsigned.apk'
+unsigned=work/f'DriveDeck-HeadSwap-{profile.version}-unsigned.apk'
 run(java,'-jar',tool,'b',decoded,'-p',framework,'-o',unsigned)
 with zipfile.ZipFile(unsigned,'a',compression=zipfile.ZIP_DEFLATED) as z:
     assert 'classes2.dex' not in z.namelist()
     z.write(dex/'classes.dex','classes2.dex')
-aligned=work/'DriveDeck-HeadSwap-0.6.8-aligned.apk'
+aligned=work/f'DriveDeck-HeadSwap-{profile.version}-aligned.apk'
 run(bt/'zipalign','-f','-p','4',unsigned,aligned)
-final=work/'DriveDeck-HeadSwap-0.6.8-code305.apk'
+final=work/f'DriveDeck-HeadSwap-{profile.version}-code{profile.code}.apk'
 run(java,'-jar',bt/'lib/apksigner.jar','sign','--ks',a.keystore,'--ks-key-alias','androiddebugkey','--ks-pass','pass:android','--key-pass','pass:android','--out',final,aligned)
 run(java,'-jar',bt/'lib/apksigner.jar','verify','--verbose','--print-certs',final)
 run(bt/'zipalign','-c','-p','4',final)
 badging=subprocess.check_output([str(bt/'aapt'),'dump','badging',str(final)],text=True)
 (work/'adapted-badging.txt').write_text(badging)
 assert "package: name='ru.drivedeck.headswap'" in badging
-assert "versionCode='305'" in badging
+assert f"versionCode='{profile.code}'" in badging
 manifest=subprocess.check_output([str(bt/'aapt'),'dump','xmltree',str(final),'AndroidManifest.xml'],text=True)
 (work/'adapted-manifest.txt').write_text(manifest)
 for forbidden in ['sharedUserId','android.intent.category.HOME','android.intent.action.BOOT_COMPLETED','VoiceBootReceiver','DiagnosticUploadJob','LauncherAccessibilityService']:
@@ -78,7 +80,7 @@ with zipfile.ZipFile(final) as checked_apk:
         assert literal in helper_dex, 'Missing compiled HeadSwap endpoint: ' + endpoint
 for activity in manifest_root.find('application').findall('activity'):
     assert not activity.findall('intent-filter')
-report=json.loads((work/'patch-report.json').read_text());report.update({'artifact':str(final),'adapted_sha256':sha(final),'apktool_sha256':sha(tool),'build':'PASS','apk_signature_verification':'PASS','zipalign':'PASS','manifest_assertions':'PASS','runtime':'NOT RUN by APK adaptation agent','app_update_policy_tests':'PASS: stock check/download isolation, weather/shared helper preservation, settings boundary validation','original_unchanged':sha(a.original)=='bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4'})
+report=json.loads((work/'patch-report.json').read_text());report.update({'artifact':str(final),'adapted_sha256':sha(final),'apktool_sha256':sha(tool),'build':'PASS','apk_signature_verification':'PASS','zipalign':'PASS','manifest_assertions':'PASS','runtime':'NOT RUN by APK adaptation agent','app_update_policy_tests':'PASS: stock check/download isolation, weather/shared helper preservation, settings boundary validation','original_unchanged':sha(a.original)==profile.original_sha256})
 report.update({'headswap_compatibility':'Capability bit 5 supplies the decision for the selected package. Bit 4 without bit 5 retains legacy Yandex-only behavior. Older gateways retain code301 geometry.',
                'map_render_profile':{'packages':'host-selected (capability bit 5)', 'legacy_packages':['ru.yandex.yandexnavi','ru.yandex.yandexmaps'],'reference_scale':2,'reference_parent_dpi':160,'scale_formula':'Exact session DPI by default. Optional compact mode uses shared DesktopRenderPolicy.','max_width':3840,'max_height':2160,'max_density':1280,
                                            'parent_video':'selected bounded native geometry, 640..1920 x 480..1080, DPI 96..640; independent of child supersampling','touch':'existing v7 float render/view transform, no second scale'},

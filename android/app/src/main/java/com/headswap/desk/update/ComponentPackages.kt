@@ -137,19 +137,40 @@ internal object ComponentPackages {
 
     fun builtinRemoval(ctx: Context, spec: DesktopComponent): Intent {
         val pkg = checkNotNull(installed(ctx, spec)) { "Компонент не установлен." }
-        val host = ctx.packageManager.getPackageInfo(ctx.packageName, sigFlags).signers()
-        check(host.isNotEmpty() && host == pkg.signers()) { "Подпись установленного компонента отличается от подписи HeadSwap." }
+        checkPublisher(ctx, spec, pkg)
         return uninstallIntent(ctx, spec.pkg)
+    }
+
+    private fun checkPublisher(ctx: Context, spec: DesktopComponent, apk: PackageInfo) {
+        val signatures = apk.signers()
+        val expected = spec.publisherSha256
+        val trusted = if (expected == null) {
+            signatures.isNotEmpty() && signatures == ctx.packageManager.getPackageInfo(ctx.packageName, sigFlags).signers()
+        } else {
+            val digest = MessageDigest.getInstance("SHA-256")
+            signatures.map { signature -> digest.digest(signature.toByteArray()).joinToString("") { "%02x".format(it) } }.toSet() == setOf(expected)
+        }
+        check(trusted) { "Подпись компонента не совпадает с подтверждённым издателем." }
     }
 
     fun validate(ctx: Context, spec: DesktopComponent, file: File): PreparedComponent {
         val pm = ctx.packageManager
-        val apk = pm.getPackageArchiveInfo(file.absolutePath, sigFlags) ?: error("Файл не является подписанным APK.")
+        val flags = PackageManager.PackageInfoFlags.of((PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_ACTIVITIES or PackageManager.GET_META_DATA).toLong())
+        val apk = pm.getPackageArchiveInfo(file.absolutePath, flags) ?: error("Файл не является подписанным APK.")
         check(apk.packageName == spec.pkg) { "Выберите адаптированный APK ${spec.title}, пакет ${spec.pkg}." }
-        val signer = pm.getPackageInfo(ctx.packageName, sigFlags).signers()
-        check(signer.isNotEmpty() && apk.signers() == signer) { "Подпись компонента отличается от подписи HeadSwap." }
+        checkPublisher(ctx, spec, apk)
         val current = installed(ctx, spec)
-        check(current == null || current.signers() == signer) { "Установленный компонент подписан другим ключом." }
+        if (current != null) checkPublisher(ctx, spec, current)
+        if (spec.publisherSha256 != null) {
+            check(apk.activities.orEmpty().any { activity ->
+                DesktopComponentPolicy.acceptsDeclaration(activity.metaData?.get(DesktopComponentPolicy.API),
+                    activity.metaData?.get(DesktopComponentPolicy.PROFILE), activity.exported,
+                    activity.enabled && activity.applicationInfo.enabled, activity.permission.isNullOrEmpty(),
+                    activity.metaData?.get(DesktopComponentPolicy.MODE_ID)) &&
+                    DesktopComponentPolicy.supportsIsolatedTask(activity.launchMode, activity.documentLaunchMode,
+                        activity.flags and android.content.pm.ActivityInfo.FLAG_ALLOW_TASK_REPARENTING != 0)
+            }) { "В APK нет совместимого профиля HeadSwap Desktop." }
+        }
         check((apk.applicationInfo?.minSdkVersion ?: Int.MAX_VALUE) <= Build.VERSION.SDK_INT) { "Этой версии нужен более новый Android." }
         val code = apk.longVersionCode
         check(code >= spec.minCode) { "Эта версия несовместима с HeadSwap." }

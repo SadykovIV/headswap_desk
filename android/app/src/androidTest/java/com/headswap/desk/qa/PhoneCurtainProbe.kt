@@ -20,6 +20,7 @@ import android.view.Display
 import android.view.PixelCopy
 import android.view.View
 import android.view.WindowManager
+import com.headswap.desk.dex.DexPrefs
 import com.headswap.desk.dex.DexSetupActivity
 import com.headswap.desk.dex.PhoneScreenIdleController
 import java.util.concurrent.CountDownLatch
@@ -34,10 +35,13 @@ internal object PhoneCurtainProbe {
         var display: VirtualDisplay? = null
         var presentation: Presentation? = null
         var controller: PhoneScreenIdleController? = null
+        val prefs = DexPrefs(test.targetContext)
+        val setupWasCompleted = prefs.initialSetupCompleted
         try {
             check(Build.HARDWARE in listOf("ranchu", "goldfish")) { "Emulator only" }
+            prefs.initialSetupCompleted = true
             val ctx = test.targetContext
-            val phone = test.startActivitySync(Intent(ctx, DexSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            val phone = test.startActivitySync(Intent(ctx, DexSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             activity = phone
             val capture = ImageReader.newInstance(320, 180, PixelFormat.RGBA_8888, 3)
             reader = capture
@@ -79,6 +83,7 @@ internal object PhoneCurtainProbe {
             result.putString("error", android.util.Log.getStackTraceString(error))
         } finally {
             main(test) { controller?.onStop(); presentation?.dismiss(); activity?.finish() }
+            prefs.initialSetupCompleted = setupWasCompleted
             display?.release()
             reader?.close()
             test.finish(if (result.containsKey("error")) Activity.RESULT_CANCELED else Activity.RESULT_OK, result)

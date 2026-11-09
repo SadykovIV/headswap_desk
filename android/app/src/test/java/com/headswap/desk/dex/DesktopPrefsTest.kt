@@ -33,6 +33,35 @@ class DesktopPrefsTest {
         } as SharedPreferences
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = prefs
     }
+    @Test fun newTransportControlsHaveSafeDefaultsAndKeepExplicitChoices() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        assertEquals(8, prefs.desktopBitrateMbps)
+        assertTrue(prefs.autoMusicPlayback)
+        assertFalse(prefs.huNotificationsEnabled)
+        assertFalse(prefs.initialSetupCompleted)
+        prefs.desktopBitrateMbps = 16
+        prefs.autoMusicPlayback = false
+        prefs.huNotificationsEnabled = true
+        prefs.initialSetupCompleted = true
+        val restored = DexPrefs(context)
+        assertEquals(16, restored.desktopBitrateMbps)
+        assertFalse(restored.autoMusicPlayback)
+        assertTrue(restored.huNotificationsEnabled)
+        assertTrue(restored.initialSetupCompleted)
+        assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 0 }
+        assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 21 }
+    }
+    @Test fun existingPairingSkipsFirstRunWithoutClaimingBatteryOrNotificationPermission() {
+        val context = MemoryPrefs()
+        context.values["has_paired"] = true
+        assertTrue(DexPrefs(context).initialSetupCompleted)
+        assertFalse(DexPrefs(context).huNotificationsEnabled)
+        context.values["desktop_bitrate_mbps"] = -50
+        assertEquals(1, DexPrefs(context).desktopBitrateMbps)
+        context.values["desktop_bitrate_mbps"] = 999
+        assertEquals(20, DexPrefs(context).desktopBitrateMbps)
+    }
     @Test fun freshDesktopUsesFixed720pAt15FpsAnd128Dpi() {
         val prefs = DexPrefs(MemoryPrefs())
         val video = prefs.desktopVideoSelection()

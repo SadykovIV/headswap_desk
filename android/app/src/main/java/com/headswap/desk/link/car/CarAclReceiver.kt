@@ -20,15 +20,16 @@ class CarAclReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action
         if (action != BluetoothDevice.ACTION_ACL_CONNECTED && action != BluetoothDevice.ACTION_ACL_DISCONNECTED) return
-        if (!BuildConfig.WIRELESS_BETA) return
+        if (!BuildConfig.WIRELESS_BETA || !WirelessPrefs(context).enabled) return
         val mac = CarProfile(context).btMac ?: return
         AppLog.init(context)      // рассылка может поднять процесс раньше activity и сервиса
-        val addr = device(intent)?.address
+        val addr = try { device(intent)?.address } catch (_: SecurityException) { return }
         if (!CarMac.same(addr, mac)) {
             if (ignoreLog.tryAcquire()) WLog.ev(WLog.TRIGGER, "ignore", "action" to action.substringAfterLast('.'))
             return
         }
         if (action == BluetoothDevice.ACTION_ACL_CONNECTED) {
+            if (WirelessCarLife.unavailableReason(context) != null) return
             WLog.ev(WLog.TRIGGER, "acl-connected", "dev" to WLog.maskMac(addr))
             try {
                 context.startForegroundService(Intent(context, BridgeService::class.java).setAction(BridgeService.ACTION_WIFI_B_AUTO))

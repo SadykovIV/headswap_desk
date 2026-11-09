@@ -9,6 +9,7 @@ import android.graphics.drawable.RippleDrawable
 import android.view.View
 import android.view.Gravity
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Switch
 import android.widget.TextView
@@ -22,6 +23,13 @@ internal class DesktopSetupViews(private val context: Context) {
 
     fun dp(value: Int) = (context.resources.displayMetrics.density * value + 0.5f).toInt()
     fun column() = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+
+    fun brand(parent: LinearLayout, size: Int = 56) = ImageView(context).apply {
+        setImageBitmap(com.headswap.desk.BrandArtwork.bitmap(resources))
+        scaleType = ImageView.ScaleType.FIT_CENTER
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        parent.addView(this, LinearLayout.LayoutParams(dp(size), dp(size)).apply { marginEnd = dp(10) })
+    }
 
     fun section(parent: LinearLayout, heading: String? = null): LinearLayout = column().apply {
         setPadding(dp(14), dp(10), dp(14), dp(12))

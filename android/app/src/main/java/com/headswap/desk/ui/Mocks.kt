@@ -227,8 +227,7 @@ object Mocks {
                     pad(c, 12, 10, 12, 10)
                     addView(
                         FrameLayout(c).apply {
-                            background = shape(clr(R.color.pri), 12)
-                            addView(icon(R.drawable.ic_logo, 22, clr(R.color.onpri)), FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+                            addView(brandIcon(36), FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER))
                         },
                         lp(dp(36), dp(36)),
                     )
@@ -281,8 +280,7 @@ object Mocks {
                     pad(c, 14, 0, 12, 0)
                     addView(
                         FrameLayout(c).apply {
-                            background = shape(clr(R.color.pri), 10)
-                            addView(icon(R.drawable.ic_logo, 22, clr(R.color.onpri)), FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+                            addView(brandIcon(32), FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER))
                         },
                         lp(dp(32), dp(32)),
                     )

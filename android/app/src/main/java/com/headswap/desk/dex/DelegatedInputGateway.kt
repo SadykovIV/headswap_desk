@@ -19,6 +19,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     private val context = context.applicationContext
     private val registry = DelegatedInputRegistry()
     private val imeRoutes = DelegatedImeRoutes()
+    private val displayWakeLocks = DesktopDisplayWakeLocks(this.context)
     @Volatile private var liveDisplayIds: Set<Int> = emptySet()
     @Volatile private var panelParent: DelegatedInputRegistry.Entry? = null
     private val phonePanel = DelegatedPanelController(this.context)
@@ -43,15 +44,19 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
     }
 
     @Synchronized fun beginGeneration(generation: Long, token: IBinder, allowFullscreen: Boolean) {
+        displayWakeLocks.close()
         registry.begin(generation, token, allowFullscreen)
         imeRoutes.clear()
         panelParent = null
+        DexState.independentPhoneLock = null
         liveDisplayIds = emptySet()
         activeGateway.set(this)
     }
     @Synchronized fun deactivate() {
+        displayWakeLocks.close()
         imeRoutes.clear()
         panelParent = null
+        DexState.independentPhoneLock = null
         liveDisplayIds = emptySet()
         activeGateway.compareAndSet(this, null)
         phonePanel.restoreBestEffort()
@@ -63,7 +68,9 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         registry.registerParent(displayId, token, width, height)
         val entry = registry.requireDisplay(displayId, token)
         panelParent = entry
+        DexState.independentPhoneLock = displays.getDisplay(displayId)?.let(DesktopDisplayIsolation::confirmedIndependence)
         registerIme(entry)
+        displayWakeLocks.hold(displayId)
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
@@ -77,6 +84,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         requireActive(); requireTrustedDisplay(parentId); requireTrustedDisplay(displayId)
         registry.registerChild(parentId, displayId, token, width, height, fullscreen)
         registerIme(registry.requireDisplay(displayId, token))
+        displayWakeLocks.hold(displayId)
         liveDisplayIds = registry.registeredDisplayIds()
     }
 
@@ -141,6 +149,13 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         }
     }
 
+    @Synchronized override fun focusedDisplay(parentId: Int, token: IBinder): Int {
+        requireActive(); requireTrustedDisplay(parentId)
+        check(registry.requireDisplay(parentId, token).parent == null)
+        return DesktopInputTarget.resolve(parentId, registry.registeredDisplayIds() - parentId,
+            DesktopFocusReader.current())
+    }
+
     @Synchronized override fun resizeDisplay(displayId: Int, token: IBinder, width: Int, height: Int) {
         requireActive(); requireTrustedDisplay(displayId)
         registry.resize(displayId, token, width, height)
@@ -152,10 +167,12 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         if (owned != null) imeRoutes.unregister(owned)
         if (owned?.parent == null && owned != null) {
             panelParent = null
+            DexState.independentPhoneLock = null
             phonePanel.restoreBestEffort()
         }
         registry.unregister(displayId, token)
         liveDisplayIds = registry.registeredDisplayIds()
+        displayWakeLocks.retain(liveDisplayIds)
     }
 
     @Synchronized override fun injectInput(displayId: Int, token: IBinder, event: InputEvent, actionButton: Int) {
@@ -255,6 +272,7 @@ internal class DelegatedInputGateway(context: Context) : IDelegatedInputGateway.
         /** Instrumentation heartbeat, after attempting to reconnect the authenticated helper. */
         fun refreshImeRoutes() { activeGateway.get()?.refreshIme() }
         fun imeRoutesReady(): Boolean = activeGateway.get()?.imeRoutes?.allApplied() != false
+        fun ownedDisplayIds(): Set<Int> = activeGateway.get()?.liveDisplayIds.orEmpty()
         fun ownsFocusedDisplay(id: Int): Boolean = id > 0 && activeGateway.get()?.liveDisplayIds?.contains(id) == true
     }
 }

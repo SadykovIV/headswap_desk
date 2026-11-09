@@ -8,9 +8,8 @@ import zipfile
 import zlib
 
 import bsdiff4
+from profiles import select
 
-SOURCE = "bb67e07ff14a6300082a33fa75be2082ab250e5aec1bd6f75e72b5b034b157c4"
-TARGET_NAME = "DriveDeck-HeadSwap-0.6.8-code305.apk"
 
 
 def sha(data):
@@ -57,8 +56,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     src = args.original.read_bytes()
-    if sha(src) != SOURCE or args.target.name != TARGET_NAME:
-        parser.error("Expected unmodified upstream code300 and the verified code305 build")
+    try:
+        profile = select(sha(src))
+    except ValueError as error:
+        parser.error(str(error))
+    target_name = f"DriveDeck-HeadSwap-{profile.version}-code{profile.code}.apk"
+    if args.target.name != target_name:
+        parser.error("Expected adapted APK: " + target_name)
     base = Path(__file__).resolve().parent
     args.output.mkdir(exist_ok=True, parents=True)
     target = args.target.read_bytes()
@@ -68,22 +72,26 @@ def main():
     delta = bsdiff4.diff(dictionary, expanded)
     script = (base / "apply_patch.py.in").read_text().replace("@APK_SHA256@", sha(target)).replace(
         "@DEFLATE_SHA256@", sha(spans)).replace("@DELTA_SHA256@", sha(delta))
-    instructions = f"""DriveDeck 0.6.8 code300 → DriveDeck HeadSwap code305
+    for key, value in {'SOURCE_SHA256': profile.original_sha256, 'TARGET_NAME': target_name,
+                       'VERSION': profile.version, 'UPSTREAM_CODE': str(profile.upstream_code),
+                       'TARGET_CODE': str(profile.code), 'SOURCE_SIZE': str(len(src))}.items():
+        script = script.replace('@' + key + '@', value)
+    instructions = f"""DriveDeck {profile.version} code{profile.upstream_code} → DriveDeck HeadSwap code{profile.code}
 
-Распакуйте архив в отдельную папку. Скопируйте туда оригинальный DriveDeck 0.6.8 code300 и выполните
-python3 apply_patch.py DriveDeck-0.6.8-code300.apk
+Распакуйте архив в отдельную папку. Скопируйте туда оригинальный DriveDeck {profile.version} code{profile.upstream_code} и выполните
+python3 apply_patch.py DriveDeck-{profile.version}-code{profile.upstream_code}.apk
 
-SHA-256 оригинального APK    {SOURCE}
+SHA-256 оригинального APK    {profile.original_sha256}
 SHA-256 восстановленного APK {sha(target)}
 Поддерживаются Python 3 и стандартная zlib. Существующий выходной APK сохраняется.
 """
-    archive(args.output / "DriveDeck-0.6.8-code300-to-HeadSwap-code305-patch.zip", {
+    archive(args.output / f"DriveDeck-{profile.version}-code{profile.upstream_code}-to-HeadSwap-code{profile.code}-patch.zip", {
         "README.txt": instructions.encode(), "apply_patch.py": script.encode(),
         "deflate.json": spans, "delta.bin": delta,
     })
     source = {str(p.relative_to(base.parent)): p.read_bytes() for p in base.rglob("*")
               if p.is_file() and p.suffix in (".aidl", ".java", ".py", ".md", ".in") and "__pycache__" not in p.parts}
-    archive(args.output / "DriveDeck-0.6.8-source-patches.zip", source)
+    archive(args.output / f"DriveDeck-{profile.version}-source-patches.zip", source)
 
 
 if __name__ == "__main__":

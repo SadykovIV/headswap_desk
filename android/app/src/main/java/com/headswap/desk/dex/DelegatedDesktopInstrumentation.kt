@@ -73,6 +73,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
                 .put("playbackAudio", active && requestAudio && DesktopAudioAccess.hasPermission(context))
                 .put("panelControl", active && panelReady && DelegatedPanelAccess.hasPermission(context))
                 .put("panelUnsupported", active && DelegatedPanelAccess.unsupportedThisActivation)
+                .put("independentDisplayPermission", active && DelegatedDesktopAccess.canKeepDisplayUnlocked(context))
                 .toString().toByteArray(Charsets.UTF_8)
             runCatching {
                 val output = heartbeat.startWrite()
@@ -97,7 +98,8 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
             }
             val permissions = mutableListOf(DelegatedDesktopAccess.ADD_TRUSTED_DISPLAY,
                 DelegatedDesktopAccess.INJECT_EVENTS, DelegatedDesktopAccess.REAL_GET_TASKS,
-                DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL, ShellDisplayIme.PERMISSION)
+                DelegatedDesktopAccess.MEDIA_CONTENT_CONTROL, ShellDisplayIme.PERMISSION,
+                DelegatedDesktopAccess.ADD_ALWAYS_UNLOCKED_DISPLAY)
             if (requestHudApi && CarLifeForegroundGuidance.requestedForActivation(context)) {
                 permissions.add(CarLifeForegroundGuidance.TASK_ASSIST_PERMISSION)
             }

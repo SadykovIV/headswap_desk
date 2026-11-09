@@ -6,10 +6,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 internal object ReleaseFeed {
-    fun pages(read: (JSONArray) -> Unit) {
+    fun pages(repository: String = UpdateLogic.REPO, read: (JSONArray) -> Unit) {
+        require(repository == UpdateLogic.REPO || DesktopComponent.entries.any { it.repository == repository })
         var page = 1
         while (true) {
-            val conn = connection(URL("${UpdateLogic.API_RELEASES}?per_page=100&page=$page"))
+            check(page <= 20) { "Слишком много страниц выпусков." }
+            val conn = connection(URL("https://api.github.com/repos/$repository/releases?per_page=100&page=$page"))
             try {
                 conn.setRequestProperty("Accept", "application/vnd.github+json")
                 check(conn.responseCode == 200) { "GitHub HTTP ${conn.responseCode}" }

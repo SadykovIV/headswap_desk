@@ -299,10 +299,17 @@ class MultiSocketTransport internal constructor(
 ) : CarTransport {
 
     override val caps = TransportCaps.TCP6
+    @Volatile override var outputEndpointLost = false
+        private set
 
-    private val queues = sockets.keys.associateWith { LinkedBlockingQueue<ByteArray>() }
+    private val queues = sockets.keys.associateWith { LinkedBlockingQueue<QueuedTransportPacket>() }
+    private val audioExpired = AtomicLong()
+    private val audioOverflow = AtomicLong()
+    override val audioOverflowPackets: Long get() = audioOverflow.get()
+    override val audioExpiredPackets: Long get() = audioExpired.get()
     private val videoBytes = AtomicLong()
     private val videoFrames = AtomicInteger()
+    @Volatile private var videoWriteStartedMs = -1L
     private val drain = DrainMeter()
     private val closed = AtomicBoolean(false)
     private val threads = ArrayList<Thread>()
@@ -322,6 +329,7 @@ class MultiSocketTransport internal constructor(
     override val rxBytes: Long get() = rx.get()
     override val queuedVideoBytes: Long get() = videoBytes.get()
     override val queuedVideoFrames: Int get() = videoFrames.get()
+    override val videoWriteAgeMs: Long get() = videoWriteStartedMs.let { if (it < 0) 0L else (clock() - it).coerceAtLeast(0) }
     override val drainBytesPerSec: Double get() = drain.bytesPerSec
     override fun queueSize(chan: Int): Int = queues[chan]?.size ?: 0
 
@@ -342,14 +350,28 @@ class MultiSocketTransport internal constructor(
         WLog.ev(WLog.TCP, "start", "sockets" to sockets.size)
     }
 
-    override fun send(chan: Int, inner: ByteArray) {
+    override fun send(chan: Int, inner: ByteArray) = enqueue(chan, inner, Long.MAX_VALUE)
+
+    override fun sendTimed(chan: Int, inner: ByteArray, maxAgeMs: Long) =
+        enqueue(chan, inner, AudioPacketDeadline.deadline(chan, inner, clock(), maxAgeMs))
+
+    override fun dropQueued(chan: Int, pred: (ByteArray) -> Boolean): Int {
+        if (chan == Ch.VIDEO) return 0
+        val queue = queues[chan] ?: return 0
+        var dropped = 0
+        queue.removeIf { packet -> pred(packet.inner).also { if (it) dropped++ } }
+        return dropped
+    }
+
+    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long) {
         if (closed.get()) return
         val q = queues[chan] ?: return
         if (chan == Ch.VIDEO) {
             videoBytes.addAndGet(inner.size.toLong())
             videoFrames.incrementAndGet()
         }
-        q.put(inner)
+        AudioQueueAdmission.offer(q, QueuedTransportPacket(chan, inner, deadlineMs), clock(),
+            { audioExpired.addAndGet(it) }, { audioOverflow.addAndGet(it) })
     }
 
     override fun close() {
@@ -360,6 +382,7 @@ class MultiSocketTransport internal constructor(
 
     private fun fail(chan: Int, why: String) {
         if (!closed.compareAndSet(false, true)) return
+        outputEndpointLost = true
         val reason = "tcp6 ${Ch.name(chan)}(${ports[chan]}): $why"
         WLog.ev(WLog.TCP, "close", "by" to "link", "chan" to Ch.name(chan), "why" to why, *endStats())
         closeAll()
@@ -424,14 +447,24 @@ class MultiSocketTransport internal constructor(
         try {
             val out = s.getOutputStream()
             while (!closed.get()) {
-                val inner = q.take()
-                if (video) {
-                    videoBytes.addAndGet(-inner.size.toLong())
-                    videoFrames.decrementAndGet()
+                val packet = q.take()
+                if (packet.deadlineMs != Long.MAX_VALUE && clock() >= packet.deadlineMs) {
+                    audioExpired.incrementAndGet()
+                    continue
                 }
+                val inner = packet.inner
+                if (video) videoWriteStartedMs = clock()
                 val t = System.nanoTime()
-                out.write(inner)
-                out.flush()
+                try {
+                    out.write(inner)
+                    out.flush()
+                } finally {
+                    if (video) {
+                        videoWriteStartedMs = -1L
+                        videoBytes.addAndGet(-inner.size.toLong())
+                        videoFrames.decrementAndGet()
+                    }
+                }
                 if (video) drain.onWrite(clock(), true, inner.size, System.nanoTime() - t)
                 synchronized(txLock) { onWritten(chan, inner) }
             }

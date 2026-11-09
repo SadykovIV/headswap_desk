@@ -61,6 +61,7 @@ class SessionConfig(
     /** Поле 6 NAVI_NEXT_TURN_INFO: иконка и/или time. */
     val naviField6: NaviField6 = NaviField6.BOTH,
     val desktopVideo: DesktopVideoSelection? = null,
+    val desktopBitrateBps: Int = DesktopVideoQuality.BITRATE_CEILING_BPS,
 )
 
 /**
@@ -80,7 +81,8 @@ class CarLifeSession(
     /** Размер кадра из VIDEO_ENCODER_INIT ГУ (для подсказки «Как просит ГУ» в разделе для разработчиков). */
     private val onHuSize: (Int, Int) -> Unit = { _, _ -> },
     private val onNavigationInterestChanged: () -> Unit = {},
-    private val onUsbOutputLost: (owner: CarLifeSession, hadPicture: Boolean) -> Unit = { _, _ -> },
+    private val onDesktopOutputLost: (owner: CarLifeSession, hadPicture: Boolean) -> Unit = { _, _ -> },
+    private val brandArtwork: android.graphics.Bitmap? = null,
     private val onClosed: (String) -> Unit,
 ) : VideoSource.Listener, CarlifeLink {
 
@@ -94,7 +96,7 @@ class CarLifeSession(
     private val air = transport.caps == TransportCaps.TCP6
     private val bitrateProfile = if (air) BitrateProfile.WIFI else BitrateProfile.USB
     private val legacyBitratePolicy = BitratePolicy(mode.bitrate, profile = bitrateProfile)
-    private val surfaceBitratePolicy: BitratePolicy by lazy { DesktopVideoQuality.bitratePolicy(bitrateProfile) }
+    private val surfaceBitratePolicy: BitratePolicy by lazy { DesktopVideoQuality.bitratePolicy(bitrateProfile, cfg.desktopBitrateBps) }
     @Volatile private var encodingSurface = false
     // The source starts after this session is constructed. Select its independent policy
     // only when the direct Surface encoder is requested, never from an early source flag.
@@ -152,6 +154,8 @@ class CarLifeSession(
 
     /** Целевой fps транскодера: из INIT (по настройке), в Авто меняется по FRAME_RATE_CHANGE; новый транскодер стартует с него. */
     @Volatile private var targetFps = FPS
+    private val desktopFrameRate = com.headswap.desk.aa.DesktopFrameRatePolicy()
+    private val mediaClock = com.headswap.desk.aa.DesktopMediaClock(System.currentTimeMillis(), System.nanoTime() / 1000)
     private var videoInited = false
     private var source: VideoSource? = null
     @Volatile private var csd: ByteArray? = null
@@ -226,7 +230,7 @@ class CarLifeSession(
                 "ceilingKbps" to bitratePolicy.ceilingBps / 1000, "mode" to mode.label, "transcode" to bridge.transcodeEnabled)
         }
         CarLifeState.status = "соединено, жду HU_PROTOCOL_VERSION"
-        transport.start(::dispatch, ::logTx) { reason -> close(reason, transportLost = transport.usbEndpointLost) }
+        transport.start(::dispatch, ::logTx) { reason -> close(reason, transportLost = transport.outputEndpointLost) }
         sched.scheduleWithFixedDelay({ tick() }, 1, 1, TimeUnit.SECONDS)
         sched.scheduleWithFixedDelay({ pauseHeartbeat() }, PAUSE_HEARTBEAT_MS, PAUSE_HEARTBEAT_MS, TimeUnit.MILLISECONDS)
         sched.scheduleWithFixedDelay({ adaptBitrate() }, 1000, BITRATE_POLL_MS, TimeUnit.MILLISECONDS)
@@ -252,7 +256,7 @@ class CarLifeSession(
             val status = AaMediaStatus(if (value.playing) AaMeta.STATE_PLAYING else 3, value.source.take(128),
                 value.positionSeconds, null, null, null)
             val metadata = AaMediaMetadata(value.title.take(256), value.artist.take(256), value.album.take(256),
-                null, null, value.durationSeconds?.coerceAtLeast(0), null)
+                value.artwork?.copyBytes(), null, value.durationSeconds?.coerceAtLeast(0), null)
             bridge.onDesktopMedia(this, status, metadata)
         }
     }
@@ -363,9 +367,9 @@ class CarLifeSession(
 
     private fun close(reason: String, transportLost: Boolean) {
         if (!closed.compareAndSet(false, true)) return
-        // The USB fd can fail seconds before Android reports accessory removal. Notify before
+        // A USB fd or wireless channel can fail before a lifecycle event arrives. Notify before
         // stopping the encoder and releasing the audio route back to the handset speaker.
-        if (transportLost) onUsbOutputLost(this, desktopVideoDelivery.hasPicture())
+        if (transportLost) onDesktopOutputLost(this, desktopVideoDelivery.hasPicture())
         synchronized(bridge) { updateGuidanceInterest() }
         desktopVideoDelivery.close()
         DesktopConnectionState.detach(desktopVideoDelivery)
@@ -655,7 +659,7 @@ class CarLifeSession(
             AppLog.i("видео: FRAME_RATE_CHANGE fps=$fps, passthrough: частота не регулируется, энкодер AA не трогаю")
             return
         }
-        val fixed = cfg.fpsSetting.fixed
+        val fixed = if (cfg.desktopVideo == null) cfg.fpsSetting.fixed else null
         if (fixed != null) {
             AppLog.i("видео: FRAME_RATE_CHANGE fps=$fps, настройка фиксирована на $fixed: отвечаю DONE, частоту не меняю")
             return
@@ -664,8 +668,8 @@ class CarLifeSession(
         val applied = Handshake.capFps(wanted, huMaxFps())
         val old = targetFps
         targetFps = applied
-        val capped = thermalThrottle.capFps(applied)
-        val live = bridge.setTargetFps(capped)
+        val capped = thermalThrottle.capFps(if (cfg.desktopVideo != null) minOf(applied, desktopFrameRate.current) else applied)
+        val live = applyEncoderFps()
         val hu = if (applied != wanted) ", потолок ГУ $applied" else ""
         val heat = if (capped != applied) ", из-за нагрева $capped" else ""
         AppLog.i("видео: FRAME_RATE_CHANGE fps=$fps, целевой fps $old -> $applied$hu$heat${if (live) "" else " (транскодер ещё не создан, применится при старте)"}")
@@ -680,7 +684,7 @@ class CarLifeSession(
     }
 
     private fun chooseVideoFps(requested: Int): Int = if (cfg.desktopVideo != null)
-        DesktopVideoQuality.chooseFps(cfg.fpsSetting, requested, huMaxFps())
+        DesktopVideoQuality.chooseFps(FpsSetting.AUTO, requested, huMaxFps())
         else Handshake.chooseFps(cfg.fpsSetting, requested, huMaxFps())
 
     @Synchronized private fun onVideoInit(m: CmdMsg) {
@@ -708,6 +712,7 @@ class CarLifeSession(
         pendingH = h
         pendingFps = fps
         targetFps = if (mobis) AaBridgeCore.MOBIS_FPS else fps
+        desktopFrameRate.reset(targetFps)
         if (mobis) AppLog.i("видео: Mobis CCNC, INIT_DONE fps=$fps, энкодер ${AaBridgeCore.MOBIS_FPS} fps ${AaBridgeCore.MOBIS_BITRATE / 1000} кбит/с VBR")
         videoInited = true
         chosen = "${w}x$h ($why)"
@@ -811,6 +816,7 @@ class CarLifeSession(
             if (cfg.desktopVideo != null) {
                 pendingFps = chooseVideoFps(0)
                 targetFps = pendingFps
+                desktopFrameRate.reset(targetFps)
                 videoInited = true // A late INIT must not resize a running Surface.
             }
             pendingW = mode.outW
@@ -847,12 +853,12 @@ class CarLifeSession(
             val mobis = bridge.huMobisNx4c
             stubCropped = !mobis && bridge.stubInAaGeometry
             val s = if (mobis) {
-                VideoSource(pendingW, pendingH, AaBridgeCore.MOBIS_FPS, mobisStubCeiling.current, this, baidu = true)
+                VideoSource(pendingW, pendingH, AaBridgeCore.MOBIS_FPS, mobisStubCeiling.current, this, baidu = true, brandArtwork = brandArtwork)
             } else if (stubCropped) {
                 val (x, y) = bridge.spsCropOrigin
-                VideoSource(mode.aaW, mode.aaH, pendingFps, stubBps, this, Rect(x, y, x + mode.outW, y + mode.outH))
+                VideoSource(mode.aaW, mode.aaH, pendingFps, stubBps, this, Rect(x, y, x + mode.outW, y + mode.outH), brandArtwork = brandArtwork)
             } else {
-                VideoSource(pendingW, pendingH, pendingFps, if (air) bitratePolicy.current else stubBps, this)
+                VideoSource(pendingW, pendingH, pendingFps, if (air) bitratePolicy.current else stubBps, this, brandArtwork = brandArtwork)
             }
             s.banner = text
             try {
@@ -867,46 +873,75 @@ class CarLifeSession(
         }
     }
 
-    override fun sendVideo(payload: ByteArray): Boolean {
+    override fun sendVideo(payload: ByteArray): Boolean = sendVideoAt(payload, null)
+
+    override fun sendVideoAt(payload: ByteArray, presentationUs: Long?): Boolean {
         if (closed.get() || paused) return false
         synchronized(videoLock) {
-            if (videoOverflow()) return false
+            val data = withFixedSps(payload)
+            if (!admitDesktopFrame(data) || videoOverflow()) return false
             lastVideoTx = SystemClock.elapsedRealtime()
-            sendVideoData(withFixedSps(payload))
+            sendVideoData(data, presentationUs)
             return true
         }
     }
 
     override val isAir: Boolean get() = air
 
-    override fun sendVideoTakeover(payload: ByteArray): Boolean {
+    override fun sendVideoTakeover(payload: ByteArray): Boolean = sendVideoTakeoverAt(payload, null)
+
+    override fun sendVideoTakeoverAt(payload: ByteArray, presentationUs: Long?): Boolean {
         if (closed.get() || paused) return false
         synchronized(videoLock) {
-            if (videoOverflow()) return false
+            val data = withFixedSps(payload)
+            if (!admitDesktopFrame(data) || videoOverflow()) return false
             // под тем же замком, что и onFrame заглушки: после AA-IDR ни один её кадр уже не уйдёт
             acceptEncoder = false
             lastVideoTx = SystemClock.elapsedRealtime()
-            sendVideoData(withFixedSps(payload))
+            sendVideoData(data, presentationUs)
             return true
         }
     }
 
-    /**
-     * Mazda 20622111 (h238/h359): на VIDEO_DATA больше ~16 КиБ ГУ перестаёт читать USB целиком. Кадр режется на куски
-     * по [AaBridgeCore.MAZDA_20622111_MAX_VIDEO_PACKET] байт, каждый отдельным VIDEO_DATA подряд (расчёт на то, что ГУ
-     * склеивает поток перед декодером). Остальные ГУ получают кадр одним пакетом, как раньше.
-     */
-    private fun sendVideoData(data: ByteArray) {
+    /** Reject an oversize access unit before any of its bytes enter the receiver's decoder. */
+    private fun admitDesktopFrame(payload: ByteArray): Boolean {
+        if (cfg.desktopVideo == null) return true
+        val reduced = com.headswap.desk.aa.DesktopFrameBudget.reducedBitrate(payload.size, effectiveEncoderBitrate()) ?: return true
+        if (bitratePolicy.lowerCeiling(reduced)) {
+            applyEncoderBitrate()
+            AppLog.i("DESKTOP VIDEO: access unit ${payload.size} exceeds compatibility budget; bitrate=${bitratePolicy.current}", false)
+        }
+        vDropped++
+        return false // The bridge retires dependent P-frames and requests a fresh IDR at the lower rate.
+    }
+
+    private fun videoTime(presentationUs: Long? = null): Int = if (cfg.desktopVideo != null)
+        mediaClock.wireTime(presentationUs, System.nanoTime() / 1000) else unixSeconds()
+
+    private fun effectiveEncoderBitrate(): Int {
+        val receiverLimit = mobisAaCeiling.current.takeIf { bridge.huMobisNx4c }
+        return if (cfg.desktopVideo != null) DesktopVideoQuality.encoderBitrate(bitratePolicy, receiverLimit)
+            else receiverLimit ?: bitratePolicy.current
+    }
+    private fun applyEncoderBitrate(): Boolean = bridge.applyVideoTuning(this, bitrate = ::effectiveEncoderBitrate)
+    private fun effectiveEncoderFps(): Int {
+        val desired = if (cfg.desktopVideo != null) minOf(targetFps, desktopFrameRate.current) else targetFps
+        return thermalThrottle.capFps(if (bridge.huMobisNx4c) minOf(desired, AaBridgeCore.MOBIS_FPS) else desired)
+    }
+    private fun applyEncoderFps(): Boolean = bridge.applyVideoTuning(this, fps = ::effectiveEncoderFps)
+
+    /** The existing Mazda compatibility path keeps one timestamp across all fragments. */
+    private fun sendVideoData(data: ByteArray, presentationUs: Long? = null) {
         val max = AaBridgeCore.MAZDA_20622111_MAX_VIDEO_PACKET
         if (!bridge.huMazda20622111 || data.size <= max) {
-            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, unixSeconds(), data))
+            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, videoTime(presentationUs), data))
             return
         }
         if (!splitLogged) {
             splitLogged = true
             AppLog.i("видео: Mazda 20622111, кадр ${data.size} Б режу на ${(data.size + max - 1) / max} VIDEO_DATA по ≤ $max Б")
         }
-        val ts = unixSeconds()
+        val ts = videoTime(presentationUs)
         var off = 0
         while (off < data.size) {
             val end = minOf(off + max, data.size)
@@ -955,7 +990,7 @@ class CarLifeSession(
     private fun adaptBitrate() {
         try {
             if (closed.get() || !carlifeStarted) return
-            if (bridge.huMobisNx4c) {
+            if (bridge.huMobisNx4c && cfg.desktopVideo == null) {
                 if (!mobisAdaptLogged) {
                     mobisAdaptLogged = true
                     AppLog.i("видео: Mobis CCNC, адаптация по бэклогу выключена: энкодер ${AaBridgeCore.MOBIS_BITRATE / 1000} кбит/с VBR, как Baidu, вниз только по размеру IDR > ${IdrBitrateCeiling.LIMIT_BYTES / 1024} КБ")
@@ -976,12 +1011,20 @@ class CarLifeSession(
             val rate = transport.drainBytesPerSec
             val qf = transport.queuedVideoFrames
             if (qf > maxQueueFrames) maxQueueFrames = qf
-            val real = VideoQueueLimit.backlogMs(transport.queuedVideoBytes, rate)
+            val real = maxOf(transport.videoWriteAgeMs, VideoQueueLimit.backlogMs(transport.queuedVideoBytes, rate))
             val sinceOverflow = lastOverflowMs.let { if (it == NEVER_MS) -1L else now - it }
             applyHuCeilings()
             val old = bitratePolicy.current
-            val bps = bitratePolicy.update(now, VideoQueueLimit.policyBacklogMs(real, sinceOverflow), rate) ?: return
-            if (placeholder?.setBitrate(bps) ?: bridge.setEncoderBitrate(bps)) {
+            val backlog = VideoQueueLimit.policyBacklogMs(real, sinceOverflow)
+            if (cfg.desktopVideo != null && encodingSurface) {
+                desktopFrameRate.update(now, backlog, thermalThrottle.capFps(targetFps), sinceOverflow in 0..200)
+                    ?.let { fps ->
+                        applyEncoderFps()
+                        AppLog.i("DESKTOP VIDEO: dynamic fps=$fps max=$targetFps backlog=${backlog.toInt()}ms", false)
+                    }
+            }
+            val bps = bitratePolicy.update(now, backlog, rate) ?: return
+            if (placeholder?.setBitrate(bitratePolicy.current) ?: applyEncoderBitrate()) {
                 val who = if (placeholder != null) "заглушки" else "энкодера"
                 AppLog.i("видео: битрейт $who ${old / 1000} -> ${bps / 1000} кбит/с (${bitratePolicy.lastReason}; потолок ${bitratePolicy.ceilingBps / 1000})")
                 if (air) WLog.ev(WLog.VIDEO, "bitrate", "fromKbps" to old / 1000, "toKbps" to bps / 1000,
@@ -1002,7 +1045,7 @@ class CarLifeSession(
         val old = bitratePolicy.current
         if (!bitratePolicy.lowerCeiling(VW_20082138_CEILING_BPS)) return
         AppLog.i("VW ID: потолок битрейта ${bitratePolicy.ceilingBps / 1000} кбит/с (лимит размера IDR)")
-        if (bitratePolicy.current != old) bridge.setEncoderBitrate(bitratePolicy.current)
+        if (bitratePolicy.current != old) applyEncoderBitrate()
     }
 
     /**
@@ -1015,7 +1058,7 @@ class CarLifeSession(
         val old = bitratePolicy.current
         if (!bitratePolicy.lowerCeiling(AaBridgeCore.PIONEER_RM56_CEILING_BPS)) return
         AppLog.i("Pioneer RM56E8B: потолок битрейта ${bitratePolicy.ceilingBps / 1000} кбит/с")
-        if (bitratePolicy.current != old) bridge.setEncoderBitrate(bitratePolicy.current)
+        if (bitratePolicy.current != old) applyEncoderBitrate()
     }
 
     /** Mazda 20622111 (h238/h359): потолок 1,5 Мбит/с, чтобы IDR реже вылезали за лимит пакета ГУ. */
@@ -1024,13 +1067,15 @@ class CarLifeSession(
         val old = bitratePolicy.current
         if (!bitratePolicy.lowerCeiling(AaBridgeCore.MAZDA_20622111_CEILING_BPS)) return
         AppLog.i("Mazda 20622111: потолок битрейта ${bitratePolicy.ceilingBps / 1000} кбит/с")
-        if (bitratePolicy.current != old) bridge.setEncoderBitrate(bitratePolicy.current)
+        if (bitratePolicy.current != old) applyEncoderBitrate()
     }
 
     private fun applyHuCeilings() {
         applyVwCeiling()
         applyPioneerCeiling()
         applyMazda20622111Ceiling()
+        if (cfg.desktopVideo != null && bridge.huMobisNx4c && bitratePolicy.lowerCeiling(AaBridgeCore.MOBIS_BITRATE))
+            applyEncoderBitrate()
     }
 
     /** Потолок fps под ГУ (Pioneer RM56E8B: 15), null = без ограничения. */
@@ -1065,7 +1110,7 @@ class CarLifeSession(
     /** Страховка VW ID: IDR > 450 КБ - потолок ×0,75 (не ниже 1,5 Мбит/с), не чаще раза в секунду; кадр уже ушёл. */
     override fun onEncodedKeyFrame(size: Int) {
         if (bridge.huMobisNx4c) {
-            mobisKeyFrame(size, mobisAaCeiling, "энкодера") { bridge.setEncoderBitrate(it) }
+            mobisKeyFrame(size, mobisAaCeiling, "энкодера") { applyEncoderBitrate() }
             return
         }
         if (size <= VW_20082138_IDR_LIMIT) return
@@ -1076,7 +1121,7 @@ class CarLifeSession(
         if (!bitratePolicy.lowerCeiling(maxOf(VW_20082138_MIN_BPS, (bitratePolicy.ceilingBps * 0.75).toInt()))) return
         vwIdrCutMs = now
         AppLog.i("VW ID: IDR $size Б > $VW_20082138_IDR_LIMIT, потолок битрейта -> ${bitratePolicy.ceilingBps}")
-        if (bitratePolicy.current != old) bridge.setEncoderBitrate(bitratePolicy.current)
+        if (bitratePolicy.current != old) applyEncoderBitrate()
     }
 
     /** Аудио моста: канал MEDIA/TTS, заголовок 12 байт; time = millis & 0xFFFFFFFF в DATA, 0 в INIT/STOP (как Baidu). */
@@ -1086,6 +1131,19 @@ class CarLifeSession(
         val isData = type == CarlifeAudio.MEDIA_DATA || type == CarlifeAudio.TTS_DATA || type == CarlifeAudio.VR_DATA
         val time = if (isData) (System.currentTimeMillis() and 0xFFFFFFFFL).toInt() else 0
         send(channel, Wire.dataInner(type, time, payload))
+        return true
+    }
+
+    override fun sendAudioAt(channel: Int, type: Int, payload: ByteArray, capturedAtUs: Long): Boolean {
+        if (cfg.desktopVideo == null) return sendAudio(channel, type, payload)
+        if (closed.get()) return false
+        val nowUs = System.nanoTime() / 1000
+        val ageMs = ((nowUs - capturedAtUs) / 1000).coerceAtLeast(0)
+        // Interactive projection cannot replay seconds of stale PCM after a blocked video write.
+        // Carry capture time through to the protocol, and expire only DATA, never INIT/STOP.
+        if (ageMs >= DESKTOP_AUDIO_MAX_AGE_MS) return false
+        val time = mediaClock.wireTime(capturedAtUs, nowUs)
+        transport.sendTimed(channel, Wire.dataInner(type, time, payload), DESKTOP_AUDIO_MAX_AGE_MS - ageMs)
         return true
     }
 
@@ -1244,14 +1302,15 @@ class CarLifeSession(
             // was active. Apply that same level to the newly selected Surface policy.
             bitratePolicy.setThermalCap(if (thermalThrottle.level == ThermalLevel.NORMAL) Int.MAX_VALUE
                 else thermalThrottle.capBitrate(bitratePolicy.ceilingBps))
-            val actualBps = if (mobis) mobisAaCeiling.current else bitratePolicy.current
+            val actualBps = effectiveEncoderBitrate()
             AppLog.i("DEX video quality native=${mode.outW}x${mode.outH} singleEncode=true " +
                 "targetKbps=${actualBps / 1000} ceilingKbps=${bitratePolicy.ceilingBps / 1000} " +
                 "profile=${bitratePolicy.profile.name} adaptive=true", false)
         }
         AaTranscoder(
-            mode.outW, mode.outH, thermalThrottle.capFps(if (mobis) AaBridgeCore.MOBIS_FPS else targetFps),
-            if (mobis) mobisAaCeiling.current else bitratePolicy.current, out, { AppLog.i(it, false) },
+            mode.outW, mode.outH, if (directSurface) effectiveEncoderFps()
+                else thermalThrottle.capFps(if (mobis) AaBridgeCore.MOBIS_FPS else targetFps),
+            effectiveEncoderBitrate(), out, { AppLog.i(it, false) },
             srcWidth = if (directSurface) mode.outW else mode.aaW,
             srcHeight = if (directSurface) mode.outH else mode.aaH,
             crop = if (directSurface) com.headswap.desk.aa.VideoCrop.NONE else mode.cropFor(bridge.marginsAtBottom),
@@ -1470,7 +1529,7 @@ class CarLifeSession(
         if (now - lastVideoTx < period) return
         if (vBeats == 0L) AppLog.i("видео: PAUSE, шлю пустой ${Msg.name(type)} раз в $period мс, чтобы ГУ не рвало USB")
         lastVideoTx = now
-        send(Ch.VIDEO, Wire.dataInner(type, unixSeconds(), ByteArray(0)))
+        send(Ch.VIDEO, Wire.dataInner(type, videoTime(), ByteArray(0)))
     }
 
     /**
@@ -1488,7 +1547,7 @@ class CarLifeSession(
             AppLog.i("видео: AA молчит ${now - lastVideoTx} мс, шлю пустой VIDEO_HEARTBEAT раз в $IDLE_HEARTBEAT_MS мс, чтобы ГУ не рвало USB")
         }
         lastVideoTx = now
-        send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_HEARTBEAT, unixSeconds(), ByteArray(0)))
+        send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_HEARTBEAT, videoTime(), ByteArray(0)))
     }
 
     /**
@@ -1507,7 +1566,7 @@ class CarLifeSession(
                 AppLog.i("видео: Mobis CCNC, ${now - lastVideoTx} мс без VIDEO_DATA, шлю пустой VIDEO_DATA 0x20001 раз в $MOBIS_KEEPALIVE_MS мс тишины, как Baidu")
             }
             lastVideoTx = now
-            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, unixSeconds(), ByteArray(0)))
+            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, videoTime(), ByteArray(0)))
         }
     }
 
@@ -1520,6 +1579,9 @@ class CarLifeSession(
             CarLifeState.status = "ГУ молчит, байт от него нет"
         }
         if (now - lastStatsAt >= 5000 && (vFrames > 0 || vBeats > 0)) {
+            if (cfg.desktopVideo != null) AppLog.i("DESKTOP AV: videoWriteMs=${transport.videoWriteAgeMs} " +
+                "videoPendingBytes=${transport.queuedVideoBytes} expiredAudio=${transport.audioExpiredPackets} " +
+                "overflowAudio=${transport.audioOverflowPackets}", false)
             AppLog.i("видео: отправлено кадров=$vFrames (ключевых=$vKeys) байт=$vBytes heartbeat=$vBeats сброшено=$vDropped очередь=${transport.queueSize(Ch.VIDEO)} (+${vFrames - lastStatsFrames} за ${(now - lastStatsAt) / 1000}с)")
             lastStatsAt = now
             lastStatsFrames = vFrames
@@ -1558,16 +1620,16 @@ class CarLifeSession(
             }
             return
         }
-        val fps = thermalThrottle.capFps(targetFps)
-        val live = bridge.setTargetFps(fps)
-        if (bridge.huMobisNx4c) {
+        val fps = thermalThrottle.capFps(if (cfg.desktopVideo != null) minOf(targetFps, desktopFrameRate.current) else targetFps)
+        val live = applyEncoderFps()
+        if (bridge.huMobisNx4c && cfg.desktopVideo == null) {
             // Mobis CCNC: битрейт энкодера не трогаем (Baidu держит фиксированный), от нагрева только потолок fps
             AppLog.i("нагрев: ступень ${level.name} ($why): Mobis CCNC, fps $fps (цель $targetFps), битрейт не меняю")
             return
         }
         val old = bitratePolicy.current
         val cap = if (level == ThermalLevel.NORMAL) Int.MAX_VALUE else thermalThrottle.capBitrate(bitratePolicy.ceilingBps)
-        if (bitratePolicy.setThermalCap(cap)) bridge.setEncoderBitrate(bitratePolicy.current)
+        if (bitratePolicy.setThermalCap(cap)) applyEncoderBitrate()
         val capText = if (cap == Int.MAX_VALUE) "снят" else "${bitratePolicy.thermalCapBps / 1000} кбит/с"
         AppLog.i("нагрев: ступень ${level.name} ($why): fps $fps (ГУ/настройка $targetFps), потолок битрейта $capText, " +
             "битрейт ${old / 1000} -> ${bitratePolicy.current / 1000} кбит/с${if (live) "" else " (транскодера нет, применится при старте)"}")
@@ -1633,7 +1695,8 @@ class CarLifeSession(
         /** action&255 тача, которые мост переводит в AA: DOWN, UP, MOVE, POINTER_DOWN, POINTER_UP. */
         private val TOUCH_TO_AA = setOf(0, 1, 2, 5, 6)
         private const val TTS_TX_LOGGED = 8           // TTS_DATA после INIT с временем записи в транспорт (h222)
-        private const val MAX_AUDIO_QUEUE = 180       // звук не принимается, если в общей очереди больше пакетов
+        private const val MAX_AUDIO_QUEUE = 180       // Legacy AA queue limit; desktop PCM uses capture deadlines.
+        private const val DESKTOP_AUDIO_MAX_AGE_MS = 150L
         private const val BITRATE_POLL_MS = 100L
         private const val VW_20082138_CEILING_BPS = 2_000_000
         private const val VW_20082138_MIN_BPS = 1_500_000

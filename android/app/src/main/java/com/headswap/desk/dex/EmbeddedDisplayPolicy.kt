@@ -3,7 +3,8 @@ package com.headswap.desk.dex
 /** Limits for the two navigator tiles. Independent of phone display settings and parent geometry. */
 internal object EmbeddedDisplayPolicy {
     const val MAX_CHILDREN = 2
-    fun displayFlags(sdkInt: Int): Int = DesktopModePolicy.displayFlags(DesktopModePolicy.DRIVEDECK, sdkInt)
+    @JvmOverloads fun displayFlags(sdkInt: Int, independentLock: Boolean = false): Int =
+        DesktopModePolicy.displayFlags(DesktopModePolicy.DRIVEDECK, sdkInt, independentLock)
     const val MAX_WIDTH = 3840
     const val MAX_HEIGHT = 2160
     const val MAX_DENSITY = 1280

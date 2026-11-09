@@ -42,6 +42,7 @@ object HeadswapNotification {
         val text = DexState.error ?: "${DexState.status} · ${CarLifeState.status}"
         val builder = Notification.Builder(ctx, channel)
             .setSmallIcon(R.drawable.ic_stat_headswap)
+            .setLargeIcon(com.headswap.desk.BrandArtwork.bitmap(ctx.resources))
             .setContentTitle("HeadSwap Desktop")
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
