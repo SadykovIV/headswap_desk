@@ -45,6 +45,8 @@ interface IDexUserService {
     void focusHardwareDisplay(int displayId) = 24;
     /** Protocol 17: completes shared Back/IME/Home decision. true requests only the captured own-host Back callback. */
     boolean routeHostBack(int parentDisplayId, boolean modal) = 25;
+    /** Protocol 19: opted-in next-street label from the same owned primary manoeuvre card. */
+    @nullable String[] readShizukuGuidanceWithRoad(int displayId) = 26;
     // Reserved destroy transaction from the official Shizuku UserService sample.
     void destroy() = 16777114;
 }

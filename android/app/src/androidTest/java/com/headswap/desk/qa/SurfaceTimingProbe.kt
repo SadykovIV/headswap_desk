@@ -118,7 +118,7 @@ internal object SurfaceTimingProbe {
         }
     }
 
-    private class Producer(surface: Surface) : AutoCloseable {
+    internal class Producer(surface: Surface) : AutoCloseable {
         private val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         private val context: android.opengl.EGLContext
         private val window: android.opengl.EGLSurface

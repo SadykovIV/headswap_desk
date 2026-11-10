@@ -105,11 +105,13 @@ class EmbeddedGuidanceTest {
         val remote = Proxy.newProxyInstance(IDexUserService::class.java.classLoader, arrayOf(IDexUserService::class.java)) { _, method, args ->
             when (method.name) {
                 "asBinder" -> binder
-                "readShizukuGuidance" -> {
+                "readShizukuGuidance", "readShizukuGuidanceWithRoad" -> {
                     assertEquals(32, args.single())
                     reads++
                     if (retireDuringRead) EmbeddedSessionRegistry.deactivate(owner)
-                    arrayOf("ru.yandex.yandexnavi", "Turn left", "20", "m", "en")
+                    arrayOf("ru.yandex.yandexnavi", "Turn left", "20", "m", "en").let {
+                        if (method.name == "readShizukuGuidanceWithRoad") it + "Next Street" else it
+                    }
                 }
                 else -> error(method.name)
             }
@@ -126,12 +128,14 @@ class EmbeddedGuidanceTest {
             assertEquals(0, reads)
             assertEquals(ShellManeuverSample.Card("ru.yandex.yandexnavi", "Turn left", "20", "m", "en"),
                 EmbeddedSessionRegistry.readShizukuGuidance(32))
+            assertEquals(ShellManeuverSample.Card("ru.yandex.yandexnavi", "Turn left", "20", "m", "en", "Next Street"),
+                EmbeddedSessionRegistry.readShizukuGuidance(32, includeRoad = true))
             retireDuringRead = true
             assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readShizukuGuidance(32))
-            assertEquals(2, reads)
+            assertEquals(3, reads)
             EmbeddedSessionRegistry.activate(owner, remote, 32, calls, DesktopModePolicy.DRIVEDECK, 160, false)
             assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readShizukuGuidance(32))
-            assertEquals(2, reads)
+            assertEquals(3, reads)
             assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidance(0) { error("display 0") })
             assertEquals(ShellManeuverSample.Unavailable, EmbeddedSessionRegistry.readDelegatedGuidance(31) { error("wrong display") })
             assertEquals(ShellManeuverSample.VisibleWithoutHint, EmbeddedSessionRegistry.readDelegatedGuidance(32) {

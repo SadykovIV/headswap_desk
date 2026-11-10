@@ -54,6 +54,9 @@ interface CarTransport {
     /** Неблокирующая постановка inner в очередь канала. */
     fun send(chan: Int, inner: ByteArray)
 
+    /** Desktop frame: decide freshness immediately before writing its first fragment. */
+    fun sendVideoFragment(inner: ByteArray, frame: VideoWrite, last: Boolean)
+
     /** Audio data may expire while waiting; framing/control messages must never be dropped. */
     fun sendTimed(chan: Int, inner: ByteArray, maxAgeMs: Long) = send(chan, inner)
     val audioExpiredPackets: Long get() = 0L

@@ -61,6 +61,8 @@
         </intent>
         <package android:name="moe.shizuku.privileged.api" />
         <package android:name="ru.drivedeck.headswap" />
+        <package android:name="com.headswap.navigator.experimental" />
+        <package android:name="ru.yandex.yandexnavi" />
         <package android:name="com.sec.android.app.launcher" />
         <package android:name="com.google.android.projection.gearhead" />
         <!-- раздел «Приложения для магнитолы»: статус установки и запуск каталога (Fermata Auto, ParkedTube, AABrowser) -->
@@ -119,6 +121,8 @@
         </activity>
 
         <activity android:name=".MainActivity" android:exported="false" />
+        <activity android:name=".dex.DesktopWizardActivationActivity" android:exported="false" android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|smallestScreenSize|keyboardHidden" />
         <activity android:name=".dex.DesktopOnboardingActivity" android:exported="false" />
         <activity android:name=".link.car.WirelessSetupActivity" android:exported="false" android:theme="@style/Theme.Headswap.Dex" />
         <service android:name=".dex.PhonePairingService" android:exported="false" android:foregroundServiceType="connectedDevice" />

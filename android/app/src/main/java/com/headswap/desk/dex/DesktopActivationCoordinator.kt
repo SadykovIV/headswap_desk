@@ -23,7 +23,7 @@ internal object DesktopActivationCoordinator {
         DelegatedPanelAccess.hasPermission(context), DelegatedPanelAccess.unsupportedThisActivation,
         Build.VERSION.SDK_INT >= 37 && DexPrefs(context).desktopMode != DesktopModePolicy.SAMSUNG_DEX,
         VdmHostLink.isReady, IndependentRecoveryAccess.needsApply(context),
-        IndependentRecoveryAccess.requiresLiveVerification(context))
+        IndependentRecoveryAccess.requiresLiveVerification(context), DesktopUsbDebugging.confirmedMissing(context))
 
     fun request(context: Context, needs: DesktopReadinessPolicy.Requirements,
                 explicit: Boolean, allowAcquireGrants: Boolean = true, current: () -> Boolean): Request =
@@ -78,6 +78,8 @@ internal object DesktopActivationCoordinator {
                             }
                         }
                         DesktopReadinessPolicy.Step.READY -> return Result.READY
+                        DesktopReadinessPolicy.Step.USB_DEBUGGING_REQUIRED -> throw DexAccessException(
+                            DexAccessStage.PROBE_SHELL, DexAccessReason.USB_DEBUGGING_DISABLED)
                         DesktopReadinessPolicy.Step.USER_ACTIVATION_REQUIRED -> throw DesktopPreparationException("Активируйте HeadSwap на телефоне.")
                         DesktopReadinessPolicy.Step.RECONFIGURATION_REQUIRED -> throw DesktopPreparationException(
                             "Изменены разрешения для звука или дисплея. Завершите текущий доступ HeadSwap и активируйте приложение снова.")

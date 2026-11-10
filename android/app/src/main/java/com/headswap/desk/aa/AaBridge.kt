@@ -467,7 +467,6 @@ class AaBridgeCore(
         navHold = { on -> routeNavi(on) },
         musicState = { on -> musicByState(on) },
         navRearm = { rearmNavi() },
-        emptyRoadText = { huHonda },
     )
 
     val metaRelay: MetaRelay get() = meta
@@ -1858,6 +1857,10 @@ class AaBridgeCore(
 
     @Synchronized fun onDesktopNavigation(from: CarlifeLink, turn: AaNavTurn?, distance: AaNavDistance?) {
         if (link === from) meta.onDesktopNavigation(turn, distance)
+    }
+
+    @Synchronized fun onNavigationStreetNames(from: CarlifeLink, enabled: Boolean) {
+        if (link === from) meta.setStreetNamesEnabled(enabled)
     }
 
     @Synchronized fun refreshDesktopNavigation(from: CarlifeLink) {

@@ -18,7 +18,7 @@ import com.headswap.desk.aa.AaMeta
 internal class YandexGuidanceCard(private val context: Context) {
     private val cached = HashMap<String, Pair<Long, Map<List<Int>, Set<Int>>>>()
 
-    fun parse(pkg: String, note: Notification): ClusterNavigationHint? {
+    fun parse(pkg: String, note: Notification, includeRoad: Boolean = false): ClusterNavigationHint? {
         if (pkg !in PACKAGES) return null
         val app = context.createPackageContext(pkg, Context.CONTEXT_RESTRICTED)
         val icon = note.smallIcon?.takeIf { it.type == Icon.TYPE_RESOURCE && (it.resPackage.isNullOrEmpty() || it.resPackage == pkg) }
@@ -28,7 +28,7 @@ internal class YandexGuidanceCard(private val context: Context) {
         val cards = listOfNotNull(note.bigContentView, note.contentView, note.headsUpContentView)
         val guidance = cards.filter { it.`package` == pkg && knownLayout(entry(app, it.layoutId)) }
         for (card in guidance) {
-            val parsed = runCatching { custom(app, card, smallTurn) }.getOrNull()
+            val parsed = runCatching { custom(app, card, smallTurn, includeRoad) }.getOrNull()
             if (parsed != null) return parsed
         }
         if (guidance.isEmpty() && note.category != Notification.CATEGORY_NAVIGATION &&
@@ -41,7 +41,7 @@ internal class YandexGuidanceCard(private val context: Context) {
         return null
     }
 
-    private fun custom(app: Context, card: RemoteViews, smallTurn: Int?): ClusterNavigationHint? {
+    private fun custom(app: Context, card: RemoteViews, smallTurn: Int?, includeRoad: Boolean): ClusterNavigationHint? {
         // Standard RemoteViews inflater, with restricted package resources and no foreign code.
         // Never attach the result, click its actions or execute any PendingIntent.
         val root = card.apply(app, FrameLayout(app))
@@ -56,7 +56,7 @@ internal class YandexGuidanceCard(private val context: Context) {
             val image = (named(name) as? ImageView)?.takeIf { it.visibility == View.VISIBLE }
             image?.drawable?.let { arrow(app, it) }
         } ?: smallTurn
-        return NavigationHintParser.parse(title, detail, turn, guidanceLayout = true)
+        return NavigationHintParser.parse(title, detail, turn, guidanceLayout = includeRoad)
     }
 
     private fun arrow(app: Context, drawable: Drawable): Int? {

@@ -147,14 +147,15 @@ object ShellPanelHelper {
                 if (op < 0) return false
                 if (op == RemotePanelWire.END_ACTIVATION) return true
                 try {
-                    if (op == RemotePanelWire.READ_GUIDANCE) {
+                    if (op == RemotePanelWire.READ_GUIDANCE || op == RemotePanelWire.READ_GUIDANCE_WITH_ROAD) {
                         val id = input.readInt()
                         val displayId = input.readInt()
                         if (displayId <= 0 || !reading.compareAndSet(false, true)) {
                             reply(id, ShellManeuverSample.Unavailable)
                         } else guidance.execute {
                             try {
-                                val sample = try { ShellYandexGuidance.read(displayId, ownerUid, ownerUid / 100000) }
+                                val sample = try { ShellYandexGuidance.read(displayId, ownerUid, ownerUid / 100000,
+                                    includeRoad = op == RemotePanelWire.READ_GUIDANCE_WITH_ROAD) }
                                 catch (_: Exception) { ShellManeuverSample.Unavailable }
                                 catch (_: LinkageError) { ShellManeuverSample.Unavailable }
                                 reading.set(false)

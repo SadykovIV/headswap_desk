@@ -28,6 +28,12 @@ internal object ProtocolLogPolicy {
         val cluster = schema === Schemas.mediaInfo || schema === Schemas.naviNextTurnInfo
         return fields.mapNotNull { field ->
             val definition = schema.fields[field.number] ?: return@mapNotNull null
+            // Numeric layout diagnostics only; never log private street text. In UTF-8, 0x20
+            // cannot be part of another character, so counting it needs no text decoding.
+            if (schema === Schemas.naviNextTurnInfo && field.number == 3 && field.wire == 2) {
+                val bytes = field.data!!
+                return@mapNotNull "roadNameBytes=${bytes.size} roadNameSpaces=${bytes.count { it == 0x20.toByte() }}"
+            }
             // HUD packets carry personal track, artist and road names. Log only their numeric state.
             if (cluster && definition.kind != Kind.INT) return@mapNotNull null
             val value = when {

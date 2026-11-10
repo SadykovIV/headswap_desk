@@ -101,6 +101,9 @@ object MediaArtworkProbe {
             override fun close() = Unit
             override fun start(sink: (Int, ByteArray) -> Unit, onWritten: (Int, ByteArray) -> Unit,
                                onClosed: (String) -> Unit) = Unit
+            override fun sendVideoFragment(inner: ByteArray, frame: com.headswap.desk.link.VideoWrite, last: Boolean) {
+                if (frame.begin()) { send(com.headswap.desk.Ch.VIDEO, inner); if (last) frame.written() }
+            }
             override fun send(chan: Int, inner: ByteArray) {
                 if (chan == Ch.CMD) Wire.parseCmd(inner)?.takeIf { it.type == Msg.MEDIA_INFO }?.let(metadata::offer)
             }

@@ -31,6 +31,25 @@ class ProtocolLogPolicyTest {
         metadataOnly(turn)
         assertTrue(song.header.contains("duration=181"))
         assertTrue(turn.header.contains("remainDistance=450"))
+        assertTrue(turn.header.contains("roadNameBytes=9"))
+    }
+
+    @Test fun roadLengthUsesUtf8WireBytesWithoutRevealingTextOrIconData() {
+        val road = "Нахимовский"
+        val route = PbWriter().int32(1, 2).int32(2, 21).string(3, road).int32(5, 3811)
+            .bytes(6, marker).toByteArray()
+        val turn = entry(Ch.CMD, Msg.NAVI_NEXT_TURN_INFO, route)
+        metadataOnly(turn)
+        assertFalse(turn.header, turn.header.contains("Нахимовский"))
+        assertTrue(turn.header, turn.header.contains("roadNameBytes=22"))
+        assertTrue(turn.header, turn.header.contains("roadNameSpaces=0"))
+        assertTrue(turn.header, turn.header.contains("nextTurn=21"))
+        val empty = entry(Ch.CMD, Msg.NAVI_NEXT_TURN_INFO, PbWriter().string(3, "").toByteArray())
+        assertTrue(empty.header, empty.header.contains("roadNameBytes=0"))
+        assertTrue(empty.header, empty.header.contains("roadNameSpaces=0"))
+        val words = entry(Ch.CMD, Msg.NAVI_NEXT_TURN_INFO, PbWriter().string(3, "ул Мира").toByteArray())
+        assertTrue(words.header, words.header.contains("roadNameSpaces=1"))
+        assertFalse(words.header, words.header.contains("Мира"))
     }
 
     @Test fun everyShortAudioPayloadAndLongPcmAreMetadataOnly() {

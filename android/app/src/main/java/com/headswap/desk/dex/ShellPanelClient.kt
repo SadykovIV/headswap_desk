@@ -87,9 +87,9 @@ internal object ShellPanelClient {
         else -> null
     }
 
-    fun readGuidance(displayId: Int): ShellManeuverSample =
+    fun readGuidance(displayId: Int, includeRoad: Boolean = false): ShellManeuverSample =
         EmbeddedSessionRegistry.readDelegatedGuidance(displayId) {
-            connection?.takeIf { it.alive }?.readGuidance(displayId) ?: ShellManeuverSample.Unavailable
+            connection?.takeIf { it.alive }?.readGuidance(displayId, includeRoad) ?: ShellManeuverSample.Unavailable
         }
 
     private fun imeRequest(op: Int, displayId: Int): Int {
@@ -164,14 +164,14 @@ internal object ShellPanelClient {
                 } catch (_: Exception) { } finally { shutdown(); onClosed() }
             }, "headswap-panel-replies").apply { isDaemon = true; start() }
         }
-        fun readGuidance(displayId: Int): ShellManeuverSample {
+        fun readGuidance(displayId: Int, includeRoad: Boolean): ShellManeuverSample {
             val id = nextQuery.incrementAndGet()
             val result = CompletableFuture<ShellManeuverSample>()
             guidance[id] = result
             try {
                 synchronized(output) {
                     if (!alive) return ShellManeuverSample.Unavailable
-                    output.writeByte(RemotePanelWire.READ_GUIDANCE)
+                    output.writeByte(if (includeRoad) RemotePanelWire.READ_GUIDANCE_WITH_ROAD else RemotePanelWire.READ_GUIDANCE)
                     output.writeInt(id)
                     output.writeInt(displayId)
                     output.flush()

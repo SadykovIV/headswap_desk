@@ -1,6 +1,6 @@
 # Сборка HeadSwap Desktop
 
-Текущий выпуск — **HeadSwap Desktop 0.6.3, versionCode46**, с адаптированным **DriveDeck 0.6.9 code334**. [Изменения выпуска](docs/CHANGES-0.6.3.md) · [Результаты проверок](docs/TESTING-0.6.3.md).
+Текущий выпуск — **HeadSwap Desktop 0.6.13, versionCode56**, с адаптированным **DriveDeck 0.6.9 code334**. [Изменения выпуска](docs/CHANGES-0.6.13.md) · [Результаты проверок](docs/TESTING-0.6.13.md).
 
 Для сборки APK нужен JDK 17 и Android SDK с платформой API 37 и Build Tools 36.0.0. Укажите путь к JDK в `JAVA_HOME`, к SDK — в `ANDROID_HOME`. При первом запуске Gradle скачает зависимости. В репозитории есть Gradle Wrapper 9.8.0.
 

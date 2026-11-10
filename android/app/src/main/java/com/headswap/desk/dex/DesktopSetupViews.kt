@@ -1,11 +1,13 @@
 package com.headswap.desk.dex
 
+import android.app.AlertDialog
 import android.content.Context
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
+import android.util.TypedValue
 import android.view.View
 import android.view.Gravity
 import android.view.accessibility.AccessibilityNodeInfo
@@ -74,6 +76,39 @@ internal class DesktopSetupViews(private val context: Context) {
         parent.addView(this, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4); bottomMargin = dp(2) })
     }
 
+    class HelpRow(val view: LinearLayout, val info: Button)
+
+    /** A separate accessible target: disabling the setting must never disable its explanation. */
+    fun help(control: View, title: String, message: () -> String): HelpRow {
+        val parent = control.parent as LinearLayout
+        val position = parent.indexOfChild(control)
+        val originalParams = control.layoutParams
+        parent.removeViewAt(position)
+        val row = LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(48)
+        }
+        parent.addView(row, position, originalParams)
+        row.addView(control, LinearLayout.LayoutParams(0, -2, 1f))
+        val info = button(row, "ⓘ") {
+            AlertDialog.Builder(context).setTitle(title).setMessage(message())
+                .setPositiveButton("Понятно", null).show()
+        }.apply {
+            contentDescription = "Справка: $title"
+            tooltipText = title
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+            background = RippleDrawable(ColorStateList.valueOf(Color.argb(45, 255, 255, 255)), null, null)
+            setTextColor(secondary)
+            includeFontPadding = false
+            minWidth = 0
+            minimumWidth = dp(48)
+            minimumHeight = dp(48)
+            setPadding(0, 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(6) }
+        }
+        return HelpRow(row, info)
+    }
+
     class NavigationRow(val view: View, private val summary: TextView) {
         fun updateSummary(value: String) {
             if (summary.text.toString() != value) summary.text = value
@@ -116,11 +151,11 @@ internal class DesktopSetupViews(private val context: Context) {
 
     class PermissionRow(private val row: NavigationRow, private val mark: TextView) {
         val view: View get() = row.view
-        fun update(granted: Boolean, detail: String) {
-            mark.text = if (granted) "✓" else "✕"
-            mark.setTextColor(if (granted) Color.rgb(106, 230, 157) else Color.rgb(255, 119, 119))
+        fun update(granted: Boolean?, detail: String) {
+            mark.text = when (granted) { true -> "✓"; false -> "✕"; null -> "?" }
+            mark.setTextColor(when (granted) { true -> Color.rgb(106, 230, 157); false -> Color.rgb(255, 119, 119); null -> Color.LTGRAY })
             row.updateSummary(detail)
-            view.stateDescription = (if (granted) "Доступ есть. " else "Нет доступа. ") + detail
+            view.stateDescription = (when (granted) { true -> "Доступ есть. "; false -> "Нет доступа. "; null -> "Проверьте в Android. " }) + detail
         }
     }
 

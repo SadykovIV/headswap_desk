@@ -599,14 +599,18 @@ class DexUserService private constructor(private val context: Context, private v
         GuidanceLease(active, child, child.revision, child.launchedPackage)
     }
 
-    override fun readShizukuGuidance(displayId: Int): Array<String>? {
+    override fun readShizukuGuidance(displayId: Int): Array<String>? = readGuidance(displayId, false)
+
+    override fun readShizukuGuidanceWithRoad(displayId: Int): Array<String>? = readGuidance(displayId, true)
+
+    private fun readGuidance(displayId: Int, includeRoad: Boolean): Array<String>? {
         enforceClient()
         if (delegated) return null
         val before = guidanceLease(displayId) ?: return null
         // Read on this Binder thread, never on the display/input handler. Shizuku's virtual
         // displays were created by its shell UID; the app UID determines the target Android user.
         val identity = Binder.clearCallingIdentity()
-        val result = try { ShellYandexGuidance.read(displayId, Process.myUid(), clientUid / 100000) }
+        val result = try { ShellYandexGuidance.read(displayId, Process.myUid(), clientUid / 100000, includeRoad) }
         finally { Binder.restoreCallingIdentity(identity) }
         if (before != guidanceLease(displayId) || (result is ShellManeuverSample.Card &&
                 !YandexGuidanceScope.allows(before.pkg, result.packageName))) return null

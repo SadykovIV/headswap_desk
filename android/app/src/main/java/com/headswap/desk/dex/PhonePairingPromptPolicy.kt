@@ -29,9 +29,9 @@ internal class SavedAdbRetryGate {
 }
 
 /** One service attempt, one pending code, and a shared boundary for READY/bootstrap dispatch. */
-internal class PhonePairingAttemptGate(private val attempt: String) {
-    private var round = 0L
-    private var prompt: String? = null
+internal class PhonePairingAttemptGate(private val attempt: String, restoredPrompt: String? = null) {
+    private var round = if (restoredPrompt == null) 0L else requireNotNull(PairingContinuationPolicy.round(attempt, restoredPrompt))
+    private var prompt: String? = restoredPrompt
     private var pending: String? = null
     private var pairing = false
     private var closed = false

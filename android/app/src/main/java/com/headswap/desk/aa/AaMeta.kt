@@ -45,7 +45,7 @@ class AaNavTurn(
     val image: ByteArray?,
     /** Из legacy 0x8004 (иначе из 0x8006). */
     val legacy: Boolean = false,
-    /** Дорога для ключа манёвра: только road.name, без текста cue (он может меняться по мере приближения). */
+    /** Реальная следующая улица для ключа и roadName: только road.name, без текста cue. */
     val keyRoad: String = road,
 ) {
     override fun toString() = "maneuver=$maneuver -> nextTurn=$nextTurn road=\"$road\"" +
@@ -168,23 +168,6 @@ object AaMeta {
 
     /** Конец маршрута, как Baidu onNaviStateChange(false): nextTurn 24, roadName «目的地». */
     const val END_ROAD = "目的地"
-
-    /**
-     * Honda: подпись манёвра, когда AA прислал пустую улицу (Google Maps на выездах со двора, legacy 0x8004 road="").
-     * Baidu в этом случае шлёт «无名路», Яндекс сам подставляет «Поверните налево». Тексты не длиннее 16 Б UTF-8,
-     * их без обрезки пропускает HondaClusterRoad.
-     */
-    fun noRoadName(nextTurn: Int): String = when (nextTurn) {
-        T_FRONT, T_BRANCH_CENTER -> "Прямо"
-        T_RIGHT_FRONT, T_RIGHT, T_RIGHT_BACK -> "Направо"
-        T_BACK -> "Разворот"
-        T_LEFT_FRONT, T_LEFT, T_LEFT_BACK -> "Налево"
-        T_RING, T_RING_OUT -> "Круг"
-        T_LEFT_SIDE, T_LEFT_SIDE_MAIN, T_BRANCH_LEFT_STRAIGHT, T_LEFT_SIDE_IC, T_BRANCH_LEFT -> "Левее"
-        T_RIGHT_SIDE, T_RIGHT_SIDE_MAIN, T_BRANCH_RIGHT_STRAIGHT, T_RIGHT_SIDE_IC, T_BRANCH_RIGHT -> "Правее"
-        T_DEST -> "Финиш"
-        else -> "Вперёд"
-    }
 
     fun stateName(s: Int?) = when (s) {
         1 -> "STOPPED"
@@ -433,8 +416,6 @@ class MetaRelay(
     private val musicState: (Boolean) -> Unit,
     /** Перед первым SHOW и повторным после тишины: перевзвести MODULE_STATUS NAVI 0->1, если ГУ этого требует (Honda). */
     private val navRearm: () -> Unit = {},
-    /** Пустую улицу заменять подписью манёвра (AaMeta.noRoadName) - Honda. */
-    private val emptyRoadText: () -> Boolean = { false },
 ) {
     // подписки ГУ (CARLIFE_DATA_SUBSCRIBE_START/STOP): музыка по умолчанию включена, навигация - только по START moduleID=0
     var musicSubscribed = true
@@ -458,12 +439,13 @@ class MetaRelay(
     // навигация
     var routeActive = false
         private set
+    private var streetNamesEnabled = true
     private var turn: AaNavTurn? = null
-    private var turnKey: String? = null
     private var remain: AaNavDistance? = null
     private var total = 0
     private var shown = false
     private var turnDirty = false
+    private var roadDirty = false
     private var lastTurnAt = NEVER
     private var lastShowAt = NEVER
     private var lastSent: String? = null
@@ -712,12 +694,33 @@ class MetaRelay(
         emitTurn(force = changed, why = if (changed) "новый манёвр" else "манёвр повторён")
     }
 
+    /** Text visibility is not manoeuvre identity. OFF erases cached names without resetting progress. */
+    fun setStreetNamesEnabled(enabled: Boolean) {
+        if (streetNamesEnabled == enabled) return
+        streetNamesEnabled = enabled
+        if (!enabled) {
+            turn = turn?.let {
+                if (it.keyRoad.isNotEmpty()) roadDirty = true
+                withoutRoad(it)
+            }
+            lastSent = null // This signature also contains the previous roadName.
+        }
+    }
+
+    private fun withoutRoad(t: AaNavTurn) = AaNavTurn(t.nextTurn, "", t.maneuver,
+        t.roundaboutExit, t.image, t.legacy, keyRoad = "")
+
     private fun storeTurn(t: AaNavTurn): Boolean {
-        val key = "${t.nextTurn}|${t.keyRoad}|${t.roundaboutExit}"
-        val changed = key != turnKey
-        turn = t
+        val next = if (streetNamesEnabled) t else withoutRoad(t)
+        val previous = turn
+        // An absent/newly available street may only be a source/visibility change.
+        // Two different known streets still identify successive turns with the same arrow.
+        val changed = previous == null || previous.nextTurn != next.nextTurn ||
+            previous.roundaboutExit != next.roundaboutExit ||
+            (previous.keyRoad.isNotBlank() && next.keyRoad.isNotBlank() && previous.keyRoad != next.keyRoad)
+        if (previous?.keyRoad != next.keyRoad) roadDirty = true
+        turn = next
         if (changed) {
-            turnKey = key
             remain = null              // старая дистанция относится к прошлому манёвру
             total = 0
             turnDirty = true           // первую дистанцию нового манёвра шлём без троттлинга
@@ -784,8 +787,8 @@ class MetaRelay(
         }
         shown = false
         turnDirty = false
+        roadDirty = false
         turn = null
-        turnKey = null
         remain = null
         total = 0
         lastSent = null
@@ -799,16 +802,15 @@ class MetaRelay(
         if (!ready() || !navSubscribed) return
         val now = clockMs()
         val idle = now - lastTurnAt
-        if (!force && !turnDirty && idle < TURN_MIN_MS) return
+        if (!force && !turnDirty && !roadDirty && idle < TURN_MIN_MS) return
         // h137 (Honda Civic, пустой HU_INFO): после ~40 с без пакетов приборка гасит подсказку и на UPDATE не оживает
         val reshow = shown && idle >= NAVI_RESHOW_MS
         // h243: служебное сообщение машины или смена режима табло гасят подсказку, ГУ об этом не сообщает -
         // периодический SHOW возвращает её в пределах NAVI_SHOW_EVERY_MS
         val periodic = shown && now - lastShowAt >= NAVI_SHOW_EVERY_MS
-        val road = if (t.road.isBlank() && emptyRoadText()) AaMeta.noRoadName(t.nextTurn) else t.road
         val info = NaviTurnInfo(
             // h137: погасшая подсказка возвращается только по SHOW, поэтому первый пакет каждого манёвра - SHOW
-            if (shown && !reshow && !turnDirty && !periodic) ACTION_UPDATE else ACTION_SHOW, t.nextTurn, road, maxOf(total, d.meters), d.meters, d.timeSeconds ?: 0
+            if (shown && !reshow && !turnDirty && !periodic) ACTION_UPDATE else ACTION_SHOW, t.nextTurn, t.keyRoad, maxOf(total, d.meters), d.meters, d.timeSeconds ?: 0
         )
         val sig = "${info.action}|${info.nextTurn}|${info.roadName}|${info.totalDistance}|${info.remainDistance}|${info.timeSeconds}"
         // на стоянке AA шлёт одно и то же: повторяем раз в NAVI_KEEPALIVE_MS, чтобы ГУ не решила, что маршрута нет
@@ -833,6 +835,7 @@ class MetaRelay(
             if (info.action == ACTION_SHOW) lastShowAt = now
             shown = true
             turnDirty = false
+            roadDirty = false
             lastTurnAt = now
             lastSent = sig
             log("META -> NAVI_NEXT_TURN_INFO ($tag) action=${info.action} nextTurn=${info.nextTurn} remain=${info.remainDistance}m time=${info.timeSeconds}s", loud)

@@ -25,6 +25,18 @@ class RouteGuidanceCoordinatorTest {
     }
     private val coordinator = RouteGuidanceCoordinator(requests::add, { it() }, ::after, sent::add)
 
+    @Test fun streetPreferenceChangeKeepsTheTurnAndDiscardsLateOldStreet() {
+        val withRoad = background.copy(road = "First Street")
+        coordinator.notifications(withRoad, true)
+        val oldReply = requests.single()
+        coordinator.streetNamesChanged()
+        assertEquals(background, sent.last())
+        oldReply(ForegroundGuidance.Maneuver(visible.copy(road = "Stale Street")))
+        assertEquals(background, sent.last())
+        requests.last()(ForegroundGuidance.Maneuver(visible.copy(road = "Fresh Street")))
+        assertEquals("Fresh Street", sent.last()?.road)
+    }
+
     @Test fun withdrawalSwitchesDirectlyToLiveManeuverAndEndClearsTheHud() {
         coordinator.notifications(background, true)
         requests.single()(ForegroundGuidance.Unavailable)

@@ -48,6 +48,12 @@ internal object IndependentRecoveryAccess {
     }
 
     fun hasManagedState(context: Context) = snapshot(context).kind != Kind.DISABLED
+    /** Safe state only: no key, owner token, network address or raw property value. */
+    fun diagnosticState(context: Context): String {
+        val state = snapshot(context)
+        val runtime = runtimePort()?.trim()?.toIntOrNull()?.takeIf { it in -1..65535 }
+        return "mode=${state.kind} port=${state.port} runtimePort=${runtime ?: "unknown"}"
+    }
     fun needsApply(context: Context): Boolean {
         if (!requested(context)) return false
         val state = snapshot(context)
@@ -95,6 +101,7 @@ internal object IndependentRecoveryAccess {
                                 onConnection(adb)
                                 ensureActive()
                                 verify(adb, DexEndpoint("127.0.0.1", record.port), proof)
+                                DesktopUsbDebugging.requireEnabled(context, adb)
                                 val live = device(adb)
                                 ensureActive()
                                 check(scope.alive()) { "Истекло время проверки отладки" }
@@ -184,6 +191,7 @@ internal object IndependentRecoveryAccess {
             withProof(context) { proof ->
                 Scope(authenticated, 25_000).use { scope ->
                     verify(authenticated, endpoint, proof)
+                    DesktopUsbDebugging.requireEnabled(context, authenticated)
                     val before = device(authenticated)
                     val selected = IndependentRecoveryPolicy.select(before)
                     val prior = read(context)?.takeIf { IndependentRecoveryPolicy.current(it, boot(context)) }

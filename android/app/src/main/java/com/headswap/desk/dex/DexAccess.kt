@@ -155,6 +155,7 @@ object DexAccess {
                 check(installed.exitCode == 0 && installed.output.lineSequence().any { it.trim() == "package:$path" }) {
                     "Установленная версия HeadSwap изменилась; откройте приложение заново"
                 }
+                DesktopUsbDebugging.requireEnabled(context, adb)
                 val commands = adb.shell("test -x /system/bin/setsid && test -x /system/bin/nohup && test -x /system/bin/app_process")
                 check(commands.exitCode == 0) { "Прошивка не поддерживает безопасный запуск на телефоне" }
 
@@ -202,7 +203,7 @@ object DexAccess {
                 IndependentRecoveryAccess.restoreOwnedAfterActivation(context)
                 val failure = operation.failure(error)
                 PhoneActivationStatus.failed(context, request, if (failure.reason in setOf(DexAccessReason.LOCAL_ADB_CONFIGURATION,
-                    DexAccessReason.LOCAL_ADB_RESTORE_REQUIRED)) failure.message.orEmpty()
+                    DexAccessReason.LOCAL_ADB_RESTORE_REQUIRED, DexAccessReason.USB_DEBUGGING_DISABLED)) failure.message.orEmpty()
                     else "Не удалось подключиться к беспроводной отладке. Проверьте Wi-Fi, отладку и сопряжение.")
                 throw failure
             }

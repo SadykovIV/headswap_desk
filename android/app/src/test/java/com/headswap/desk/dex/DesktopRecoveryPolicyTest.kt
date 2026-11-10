@@ -4,6 +4,17 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class DesktopRecoveryPolicyTest {
+    @Test fun failedReplacementKeepsIsolationOnlyWithinTheSameCarLifeConnection() {
+        val policy = DesktopRecoveryPolicy()
+        assertFalse(policy.observeIsolation(false))
+        assertTrue(policy.observeIsolation(true))
+        val first = checkNotNull(policy.begin(true))
+        assertTrue(policy.consume(first))
+        assertTrue("replacement has not created its display yet", policy.observeIsolation(false))
+        assertTrue(DesktopRecoveryPolicy.phoneStateEligible(false, true, policy.observeIsolation(false)))
+        policy.newConnection()
+        assertFalse(policy.observeIsolation(false))
+    }
     @Test fun anIsolatedDesktopRecoversWithPhoneOffAndPinLocked() {
         for (interactive in listOf(false, true)) for (locked in listOf(false, true)) {
             assertTrue(DesktopRecoveryPolicy.phoneStateEligible(interactive, locked, true))

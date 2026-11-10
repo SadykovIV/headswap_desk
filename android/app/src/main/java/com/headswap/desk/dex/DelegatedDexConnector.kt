@@ -206,7 +206,9 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
             if (requiresIsolatedPhoneLock) {
                 val repair = VdmHostRecovery.create(context) { !stopping.get() && this.generation == generation }
                 vdmRecovery = repair
-                check(repair.ensureReady(18_000)) { repair.failure ?: "Служба независимого экрана недоступна. Повторите активацию HeadSwap." }
+                if (!repair.ensureReady(18_000)) throw VdmRecoveryException(
+                    repair.failure ?: "Служба независимого экрана недоступна. Повторите подключение к CarLife.",
+                    repair.failureReason)
             }
             val lifetime = Binder()
             synchronized(stateLock) {
@@ -470,11 +472,12 @@ class DelegatedDexConnector(context: Context, private val core: AaBridgeCore,
     }
 
     private fun helperUnavailableMessage(): String =
-        if (DelegatedDesktopAccess.isReady(context)) "Служба рабочего стола завершилась; доступ с компьютера сохранён"
-        else "Доступ завершён. Подключите телефон к компьютеру для повторной активации"
+        if (DelegatedDesktopAccess.isReady(context)) "Служба рабочего стола завершилась; права HeadSwap сохранены"
+        else "Доступ завершён. Откройте «Активация» в настройках HeadSwap"
 
     private fun failureKind(error: Throwable): Failure =
-        if (error is DeadObjectException || error.cause is DeadObjectException) Failure.HELPER_UNAVAILABLE else Failure.OTHER
+        if (error is DeadObjectException || error.cause is DeadObjectException ||
+            error is VdmRecoveryException && error.retryable) Failure.HELPER_UNAVAILABLE else Failure.OTHER
 
     private fun fail(message: String, reason: Failure = Failure.OTHER) {
         if (stopping.get() || !failureSignalled.compareAndSet(false, true)) return

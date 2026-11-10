@@ -2,7 +2,7 @@ package com.headswap.desk.link
 
 import java.util.concurrent.LinkedBlockingQueue
 
-internal class QueuedTransportPacket(val chan: Int, val inner: ByteArray, val deadlineMs: Long)
+internal class QueuedTransportPacket(val chan: Int, val inner: ByteArray, val deadlineMs: Long, val frame: VideoWrite? = null, val lastFragment: Boolean = true)
 
 /** Bound waiting timed PCM even when its writer is blocked and other TCP6 channels remain healthy.
  * A partially written packet is never interrupted: at most one further in-flight packet per writer

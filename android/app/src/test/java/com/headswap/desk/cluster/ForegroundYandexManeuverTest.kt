@@ -38,4 +38,13 @@ class ForegroundYandexManeuverTest {
         }
         assertFalse(conflict.containsKey("Turn"))
     }
+
+    @Test fun instructionFallbackAndRouteSummaryAreNotStreetNames() {
+        for (road in listOf("Поверните налево", "Turn right", "Осталось 8 км", "120 м", "Street\u0000Injected")) {
+            assertEquals(ClusterNavigationHint(AaMeta.T_LEFT, "", 120),
+                ForegroundYandexManeuver.parse("Turn left", "120", "m", road, false, labels))
+        }
+        assertEquals("улица 1905 года", ForegroundYandexManeuver.parse("Turn left", "120", "m",
+            "улица 1905 года", false, labels)?.road)
+    }
 }

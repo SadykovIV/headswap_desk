@@ -74,9 +74,10 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
         var emptyRoute = false
         for (id in EmbeddedSessionRegistry.guidanceDisplayIds()) {
             if (id <= 0 || !enabled(token) || !displayEligible(id)) continue
+            val includeRoad = hudPrefs.metaNaviStreetNames
             val sample = when {
-                prefs.useDelegated -> readActivated(id, token)
-                prefs.useShizuku -> EmbeddedSessionRegistry.readShizukuGuidance(id)
+                prefs.useDelegated -> readActivated(id, token, includeRoad)
+                prefs.useShizuku -> EmbeddedSessionRegistry.readShizukuGuidance(id, includeRoad)
                 else -> return ForegroundGuidance.Unavailable
             }
             if (!enabled(token) || !displayEligible(id) || id !in EmbeddedSessionRegistry.guidanceDisplayIds()) continue
@@ -84,7 +85,7 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
                 is ShellManeuverSample.Card -> {
                     val labels = ForegroundYandexManeuver.labels(app, sample.packageName, sample.languageTags)
                     val hint = ForegroundYandexManeuver.parse(sample.arrowLabel, sample.distance, sample.unit,
-                        road = null, viaPointVisible = false, turnLabels = labels)
+                        road = sample.road.takeIf { hudPrefs.metaNaviStreetNames }, viaPointVisible = false, turnLabels = labels)
                     if (hint != null) return ForegroundGuidance.Maneuver(hint)
                 }
                 ShellManeuverSample.VisibleWithoutHint -> emptyRoute = true
@@ -94,11 +95,11 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
         return if (emptyRoute) ForegroundGuidance.VisibleWithoutManeuver else ForegroundGuidance.Unavailable
     }
 
-    private fun readActivated(id: Int, token: GuidanceInterest): ShellManeuverSample {
+    private fun readActivated(id: Int, token: GuidanceInterest, includeRoad: Boolean): ShellManeuverSample {
         val nativeOwnership = VdmHostLink.captureOwnedDisplay(id)
         if (nativeOwnership == null && ShellPanelClient.isConnected) {
             reportBackend("helper")
-            return ShellPanelClient.readGuidance(id)
+            return ShellPanelClient.readGuidance(id, includeRoad)
         }
         // Switching USB from the activation computer to the car can retire the entire
         // ADB shell process group while the authorized HeadSwap process is still alive.
@@ -110,7 +111,7 @@ internal class CarLifeForegroundGuidance(context: Context, private val interest:
         reportBackend("activation")
         return EmbeddedSessionRegistry.readDelegatedGuidanceScoped(id) { requireCurrentPane ->
             if (!enabled(token) || !displayEligible(id)) ShellManeuverSample.Unavailable
-            else ShellYandexGuidance.readDelegated(id, Process.myUid() / 100000) {
+            else ShellYandexGuidance.readDelegated(id, Process.myUid() / 100000, includeRoad) {
                 check(enabled(token) && displayEligible(id)) { "Guidance session ended" }
                 requireCurrentPane()
                 if (nativeOwnership != null) {

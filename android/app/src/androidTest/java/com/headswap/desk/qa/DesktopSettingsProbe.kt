@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
 import android.os.Binder
@@ -44,14 +45,36 @@ internal object DesktopSettingsProbe {
                 for ((width, scale) in listOf(320 to 1.3f, 360 to 1.8f)) checkLayout(context, width, scale)
             }
             result.putString("layouts", "320dp/1.3 and 360dp/1.8")
+            checkReceiverCalibration(context)
             checkMapBuffers()
             result.putString("appBuffers", "screen 160 DPI; selected app buffer 320 DPI at 2x for create and resize")
             checkSettings(test)
-            result.putString("settings", "flat settings, activation and permission subpages/Back/recreation, persisted phone/audio/HUD/DPI choices, disabled shade and both component cards")
+            result.putString("settings", "flat settings with accessible contextual help, persisted HUD street choice, activation and permission subpages/Back/recreation, phone/audio/DPI choices, disabled shade and both component cards")
+            result.putString("screenshots", "cache/headswap-settings-hud.png, cache/headswap-settings-streets-info.png")
             test.finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("error", android.util.Log.getStackTraceString(error))
             test.finish(Activity.RESULT_CANCELED, result)
+        }
+    }
+
+    private fun checkReceiverCalibration(context: Context) {
+        val store = context.getSharedPreferences("desktop_receiver_audio_v1", Context.MODE_PRIVATE)
+        val saved = store.all
+        try {
+            val first = com.headswap.desk.link.ReceiverAudioCalibration(context, "usb-aoa")
+            first.identify("Example", "A")
+            val selection = checkNotNull(com.headswap.desk.link.ReceiverAudioCalibration.selected(context))
+            com.headswap.desk.link.ReceiverAudioCalibration.set(context, selection, 1500)
+            check(first.milliseconds() == 1500)
+            val second = com.headswap.desk.link.ReceiverAudioCalibration(context, "tcp6")
+            second.identify("Example", "A"); check(second.milliseconds() == 0)
+            second.identify("Example", "B"); check(second.milliseconds() == 0)
+            first.identify("Example", "A"); check(first.milliseconds() == 1500)
+        } finally {
+            val e = store.edit().clear()
+            saved.forEach { (k, v) -> when (v) { is String -> e.putString(k, v); is Int -> e.putInt(k, v) } }
+            check(e.commit())
         }
     }
 
@@ -103,7 +126,9 @@ internal object DesktopSettingsProbe {
         val card = ui.section(root)
         val longLabel = "Подсказки навигации на приборной панели и HUD"
         val toggle = ui.toggle(card, longLabel, false) {}
+        val toggleHelp = ui.help(toggle.row, longLabel) { "Справка о подсказках" }
         val first = ui.button(card, "Способ отключения: Затемнять экран ▾") {}
+        val firstHelp = ui.help(first, "Способ отключения экрана телефона") { "Справка о гашении" }
         val next = ui.button(card, "Настройка уведомлений приложений") {}
         val navigation = ui.navigation(card, "Приборная панель и HUD", "Повороты, расстояние и данные воспроизводимой музыки") {}
         root.measure(View.MeasureSpec.makeMeasureSpec(ui.dp(widthDp), View.MeasureSpec.EXACTLY),
@@ -113,16 +138,24 @@ internal object DesktopSettingsProbe {
         check(label.lineCount >= 2 && label.right <= toggle.control.left)
         check(toggle.control.width >= ui.dp(48) && toggle.control.height >= ui.dp(48))
         check(toggle.control.right <= toggle.row.width && toggle.control.contentDescription == longLabel)
-        check(first.top > toggle.row.bottom && next.top > first.bottom)
+        check(firstHelp.view.top > toggleHelp.view.bottom && next.top > firstHelp.view.bottom)
         check(navigation.view.top > next.bottom && navigation.view.height >= ui.dp(64))
         check(navigation.view.isClickable && navigation.view.isFocusable)
-        for (text in listOf(label, first, next) + navigation.view.nodes().filterIsInstance<TextView>().toList()) {
+        for (help in listOf(toggleHelp, firstHelp)) {
+            check(help.info.width >= ui.dp(48) && help.info.height >= ui.dp(48))
+            check(help.info.left >= help.view.getChildAt(0).right && help.info.right <= help.view.width)
+            check(help.info.isFocusable && help.info.isClickable && !help.info.contentDescription.isNullOrBlank())
+        }
+        for (text in listOf(label, first, next, toggleHelp.info, firstHelp.info) + navigation.view.nodes().filterIsInstance<TextView>().toList()) {
             val layout = checkNotNull(text.layout)
             check(layout.getLineEnd(layout.lineCount - 1) == text.text.length)
             check(layout.getEllipsisCount(layout.lineCount - 1) == 0)
         }
         toggle.row.performClick()
         check(toggle.control.isChecked)
+        toggle.setEnabled(false)
+        first.isEnabled = false
+        check(toggleHelp.info.isEnabled && firstHelp.info.isEnabled)
     }
 
     private fun checkSettings(test: Instrumentation) {
@@ -135,6 +168,7 @@ internal object DesktopSettingsProbe {
         val originalTimerEnabled = prefs.phoneTimerEnabled
         val originalTimeout = prefs.phoneIdleTimeout
         val originalNav = AaPrefs(context).metaNavi
+        val originalStreets = AaPrefs(context).metaNaviStreetNames
         val originalSetupCompleted = prefs.initialSetupCompleted
         val originalSetupProgress = prefs.initialSetupInProgress
         val originalSetupStep = prefs.initialSetupStep
@@ -158,6 +192,7 @@ internal object DesktopSettingsProbe {
             prefs.phoneScreenMode = PhoneIdleMode.CURTAIN
             prefs.phoneIdleTimeout = PhoneIdleTimeout.SYSTEM
             AaPrefs(context).metaNavi = true
+            AaPrefs(context).metaNaviStreetNames = false
             prefs.compactMapSymbols = true
             prefs.dpiCorrectionPackages = com.headswap.desk.shared.DesktopRenderPolicy.DEFAULT_PACKAGES
             activity = test.startActivitySync(Intent(Intent.ACTION_MAIN).setClass(context, DexSetupActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -174,17 +209,19 @@ internal object DesktopSettingsProbe {
                 check(!shadeRow.performClick() || !shade.isChecked)
                 check(!shade.isChecked && !shade.isEnabled)
             }
+            checkSettingsHelp(test, root, prefs)
             checkDpiMenu(test, root, prefs)
             onUi(test) {
                 for ((label, read) in listOf<Pair<String, () -> Boolean>>(
                     "Автоматически продолжать музыку при подключении" to { prefs.autoMusicPlayback },
-                    "Передавать звук в CarLife" to { prefs.usbPlaybackAudio })) {
+                    "Передавать звук по USB (CarLife)" to { prefs.usbPlaybackAudio })) {
                     val toggle = root.toggle(label)
                     check(toggle.isEnabled)
                     val before = read()
                     toggle.performClick(); check(read() != before)
                     toggle.performClick(); check(read() == before)
                 }
+                root.button("Управление экраном телефона").performClick()
                 val screen = root.toggle("Управление дисплеем телефона")
                 val timer = root.buttonStarting("Способ отключения:")
                 val timeout = root.buttonStarting("Гасить через:")
@@ -202,7 +239,10 @@ internal object DesktopSettingsProbe {
                     val index = labels.indexOf(mode.label)
                     options.performItemClick(null, index, options.getItemIdAtPosition(index))
                     check(prefs.phoneScreenMode == mode && prefs.phoneTimerEnabled)
+                    checkHelp(root, "Способ отключения экрана телефона",
+                        if (mode == PhoneIdleMode.CURTAIN) "Затемняется окно HeadSwap" else "панел")
                 }
+                root.button("Назад").performClick()
                 root.toggle("Подсказки навигации на приборной панели и HUD").performClick()
                 check(!AaPrefs(context).metaNavi)
                 val appNotifications = test.addMonitor(IntentFilter(Settings.ACTION_ALL_APPS_NOTIFICATION_SETTINGS), null, true)
@@ -231,6 +271,7 @@ internal object DesktopSettingsProbe {
             onUi(test) {
                 checkPermissions(root)
                 check(!AaPrefs(context).metaNavi && prefs.phoneScreenMode == PhoneIdleMode.CURTAIN && prefs.phoneTimerEnabled)
+                check(AaPrefs(context).metaNaviStreetNames)
                 check(prefs.phoneIdleTimeout == PhoneIdleTimeout.SYSTEM && prefs.desktopPanelControl)
                 check(prefs.dpiCorrectionPackages == setOf("ru.yandex.yandexmaps", "com.android.settings"))
                 val listenerAccess = test.addMonitor(IntentFilter(Settings.ACTION_NOTIFICATION_LISTENER_DETAIL_SETTINGS), null, true)
@@ -258,9 +299,10 @@ internal object DesktopSettingsProbe {
                 root.button("Настройки").performClick()
             }
             test.waitForIdleSync()
-            // The HUD shortcut reaches the same permission page, not a second settings menu.
+            // A single permissions entry; no duplicate notification-access action in the HUD block.
             onUi(test) {
-                root.navigation("Доступ HeadSwap к уведомлениям").performClick()
+                check(root.nodes().none { it.isShown && it.contentDescription == "Доступ HeadSwap к уведомлениям" })
+                root.button("Разрешения приложения").performClick()
                 checkPermissions(root)
                 root.navigation("Доступ к рабочему столу").performClick()
                 check(root.button("На главный экран").isShown)
@@ -315,6 +357,7 @@ internal object DesktopSettingsProbe {
             prefs.usbPlaybackAudio = originalAudio
             prefs.independentRecoveryWithoutWifi = originalIndependentRecovery
             AaPrefs(context).metaNavi = originalNav
+            AaPrefs(context).metaNaviStreetNames = originalStreets
             prefs.initialSetupCompleted = originalSetupCompleted
             prefs.initialSetupInProgress = originalSetupProgress
             prefs.initialSetupStep = originalSetupStep
@@ -323,6 +366,76 @@ internal object DesktopSettingsProbe {
             prefs.compactMapSymbols = originalCompact
             prefs.dpiCorrectionPackages = originalPackages
         }
+    }
+
+    /** Actual dialogs must stay usable when their neighbouring setting is disabled. */
+    private fun checkSettingsHelp(test: Instrumentation, root: View, prefs: DexPrefs) {
+        onUi(test) {
+            check(root.nodes().filterIsInstance<TextView>().none { it.isShown &&
+                (it.text.startsWith("Частота кадров подстраивается") ||
+                    it.text.startsWith("В режиме «Доступ HeadSwap» музыка продолжается") ||
+                    it.text.startsWith("Разрешите HeadSwap доступ к уведомлениям и начните")) })
+            checkHelp(root, "Скорость видеопотока", "верхний предел видеопотока")
+            checkHelp(root, "Показывать шторку уведомлений", "Шторка временно отключена")
+            check(!root.toggle("Показывать шторку уведомлений").isEnabled)
+            root.button("Управление экраном телефона").performClick()
+            val screen = root.toggle("Управление дисплеем телефона")
+            screen.performClick()
+            check(!prefs.desktopPanelControl && !root.buttonStarting("Способ отключения:").isEnabled)
+            checkHelp(root, "Управление дисплеем телефона", "Включите управление экраном")
+            checkHelp(root, "Способ отключения экрана телефона", "Затемняется окно HeadSwap")
+            check(!prefs.desktopPanelControl)
+            screen.performClick()
+            check(prefs.desktopPanelControl)
+            root.button("Назад").performClick()
+            val streets = root.toggle("Выводить подсказки улиц")
+            check(!streets.isChecked)
+            streets.performClick()
+            check(AaPrefs(test.targetContext).metaNaviStreetNames && AaPrefs(test.targetContext).metaNavi)
+        }
+        val hud = root.nodes().filterIsInstance<TextView>().single { it.isShown && it.text == "Приборная панель и HUD" }
+        reveal(test, hud)
+        saveScreenshot(test, "headswap-settings-hud.png")
+        onUi(test) {
+            root.help("Выводить подсказки улиц").performClick()
+            val dialog = helpDialog("Выводить подсказки улиц")
+            check(dialog.nodes().filterIsInstance<TextView>().any {
+                it.text.contains("название улицы следующего манёвра") &&
+                    it.text.contains("зависят от автомобиля") && it.text.contains("Экспериментальная функция")
+            })
+        }
+        test.waitForIdleSync()
+        saveScreenshot(test, "headswap-settings-streets-info.png")
+        onUi(test) {
+            helpDialog("Выводить подсказки улиц").button("Понятно").performClick()
+            check(AaPrefs(test.targetContext).metaNaviStreetNames)
+        }
+        test.waitForIdleSync()
+    }
+
+    private fun checkHelp(root: View, title: String, expected: String) {
+        val info = root.help(title)
+        check(info.isEnabled && info.isClickable && info.isFocusable)
+        info.performClick()
+        val dialog = helpDialog(title)
+        check(dialog.nodes().filterIsInstance<TextView>().any { it.text.contains(expected) }) {
+            "Missing current help for $title: $expected"
+        }
+        dialog.button("Понятно").performClick()
+    }
+
+    private fun helpDialog(title: String): View = android.view.inspector.WindowInspector.getGlobalWindowViews().last { view ->
+        view.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == title } &&
+            view.nodes().filterIsInstance<Button>().any { it.isShown && it.text == "Понятно" }
+    }
+
+    private fun saveScreenshot(test: Instrumentation, name: String) {
+        val bitmap = checkNotNull(test.uiAutomation.takeScreenshot())
+        try {
+            java.io.File(test.targetContext.cacheDir, name).outputStream().use {
+                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally { bitmap.recycle() }
     }
 
     /** Method changes are local choices. The test never starts network ADB or changes its mode. */
@@ -375,55 +488,46 @@ internal object DesktopSettingsProbe {
     private fun checkOnboardingPermissions(test: Instrumentation, settings: View) {
         val wizardMonitor = test.addMonitor(DesktopOnboardingActivity::class.java.name, null, false)
         var wizard: Activity? = null
-        var permissions: Activity? = null
-        val permissionMonitor = test.addMonitor(DexSetupActivity::class.java.name, null, false)
+        var activation: Activity? = null
+        val step = test.addMonitor(DesktopWizardActivationActivity::class.java.name, null, false)
         try {
             onUi(test) { settings.button("Повторить заново первоначальную настройку").performClick() }
-            val openedWizard = checkNotNull(test.waitForMonitorWithTimeout(wizardMonitor, 5000))
-            wizard = openedWizard
-            test.waitForIdleSync()
+            val w = checkNotNull(test.waitForMonitorWithTimeout(wizardMonitor, 5000))
+            wizard = w
+            awaitVisibleWindow(test, w.window.decorView)
             onUi(test) {
-                check(openedWizard.window.decorView.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "1. Компоненты" })
-                openedWizard.window.decorView.button("Далее").performClick()
-                check(openedWizard.window.decorView.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "2. Разрешения" })
-                openedWizard.window.decorView.button("Разрешения приложения").performClick()
-            }
-            val openedPermissions = checkNotNull(test.waitForMonitorWithTimeout(permissionMonitor, 5000))
-            permissions = openedPermissions
-            test.waitForIdleSync()
-            onUi(test) {
-                val root = openedPermissions.window.decorView
-                checkPermissions(root)
-                root.button("Назад").performClick()
-                check(openedPermissions.isFinishing) { "One Back must return directly to setup" }
-            }
-            awaitVisibleWindow(test, openedWizard.window.decorView)
-            onUi(test) {
-                val root = openedWizard.window.decorView
-                check(root.button("Разрешения приложения").isShown)
+                val root = w.window.decorView
                 root.button("Далее").performClick()
-                check(root.button("Открыть активацию").isShown)
+                check(root.navigation("Беспроводная отладка (Wi-Fi)").isShown)
+                check(root.navigation("Доступ HeadSwap к уведомлениям").isShown)
+                root.button("Далее").performClick()
+            }
+            val a = checkNotNull(test.waitForMonitorWithTimeout(step, 5000))
+            activation = a
+            awaitVisibleWindow(test, a.window.decorView)
+            onUi(test) {
+                val root = a.window.decorView
                 check(root.button("Завершить настройку").isShown)
+                check(root.nodes().none { it.isShown && it is Button && it.text.startsWith("Завершить доступ") })
                 root.button("Закрыть настройку").performClick()
             }
             awaitVisibleWindow(test, settings)
         } finally {
-            test.removeMonitor(wizardMonitor)
-            test.removeMonitor(permissionMonitor)
-            onUi(test) { permissions?.finish(); wizard?.finish() }
+            test.removeMonitor(wizardMonitor); test.removeMonitor(step)
+            onUi(test) { activation?.finish(); wizard?.finish() }
         }
     }
 
     private fun checkFlatSettings(root: View) {
-        for (heading in listOf("Параметры изображения", "Звук", "Уведомления на магнитоле",
+        for (heading in listOf("Параметры изображения", "Звук", "Уведомления на экране ГУ",
             "Приборная панель и HUD", "Компоненты HeadSwap Desktop", "Обслуживание")) {
             check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == heading }) { "Missing flat block: $heading" }
         }
-        for (prefix in listOf("Разрешение:", "Размер интерфейса:", "Скорость видеопотока:", "Способ отключения:", "Гасить через:"))
+        for (prefix in listOf("Разрешение:", "Размер интерфейса:", "Скорость видеопотока:"))
             check(root.buttonStarting(prefix).isShown)
-        for (label in listOf("Передавать звук в CarLife", "Автоматически продолжать музыку при подключении",
-            "Управление дисплеем телефона", "Подсказки навигации на приборной панели и HUD")) check(root.toggle(label).isShown)
-        for (label in listOf("Активация", "Исправить DPI приложения", "Разрешения приложения", "Установить и обновить компоненты",
+        for (label in listOf("Передавать звук по USB (CarLife)", "Автоматически продолжать музыку при подключении",
+            "Подсказки навигации на приборной панели и HUD", "Выводить подсказки улиц")) check(root.toggle(label).isShown)
+        for (label in listOf("Активация", "Управление экраном телефона", "Синхронизация звука", "Исправить DPI приложения", "Разрешения приложения", "Установить и обновить компоненты",
             "Повторить заново первоначальную настройку", "Отправить журнал")) check(root.button(label).isShown)
         check(root.nodes().none { it.isShown && it.contentDescription?.startsWith("Открыть настройки:") == true })
         check(root.nodes().filterIsInstance<TextView>().none { it.isShown && it.text == "Приложение" })
@@ -534,6 +638,7 @@ internal object DesktopSettingsProbe {
     private fun View.button(text: String) = nodes().filterIsInstance<Button>().first { it.text == text }
     private fun View.buttonStarting(prefix: String) = nodes().filterIsInstance<Button>().first { it.isShown && it.text.startsWith(prefix) }
     private fun View.navigation(label: String) = nodes().first { it.isShown && it.isClickable && it.contentDescription == label }
+    private fun View.help(label: String) = nodes().filterIsInstance<Button>().single { it.isShown && it.contentDescription == "Справка: $label" }
     private fun View.toggle(label: String) = nodes().filterIsInstance<Switch>().first { it.contentDescription == label }
     private fun onUi(test: Instrumentation, run: () -> Unit) {
         var failure: Throwable? = null

@@ -129,7 +129,7 @@ internal object EmbeddedSessionRegistry {
         val visibleEpoch: Any? = null)
 
     /** Called with lock. Never query the phone display or tiles hidden behind a fullscreen app. */
-    private fun guidanceTargets(): List<GuidanceTarget> {
+    private fun guidanceTargets(packages: Set<String> = YandexGuidanceCard.PACKAGES): List<GuidanceTarget> {
         if (!CarLifeState.running) return emptyList()
         val active = parent?.takeIf { it.remote.asBinder().isBinderAlive && it.nativeLifetime.isBinderAlive } ?: return emptyList()
         val current = leases.values.filter { it.parent === active }
@@ -138,12 +138,17 @@ internal object EmbeddedSessionRegistry {
         return foreground.mapNotNull { lease ->
             val pkg = lease.packageName
             val visibleEpoch = lease.guidanceVisibility?.let { it.visibleEpoch ?: return@mapNotNull null }
-            if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in YandexGuidanceCard.PACKAGES) null
+            if (lease.displayId <= 0 || lease.closing != null || !lease.token.isBinderAlive || pkg !in packages) null
             else GuidanceTarget(active, lease.displayId, lease, pkg, visibleEpoch)
         }.sortedBy { it.child?.handle }
     }
 
     fun guidanceDisplayIds(): List<Int> = synchronized(lock) { guidanceTargets().map { it.displayId } }
+
+    /** A provider reads only its own visible Activity. Capture leases before IPC and validate them after. */
+    fun adapterGuidanceScope(pkg: String): Map<Int, Any> = synchronized(lock) {
+        guidanceTargets(setOf(pkg)).associate { it.displayId to it }
+    }
 
     /** Capture the active lease around the bounded shell read. A replacement task, display or
      * connection cannot supply a late result to a new session. The caller is a HUD worker. */
@@ -159,8 +164,8 @@ internal object EmbeddedSessionRegistry {
         return synchronized(lock) { if (target in guidanceTargets()) result else ShellManeuverSample.Unavailable }
     }
 
-    fun readShizukuGuidance(displayId: Int): ShellManeuverSample = readGuidance(displayId, true) {
-        ShellManeuverSample.decode(it.readShizukuGuidance(displayId))
+    fun readShizukuGuidance(displayId: Int, includeRoad: Boolean = false): ShellManeuverSample = readGuidance(displayId, true) {
+        ShellManeuverSample.decode(if (includeRoad) it.readShizukuGuidanceWithRoad(displayId) else it.readShizukuGuidance(displayId))
     }
 
     fun readDelegatedGuidance(displayId: Int, read: () -> ShellManeuverSample): ShellManeuverSample =

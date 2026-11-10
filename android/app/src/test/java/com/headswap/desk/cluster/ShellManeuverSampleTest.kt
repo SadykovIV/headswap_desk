@@ -18,9 +18,16 @@ class ShellManeuverSampleTest {
             assertSame(state, ShellManeuverSample.decode(state.encode()))
     }
 
+    @Test fun optedInStreetSurvivesTransportButDoesNotChangeLegacyFiveFields() {
+        val card = ShellManeuverSample.Card("ru.yandex.yandexmaps", "Turn right", "100", "m", "en", "улица Карла Маркса")
+        assertEquals(6, card.encode()!!.size)
+        assertEquals(card, ShellManeuverSample.decode(card.encode()))
+        assertEquals(card.copy(road = ""), ShellManeuverSample.decode(card.encode()!!.take(5).toTypedArray()))
+    }
+
     @Test fun malformedOrForeignCardsFailClosed() {
         val valid = arrayOf("ru.yandex.yandexmaps", "Поверните налево", "20", "м", "ru")
-        for (fields in listOf(valid + "more", valid.copyOf(2),
+        for (fields in listOf(valid + arrayOf("street", "more"), valid + "x".repeat(101), valid + "Street\u0000Injected", valid.copyOf(2),
             valid.clone().apply { this[0] = "com.other.app" },
             valid.clone().apply { this[1] = "" },
             valid.clone().apply { this[2] = "1234567890".repeat(4) },

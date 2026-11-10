@@ -23,6 +23,7 @@ import com.headswap.desk.R
 import kotlinx.coroutines.runBlocking
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.Executors
 
 /** The code is transient. A notification reply never carries an address, command or requested permission. */
 internal object PairingReplyPolicy {
@@ -50,6 +51,11 @@ class PhonePairingService : Service() {
     data class Snapshot(val phase: Phase, val message: String, val attempt: String?, val inAppOnly: Boolean = false)
     private val main = Handler(Looper.getMainLooper())
     private val attemptLock = Any()
+    // Closing a TLS/ADB stream may flush or wait for I/O. Never do it on the
+    // notification/UI thread; the attempt gate invalidates work synchronously.
+    private val cancellation = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "headswap-pairing-cancel").apply { isDaemon = true }
+    }
     private var discovery: DexDiscovery? = null
     private val discoveryGeneration = AtomicLong()
     private val savedRetry = SavedAdbRetryGate()
@@ -68,6 +74,9 @@ class PhonePairingService : Service() {
     private var inAppOnly = false
     private var resumingCommitted = false
     private var completionReceiptStarted = Long.MIN_VALUE
+    private var attemptStarted = 0L
+    private var postedPrompt: String? = null
+    private var postedPromptMessage: String? = null
     private lateinit var notifications: NotificationManager
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -86,6 +95,8 @@ class PhonePairingService : Service() {
                 // caller's gate: acknowledge its FGS obligation even when rejecting it below.
                 // REPLY/CANCEL use ordinary service PendingIntents and impose no such obligation.
                 if (replyToken == null) {
+                    PairingContinuationStore.clear(this)
+                    attemptStarted = SystemClock.elapsedRealtime()
                     replyToken = UUID.randomUUID().toString()
                     codeGate = PhonePairingAttemptGate(checkNotNull(replyToken))
                 }
@@ -133,8 +144,29 @@ class PhonePairingService : Service() {
             REPLY -> {
                 val token = intent.getStringExtra(TOKEN)
                 val value = PairingReplyPolicy.code(RemoteInput.getResultsFromIntent(intent)?.getCharSequence(CODE))
-                if (token != null && value != null) acceptCode(token, value)
-                else if (token != null && token == codeGate?.token()) showCode("Нужны ровно 6 цифр из открытого окна сопряжения.", reopen = false)
+                // Never log the code/token. Distinguish delivery from a later pairing failure.
+                AppLog.i("PHONE notification reply received: validCode=${value != null} activeWorker=${worker != null}", false)
+                when {
+                    token != null && value != null && acceptCode(token, value) -> Unit
+                    token != null && value != null && resumeReply(token, value) -> Unit
+                    token != null && token == codeGate?.token() && value == null ->
+                        showCode("Нужны ровно 6 цифр из открытого окна сопряжения.", reopen = false)
+                    worker == null || finished || cancelled || destroyed -> {
+                        AppLog.i("PHONE notification reply expired: activation attempt no longer active", false)
+                        notifications.cancel(CODE_ID)
+                        notifyResult(this, if (DesktopActivationCoordinator.isReady(this))
+                            "HeadSwap уже активирован. Можно подключать CarLife."
+                        else "Попытка активации прервалась или истекла. Откройте HeadSwap и нажмите «Активировать» ещё раз.")
+                    }
+                    else -> {
+                        AppLog.i("PHONE notification reply ignored: stale prompt or code already in progress", false)
+                        // A delayed old reply cannot alter the current attempt. Reposting its
+                        // current notification acknowledges SystemUI's send spinner only.
+                        notifications.activeNotifications.firstOrNull { it.id == CODE_ID }?.notification?.let {
+                            notifications.notify(CODE_ID, it)
+                        }
+                    }
+                }
                 if (worker == null) stopSelf()
             }
             CANCEL -> {
@@ -146,17 +178,61 @@ class PhonePairingService : Service() {
         return START_NOT_STICKY
     }
 
+    /** Only a fresh user reply can resume a process lost by Android; nothing restarts in the background. */
+    private fun resumeReply(token: String, value: String): Boolean {
+        if (worker != null || finished || cancelled || destroyed || !DexPrefs(this).useDelegated ||
+            BridgeService.alive || DexState.running || PhoneActivationStatus.read(this).phase == PhoneActivationStatus.Phase.PENDING)
+            return false
+        val saved = PairingContinuationStore.consume(this, token) ?: return false
+        if (DesktopActivationCoordinator.isReady(this)) return false
+        replyToken = saved.attempt
+        attemptStarted = saved.started
+        codeGate = PhonePairingAttemptGate(saved.attempt, saved.prompt)
+        check(codeGate?.offer(token, value) == true)
+        try {
+            startForeground(PROGRESS_ID, progress("Продолжаю активацию…"), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } catch (_: RuntimeException) {
+            codeGate?.cancel()
+            notifyResult(this, "Android остановил службу. Откройте HeadSwap и повторите активацию; сохранённое сопряжение осталось.")
+            return false
+        }
+        active = true
+        inAppOnly = false
+        waitingCode = false
+        completionReceiptStarted = PhoneActivationStatus.read(this).let {
+            if (it.activationBinding == PhoneCommittedActivationPolicy.Binding.CURRENT) it.startedElapsedMs else Long.MIN_VALUE
+        }
+        PhoneActivationStatus.clearFinished(this)
+        publish(Phase.PAIRING, "Код принят. Продолжаю сопряжение…")
+        notifications.notify(CODE_ID, codeNotification(status, allowReply = false))
+        AppLog.i("PHONE notification reply resumed interrupted input", false)
+        worker = Thread({ activate(false) }, "headswap-desk-activation").also { it.start() }
+        return true
+    }
+
     private fun cancelAttempt(token: String?): Boolean {
-        val cancelledWorker = synchronized(attemptLock) {
+        val (cancelledWorker, requests) = synchronized(attemptLock) {
             if (token == null || token != replyToken || dispatched || cancelled || finished || destroyed) return false
             cancelled = true
             codeGate?.cancel()
-            worker
+            PairingContinuationStore.clear(this)
+            worker to arrayOf(pairingRequest, coordinator)
         }
-        pairingRequest?.close()
-        coordinator?.close()
         cancelledWorker?.interrupt()
+        closeOffMain(*requests)
         return true
+    }
+
+    private fun closeOffMain(vararg requests: AutoCloseable?) {
+        val captured = requests.filterNotNull().distinct()
+        if (captured.isEmpty()) return
+        synchronized(attemptLock) {
+            // Destruction already queued the currently owned requests. A late
+            // in-app reply must not submit work to an executor being shut down;
+            // the worker's use/finally remains the final owner of each request.
+            if (cancellation.isShutdown) return
+            cancellation.execute { captured.forEach { runCatching { it.close() } } }
+        }
     }
 
     private class PairingInputSubmitted : Exception()
@@ -192,6 +268,7 @@ class PhonePairingService : Service() {
                                     if (codeGate?.complete() != true) throw PairingInputSubmitted()
                                     waitingCode = false
                                     dispatched = true
+                                    PairingContinuationStore.clear(this)
                                 }
                                 postAttempt { notifications.cancel(CODE_ID) }
                             })
@@ -421,19 +498,28 @@ class PhonePairingService : Service() {
             publish(Phase.WAITING_CODE, message)
             notifications.notify(PROGRESS_ID, progress(status))
         }
-        if (inAppOnly) notifications.cancel(CODE_ID) else notifications.notify(CODE_ID, codeNotification(
-            if (optional) "Сохранённый доступ проверяется автоматически. Если вы уже открыли окно с новым кодом Android, его можно ввести сейчас." else message))
+        if (inAppOnly) notifications.cancel(CODE_ID) else {
+            val token = codeGate?.token() ?: return@postAttempt
+            val text = if (optional) "Сохранённый доступ проверяется автоматически. Если вы уже открыли окно с новым кодом Android, его можно ввести сейчас." else message
+            if (postedPrompt != token || postedPromptMessage != text) {
+                PairingContinuationStore.save(this, checkNotNull(replyToken), token, attemptStarted)
+                notifications.notify(CODE_ID, codeNotification(text))
+                postedPrompt = token
+                postedPromptMessage = text
+            }
+        }
     }
     private fun acceptCode(token: String, value: String): Boolean {
         val interrupted = synchronized(attemptLock) {
             if (cancelled || finished || destroyed || dispatched || !waitingCode || codeGate?.offer(token, value) != true) return false
             waitingCode = false
+            PairingContinuationStore.clear(this)
             coordinator
         }
         // This request owns only verification/recovery. Never interrupt the committed bootstrap.
-        interrupted?.close()
         AppLog.i("PHONE pairing code accepted for the current attempt", false)
         postAttempt { if (!inAppOnly) notifications.notify(CODE_ID, codeNotification("Код принят. Подготавливаю сопряжение…", allowReply = false)) }
+        closeOffMain(interrupted)
         return true
     }
     private fun progress(text: String): Notification = Notification.Builder(this, PROGRESS_CHANNEL)
@@ -477,6 +563,7 @@ class PhonePairingService : Service() {
     private fun finish(failure: String?) {
         if (destroyed || finished) return
         finished = true
+        PairingContinuationStore.clear(this)
         active = false
         val cancelledMessage = if (cancelled) when (IndependentRecoveryAccess.snapshot(this).kind) {
             IndependentRecoveryAccess.Kind.PENDING, IndependentRecoveryAccess.Kind.RESTORE_REQUIRED ->
@@ -502,10 +589,11 @@ class PhonePairingService : Service() {
         active = false
         waitingCode = false
         replyToken = null
-        coordinator?.close()
-        pairingRequest?.close()
         codeGate?.cancel()
+        val requests = arrayOf(coordinator, pairingRequest)
         worker?.interrupt()
+        closeOffMain(*requests)
+        synchronized(attemptLock) { cancellation.shutdown() }
         discovery?.close()
         discovery = null
         notifications.cancel(CODE_ID)
@@ -629,6 +717,7 @@ class PhonePairingService : Service() {
         }
         /** Called after the intentional process restart, only when access is actually confirmed. */
         fun onAccessReady(context: Context) {
+            PairingContinuationStore.clear(context)
             val manager = context.getSystemService(NotificationManager::class.java)
             if (manager.activeNotifications.none { it.id in setOf(PROGRESS_ID, CODE_ID) }) return
             manager.cancel(PROGRESS_ID)

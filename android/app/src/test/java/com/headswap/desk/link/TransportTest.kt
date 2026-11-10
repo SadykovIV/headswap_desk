@@ -242,8 +242,61 @@ class TransportTest {
     }
 
     @Test
+    fun recoveringBothWritersFinishesInFlightFrameAndDiscardsDependentQueuedVideo() {
+        for (wireless in listOf(false, true)) {
+            val clockMs = java.util.concurrent.atomic.AtomicLong(1_000)
+            val blocked = java.util.concurrent.atomic.AtomicBoolean(false)
+            val entered = CountDownLatch(1); val release = CountDownLatch(1)
+            val first = CountDownLatch(1); val recovered = CountDownLatch(1)
+            val pictures = java.util.concurrent.CopyOnWriteArrayList<Int>()
+            val samples = java.util.concurrent.CopyOnWriteArrayList<Int>()
+            val hold = object : OutputStream() {
+                override fun write(value: Int) { if (blocked.get()) { entered.countDown(); release.await() } }
+                override fun write(b: ByteArray, off: Int, len: Int) = write(0)
+            }
+            fun socket(out: OutputStream) = object : Socket() {
+                private val input = BlockingIn()
+                override fun getInputStream(): InputStream = input
+                override fun getOutputStream(): OutputStream = out
+                override fun close() { input.close(); release.countDown() }
+            }
+            val link: CarTransport = if (wireless) MultiSocketTransport(
+                mapOf(Ch.VIDEO to socket(hold), Ch.MEDIA to socket(ByteArrayOutputStream())), emptyMap(), "test", {}, clockMs::get)
+                else StreamTransport(BlockingIn(), hold, TransportCaps.USB_AOA, "test", clock = clockMs::get)
+            val timeline = DesktopAvTimeline({ clockMs.get() * 1000L }, emit = link::sendTimed)
+            fun frame(id: Int, key: Boolean) {
+                val ticket = timeline.frame(clockMs.get() * 1000L, key, 30)!!
+                link.sendVideoFragment(Wire.dataInner(Msg.VIDEO_DATA, 0, byteArrayOf(id.toByte())), ticket, true)
+            }
+            try {
+                link.start({ _, _ -> }, { ch, buf ->
+                    val id = buf.last().toInt()
+                    if (ch == Ch.VIDEO) { pictures.add(id); if (id == 1) first.countDown(); if (id == 4) recovered.countDown() }
+                    else samples.add(id)
+                }, { })
+                timeline.reset(true); frame(1, true); assertTrue(first.await(3, TimeUnit.SECONDS))
+                blocked.set(true); frame(2, false); assertTrue(entered.await(3, TimeUnit.SECONDS)); frame(3, false)
+                repeat(75) {
+                    clockMs.addAndGet(20)
+                    timeline.pcm(Ch.MEDIA, Wire.dataInner(0x30006, 0, byteArrayOf(it.toByte())), clockMs.get() * 1000L)
+                }
+                assertTrue(samples.none { it > 1 })
+                release.countDown()
+                val end = System.nanoTime() + TimeUnit.SECONDS.toNanos(3)
+                while (link.queuedVideoFrames != 0 && System.nanoTime() < end) Thread.sleep(1)
+                assertEquals(0, link.queuedVideoFrames)
+                assertNull(timeline.frame(clockMs.get() * 1000L, false, 30))
+                frame(4, true); assertTrue(recovered.await(3, TimeUnit.SECONDS))
+                assertEquals(listOf(1, 2, 4), pictures.toList())
+                assertTrue(samples.none { it in 2..65 })
+            } finally { release.countDown(); timeline.close(); link.close() }
+        }
+    }
+
+    @Test
     fun nativeSessionSerializesOriginalVideoAndAudioTimestampScales() {
-        val packets = ArrayList<Pair<Int, ByteArray>>()
+        val packets = java.util.concurrent.CopyOnWriteArrayList<Pair<Int, ByteArray>>()
+        lateinit var receive: (Int, ByteArray) -> Unit
         val transport = object : CarTransport {
             override val caps = TransportCaps.TCP6
             override val label = "wire timestamp fixture"
@@ -254,13 +307,19 @@ class TransportTest {
             override fun queueSize(chan: Int) = 0
             override fun close() = Unit
             override fun start(sink: (Int, ByteArray) -> Unit, onWritten: (Int, ByteArray) -> Unit,
-                               onClosed: (String) -> Unit) = Unit
+                               onClosed: (String) -> Unit) { receive = sink }
+            override fun sendVideoFragment(inner: ByteArray, frame: com.headswap.desk.link.VideoWrite, last: Boolean) {
+                if (frame.begin()) { send(com.headswap.desk.Ch.VIDEO, inner); if (last) frame.written() }
+            }
             override fun send(chan: Int, inner: ByteArray) { packets += chan to inner }
         }
         val cfg = SessionConfig(desktopVideo = com.headswap.desk.aa.DesktopVideoSelection(
             com.headswap.desk.aa.DesktopResolution.R1280_720, 128))
         val session = CarLifeSession(transport, cfg, AaBridgeCore(log = { _, _ -> }), onClosed = {})
         try {
+            session.start()
+            session.hidePlaceholder() // This JVM fixture supplies its own encoded frame.
+            receive(Ch.CMD, Wire.cmdInner(Msg.VIDEO_ENCODER_START, null))
             val beforeMs = System.currentTimeMillis()
             val capturedUs = System.nanoTime() / 1000
             assertTrue(session.sendVideoAt(byteArrayOf(0, 0, 0, 1, 0x65, 1), capturedUs))

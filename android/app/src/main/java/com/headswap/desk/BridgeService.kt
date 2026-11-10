@@ -96,6 +96,7 @@ class BridgeService : Service() {
     private var clusterNavigation: ClusterNavigationSource? = null
     private var foregroundGuidance: CarLifeForegroundGuidance? = null
     private var unobserveNavigationHints: (() -> Unit)? = null
+    private var unobserveNavigationStreetNames: (() -> Unit)? = null
     private var unobserveWirelessEnabled: (() -> Unit)? = null
     private var host: BridgeHost? = null
     private var powerDiagnostics: com.headswap.desk.dex.DesktopPowerDiagnostics? = null
@@ -1017,8 +1018,10 @@ class BridgeService : Service() {
         val cfg = SessionConfig(
             screenOn, false, if (desktopVideo != null) com.headswap.desk.aa.FpsSetting.AUTO else aaPrefs.fpsSetting,
             metaMusic = clusterTransport && aaPrefs.metaMusic, metaNavi = clusterTransport && aaPrefs.metaNavi,
+            metaNaviStreetNames = aaPrefs.metaNaviStreetNames,
             naviField6 = aaPrefs.naviField6, desktopVideo = desktopVideo,
             desktopBitrateBps = dexPrefs.desktopBitrateMbps * 1_000_000,
+            receiverAudio = if (desktopVideo != null) com.headswap.desk.link.ReceiverAudioCalibration(this, transport.caps.kind) else null,
         )
         MetaRelay.PROGRESS_UNIT = if (aaPrefs.progressSeconds) 1 else 1000
 
@@ -1107,6 +1110,12 @@ class BridgeService : Service() {
             }
         }
         if (clusterTransport) {
+            unobserveNavigationStreetNames = prefs.observeNavigationStreetNames { enabled ->
+                if (!stopRequested && session === owner) {
+                    owner.setNavigationStreetNames(enabled)
+                    clusterNavigation?.streetNamesChanged()
+                }
+            }
             unobserveNavigationHints = prefs.observeNavigationHints { enabled ->
                 if (!stopRequested && session === owner) updateNavigationHints(owner, enabled)
             }
@@ -1139,6 +1148,8 @@ class BridgeService : Service() {
     private fun stopClusterSources() {
         unobserveNavigationHints?.invoke()
         unobserveNavigationHints = null
+        unobserveNavigationStreetNames?.invoke()
+        unobserveNavigationStreetNames = null
         runCatching { clusterMedia?.close() }.onFailure { AppLog.e("CLUSTER: music source cleanup", it) }
         runCatching { clusterNavigation?.close() }.onFailure { AppLog.e("CLUSTER: navigation source cleanup", it) }
         foregroundGuidance?.close()
@@ -1231,7 +1242,7 @@ class BridgeService : Service() {
             return
         }
         val current = session
-        val isolatedSession = owner.canRecoverWhilePhoneLocked
+        val isolatedSession = desktopRecovery.observeIsolation(owner.canRecoverWhilePhoneLocked)
         val attempt = desktopRecovery.begin(reason == ShizukuDexConnector.Failure.HELPER_UNAVAILABLE &&
             current != null && canRecoverDesktop(current, isolatedSession))
         if (attempt != null && current != null) {

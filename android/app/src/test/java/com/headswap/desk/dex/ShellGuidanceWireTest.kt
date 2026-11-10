@@ -13,7 +13,8 @@ import org.junit.Test
 class ShellGuidanceWireTest {
     @Test fun threeReplyTypesAndAdjacentPanelAckStayInFrame() {
         val card = ShellManeuverSample.Card("ru.yandex.yandexnavi", "Turn left", "200", "m", "en")
-        val samples = listOf(ShellManeuverSample.Unavailable, ShellManeuverSample.VisibleWithoutHint, card)
+        val samples = listOf(ShellManeuverSample.Unavailable, ShellManeuverSample.VisibleWithoutHint, card,
+            card.copy(road = "улица Карла Маркса"))
         val bytes = ByteArrayOutputStream()
         val output = DataOutputStream(bytes)
         samples.forEach { ShellGuidanceWire.write(output, it) }

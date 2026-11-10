@@ -20,26 +20,31 @@ internal sealed interface ShellManeuverSample {
     data object Unavailable : ShellManeuverSample
     data object VisibleWithoutHint : ShellManeuverSample
     data class Card(val packageName: String, val arrowLabel: String, val distance: String,
-        val unit: String, val languageTags: String) : ShellManeuverSample
+        val unit: String, val languageTags: String, val road: String = "") : ShellManeuverSample
 
     fun encode(): Array<String>? = when (this) {
         Unavailable -> null
         VisibleWithoutHint -> emptyArray()
-        is Card -> arrayOf(packageName, arrowLabel, distance, unit, languageTags)
+        is Card -> arrayOf(packageName, arrowLabel, distance, unit, languageTags).let {
+            if (road.isEmpty()) it else it + road
+        }
     }
 
     companion object {
         fun decode(fields: Array<out String?>?): ShellManeuverSample {
             if (fields == null) return Unavailable
             if (fields.isEmpty()) return VisibleWithoutHint
-            if (fields.size != 5) return Unavailable
+            if (fields.size !in 5..6) return Unavailable
             val pkg = fields[0]?.takeIf { it in YandexGuidanceCard.PACKAGES } ?: return Unavailable
             val arrow = fields[1]?.takeIf { it.isNotBlank() && it.length <= 120 } ?: return Unavailable
             val number = fields[2]?.takeIf { it.isNotBlank() && it.length <= 24 } ?: return Unavailable
             val unit = fields[3]?.takeIf { it.isNotBlank() && it.length <= 16 } ?: return Unavailable
             val tags = fields[4]?.takeIf { it.length <= 80 } ?: return Unavailable
             if (listOf(arrow, number, unit, tags).any { value -> value.any(Char::isISOControl) }) return Unavailable
-            return Card(pkg, arrow, number, unit, tags)
+            val road = if (fields.size == 6) fields[5]?.takeIf {
+                it.length <= YandexNextRoad.MAX_CHARS && it.none(Char::isISOControl)
+            } ?: return Unavailable else ""
+            return Card(pkg, arrow, number, unit, tags, road)
         }
     }
 }
@@ -78,22 +83,22 @@ internal object ShellYandexGuidance {
     }
 
     /** Blocking, off the UI/IME/panel thread. Discard late responses and switched/removed tasks. */
-    fun read(displayId: Int, displayOwnerUid: Int, userId: Int): ShellManeuverSample {
+    fun read(displayId: Int, displayOwnerUid: Int, userId: Int, includeRoad: Boolean = false): ShellManeuverSample {
         val caller = when (Process.myUid()) {
             0, 2000 -> "com.android.shell"
             displayOwnerUid -> BuildConfig.APPLICATION_ID
             else -> return ShellManeuverSample.Unavailable
         }
-        return readAuthorized(displayId, userId, caller) { ShellDisplayIme.requireOwned(displayId, displayOwnerUid) }
+        return readAuthorized(displayId, userId, caller, includeRoad) { ShellDisplayIme.requireOwned(displayId, displayOwnerUid) }
     }
 
     /** Native VDM ownership and the package requesting Assist belong to different UIDs. */
-    fun readDelegated(displayId: Int, userId: Int, requireOwnership: () -> Unit): ShellManeuverSample {
+    fun readDelegated(displayId: Int, userId: Int, includeRoad: Boolean = false, requireOwnership: () -> Unit): ShellManeuverSample {
         if (Process.myUid() % 100000 < 10000) return ShellManeuverSample.Unavailable
-        return readAuthorized(displayId, userId, BuildConfig.APPLICATION_ID, requireOwnership)
+        return readAuthorized(displayId, userId, BuildConfig.APPLICATION_ID, includeRoad, requireOwnership)
     }
 
-    private fun readAuthorized(displayId: Int, userId: Int, caller: String,
+    private fun readAuthorized(displayId: Int, userId: Int, caller: String, includeRoad: Boolean,
         requireOwnership: () -> Unit): ShellManeuverSample {
         return try {
             val method = request
@@ -114,7 +119,7 @@ internal object ShellYandexGuidance {
                             if (structure == null || top(displayId, userId, requireOwnership) != target ||
                                 structure.activityComponent?.packageName != target.pkg ||
                                 structureTask.invoke(structure) != target.task) ShellManeuverSample.Unavailable
-                            else readStructure(structure, displayId, target.pkg)
+                            else readStructure(structure, displayId, target.pkg, includeRoad)
                         } finally { Binder.restoreCallingIdentity(identity) }
                     } catch (_: Exception) { ShellManeuverSample.Unavailable }
                     catch (_: LinkageError) { ShellManeuverSample.Unavailable }
@@ -139,7 +144,7 @@ internal object ShellYandexGuidance {
         catch (_: LinkageError) { ShellManeuverSample.Unavailable }
     }
 
-    private fun readStructure(structure: AssistStructure, displayId: Int, pkg: String): ShellManeuverSample {
+    private fun readStructure(structure: AssistStructure, displayId: Int, pkg: String, includeRoad: Boolean): ShellManeuverSample {
         val roots = (0 until structure.windowNodeCount).map(structure::getWindowNodeAt)
             .filter { it.displayId == displayId }
         if (roots.size != 1) return ShellManeuverSample.Unavailable
@@ -177,7 +182,17 @@ internal object ShellYandexGuidance {
         val distance = values[ForegroundYandexManeuver.DISTANCE]?.text ?: return ShellManeuverSample.Unavailable
         val unit = values[ForegroundYandexManeuver.UNIT]?.text ?: return ShellManeuverSample.Unavailable
         if (label.length > 120 || distance.length > 24 || unit.length > 16) return ShellManeuverSample.Unavailable
+        val road = YandexNextRoad.read(primary, pkg, includeRoad, assistTree)
         return ShellManeuverSample.decode(arrayOf(pkg, label.toString(), distance.toString(),
-            unit.toString(), arrow.localeList?.toLanguageTags().orEmpty()))
+            unit.toString(), arrow.localeList?.toLanguageTags().orEmpty(), road))
+    }
+
+    private val assistTree = object : YandexNextRoad.Tree<AssistStructure.ViewNode> {
+        override fun visible(node: AssistStructure.ViewNode) = node.visibility == View.VISIBLE
+        override fun id(node: AssistStructure.ViewNode) = node.idEntry
+        override fun pkg(node: AssistStructure.ViewNode) = node.idPackage
+        override fun text(node: AssistStructure.ViewNode) = node.text?.toString()
+        override fun childCount(node: AssistStructure.ViewNode) = node.childCount
+        override fun child(node: AssistStructure.ViewNode, index: Int) = node.getChildAt(index)
     }
 }

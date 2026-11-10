@@ -4,7 +4,7 @@ import com.headswap.desk.cluster.ShellManeuverSample
 import java.io.DataInputStream
 import java.io.DataOutputStream
 
-/** Only the current turn, distance and units cross the authenticated connection. */
+/** The current turn and distance; an opted-in request may also include its next-street label. */
 internal object ShellGuidanceWire {
     fun write(output: DataOutputStream, sample: ShellManeuverSample) {
         val fields = sample.encode()
@@ -14,7 +14,7 @@ internal object ShellGuidanceWire {
 
     fun read(input: DataInputStream): ShellManeuverSample = when (val count = input.readByte().toInt()) {
         -1 -> ShellManeuverSample.Unavailable
-        0, 5 -> ShellManeuverSample.decode(Array(count) { input.readUTF() })
+        0, 5, 6 -> ShellManeuverSample.decode(Array(count) { input.readUTF() })
         else -> throw java.io.IOException("Unknown guidance response")
     }
 }

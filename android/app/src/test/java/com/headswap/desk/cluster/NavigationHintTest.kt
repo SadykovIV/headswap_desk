@@ -24,4 +24,11 @@ class NavigationHintTest {
             NavigationHintParser.parse("Через 120 м поверните направо, затем через 400 м поверните налево", "", null, false))
         assertNull(NavigationHintParser.parse("Поверните направо, затем через 400 м поверните налево", "", null, false))
     }
+
+    @Test fun onlyKnownGuidanceStreetFieldCanSupplyTheRoad() {
+        assertEquals("улица 1905 года", NavigationHintParser.parse("120 м", "улица 1905 года", AaMeta.T_LEFT, true)?.road)
+        assertEquals("", NavigationHintParser.parse("120 м", "улица 1905 года", AaMeta.T_LEFT, false)?.road)
+        for (detail in listOf("Поверните налево", "Осталось 8 км", "120 м", "Street\u0000Injected"))
+            assertEquals("", NavigationHintParser.parse("120 м", detail, AaMeta.T_LEFT, true)?.road)
+    }
 }

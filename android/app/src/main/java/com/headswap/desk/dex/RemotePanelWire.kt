@@ -18,6 +18,7 @@ internal object RemotePanelWire {
     const val READ_GUIDANCE = 7
     const val GUIDANCE_REPLY = 16 // Framed separately from synchronous panel/IME acknowledgements.
     const val END_ACTIVATION = 8
+    const val READ_GUIDANCE_WITH_ROAD = 9 // Explicit opt-in; READ_GUIDANCE never extracts street text.
     const val UNAVAILABLE = 2
     const val HIDDEN = 3
     const val OK = 0

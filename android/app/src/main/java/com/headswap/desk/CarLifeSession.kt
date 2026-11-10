@@ -58,10 +58,13 @@ class SessionConfig(
     val metaMusic: Boolean = true,
     /** Подсказки поворотов из AA (NAVI_NEXT_TURN_INFO по подписке ГУ moduleID=0). */
     val metaNavi: Boolean = true,
+    /** Experimental next-street text, independently switchable during the current route. */
+    val metaNaviStreetNames: Boolean = false,
     /** Поле 6 NAVI_NEXT_TURN_INFO: иконка и/или time. */
     val naviField6: NaviField6 = NaviField6.BOTH,
     val desktopVideo: DesktopVideoSelection? = null,
     val desktopBitrateBps: Int = DesktopVideoQuality.BITRATE_CEILING_BPS,
+    val receiverAudio: com.headswap.desk.link.ReceiverAudioCalibration? = null,
 )
 
 /**
@@ -133,6 +136,7 @@ class CarLifeSession(
     private var naviExplicitlyStopped = false
     private var lastNavigationRequest: ByteArray? = null // guarded by the bridge
     private var clearingNavigation = false // only while ending a route under the bridge lock
+    private val navigationStreetPresentation = NavigationStreetPresentation(cfg.metaNaviStreetNames)
 
     private val t0 = SystemClock.elapsedRealtime()
     private val desktopAudioOutputLease = DesktopAudioOutputLease(t0)
@@ -158,6 +162,8 @@ class CarLifeSession(
     @Volatile private var targetFps = FPS
     private val desktopFrameRate = com.headswap.desk.aa.DesktopFrameRatePolicy()
     private val mediaClock = com.headswap.desk.aa.DesktopMediaClock(System.currentTimeMillis(), System.nanoTime() / 1000)
+    private val desktopAv = com.headswap.desk.link.DesktopAvTimeline({ System.nanoTime() / 1000 },
+        { cfg.receiverAudio?.milliseconds() ?: 0 }, transport::sendTimed)
     private var videoInited = false
     private var source: VideoSource? = null
     @Volatile private var csd: ByteArray? = null
@@ -220,6 +226,7 @@ class CarLifeSession(
     fun start() {
         DesktopConnectionState.attach(desktopVideoDelivery)
         bridge.attach(this)
+        bridge.onNavigationStreetNames(this, cfg.metaNaviStreetNames)
         AppLog.i("сессия: старт")
         CarLifeState.resetSession()
         CarLifeState.videoMode = mode
@@ -276,11 +283,19 @@ class CarLifeSession(
                 clearingNavigation = false
             }
             if (naviHud.on) bridge.onCarlifeSubscribe(listOf(SUB_NAVI), false, this)
+            navigationStreetPresentation.clear()
         }
         navigationEnabled = enabled
         lastNavigationRequest?.let(::replyToSubscribe)
         if (enabled && naviHud.on) bridge.onCarlifeSubscribe(listOf(SUB_NAVI), true, this)
         updateGuidanceInterest()
+    }
+
+    internal fun setNavigationStreetNames(enabled: Boolean) = synchronized(bridge) {
+        if (closed.get()) return@synchronized
+        bridge.onNavigationStreetNames(this, enabled)
+        val refreshed = navigationStreetPresentation.change(enabled) ?: return@synchronized
+        if (navigationEnabled && naviHud.on) sendNavigationDelivery(refreshed, naviHud)
     }
 
     private fun updateGuidanceInterest() {
@@ -373,6 +388,7 @@ class CarLifeSession(
         // stopping the encoder and releasing the audio route back to the handset speaker.
         if (transportLost) onDesktopOutputLost(this, desktopVideoDelivery.hasPicture())
         synchronized(bridge) { updateGuidanceInterest() }
+        desktopAv.close()
         desktopVideoDelivery.close()
         DesktopConnectionState.detach(desktopVideoDelivery)
         desktopAudioOutputLease.close()
@@ -493,6 +509,7 @@ class CarLifeSession(
                 AppLog.i("== HU_INFO: $huInfo")
                 PbReader.parse(m.body)?.let {
                     WLog.ev(WLog.HS, "HU_INFO", "manufacturer" to PbReader.str(it, 13), "model" to PbReader.str(it, 14))
+                    cfg.receiverAudio?.identify(PbReader.str(it, 13), PbReader.str(it, 14))
                     bridge.onHuInfo(PbReader.str(it, 13), PbReader.str(it, 14), PbReader.str(it, 15), PbReader.str(it, 2))
                 }
                 applyMobis()
@@ -562,6 +579,7 @@ class CarLifeSession(
                 if (SUB_NAVI in ids) {
                     naviHud = HudSubscription(on)
                     naviExplicitlyStopped = !on
+                    if (!on) navigationStreetPresentation.clear()
                 }
                 if (MetaRelay.SUB_MUSIC in ids) musicHud = HudSubscription(on && cfg.metaMusic)
                 val pass = ids.filter { (it != SUB_NAVI || navigationEnabled) && (it != MetaRelay.SUB_MUSIC || cfg.metaMusic) }
@@ -595,6 +613,7 @@ class CarLifeSession(
             Msg.VIDEO_ENCODER_START -> onVideoStart()
             Msg.VIDEO_ENCODER_PAUSE -> {
                 paused = true
+                desktopAv.reset(false)
                 desktopVideoDelivery.pause()
                 if (pauseHeartbeatHu) { // первый heartbeat сразу; Desay по USB - как раньше, через 2 с
                     lastVideoTx = 0L
@@ -813,6 +832,7 @@ class CarLifeSession(
 
     /** START: гейт AA сбрасывается, заглушка (если активна) стартует с SPS+PPS+IDR. */
     @Synchronized private fun onVideoStart() {
+        if (!carlifeStarted || paused) desktopAv.reset(true)
         paused = false
         desktopVideoDelivery.start(SystemClock.elapsedRealtime())
         if (pendingW <= 0) {
@@ -885,8 +905,7 @@ class CarLifeSession(
             val data = withFixedSps(payload)
             if (!admitDesktopFrame(data) || videoOverflow()) return false
             lastVideoTx = SystemClock.elapsedRealtime()
-            sendVideoData(data, presentationUs)
-            return true
+            return sendVideoData(data, presentationUs)
         }
     }
 
@@ -902,8 +921,7 @@ class CarLifeSession(
             // под тем же замком, что и onFrame заглушки: после AA-IDR ни один её кадр уже не уйдёт
             acceptEncoder = false
             lastVideoTx = SystemClock.elapsedRealtime()
-            sendVideoData(data, presentationUs)
-            return true
+            return sendVideoData(data, presentationUs)
         }
     }
 
@@ -935,11 +953,16 @@ class CarLifeSession(
     private fun applyEncoderFps(): Boolean = bridge.applyVideoTuning(this, fps = ::effectiveEncoderFps)
 
     /** The existing Mazda compatibility path keeps one timestamp across all fragments. */
-    private fun sendVideoData(data: ByteArray, presentationUs: Long? = null) {
+    private fun sendVideoData(data: ByteArray, presentationUs: Long? = null): Boolean {
+        val frame = if (cfg.desktopVideo != null && presentationUs != null)
+            desktopAv.frame(presentationUs, 5 in AnnexB.nalTypes(data), effectiveEncoderFps()) ?: return false else null
+        fun fragment(bytes: ByteArray, last: Boolean) {
+            if (frame != null) transport.sendVideoFragment(bytes, frame, last) else send(Ch.VIDEO, bytes)
+        }
         val max = AaBridgeCore.MAZDA_20622111_MAX_VIDEO_PACKET
         if (!bridge.huMazda20622111 || data.size <= max) {
-            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, videoTime(presentationUs), data))
-            return
+            fragment(Wire.dataInner(Msg.VIDEO_DATA, videoTime(presentationUs), data), true)
+            return true
         }
         if (!splitLogged) {
             splitLogged = true
@@ -949,9 +972,10 @@ class CarLifeSession(
         var off = 0
         while (off < data.size) {
             val end = minOf(off + max, data.size)
-            send(Ch.VIDEO, Wire.dataInner(Msg.VIDEO_DATA, ts, data.copyOfRange(off, end)))
+            fragment(Wire.dataInner(Msg.VIDEO_DATA, ts, data.copyOfRange(off, end)), end == data.size)
             off = end
         }
+        return true
     }
 
     /** Весь H.264 в ГУ (мост, перехват, заглушка) идёт через AnnexB.fixSps: подпись SPS Exynos ГУ не принимает. */
@@ -1136,6 +1160,7 @@ class CarLifeSession(
     override fun sendAudio(channel: Int, type: Int, payload: ByteArray): Boolean {
         if (closed.get()) return false
         if (payload.isNotEmpty() && transport.queueSize(channel) > MAX_AUDIO_QUEUE) return false   // звук не должен душить видео в очереди
+        if (cfg.desktopVideo != null && channel == Ch.MEDIA && type != CarlifeAudio.MEDIA_DATA) desktopAv.clearAudio()
         val isData = type == CarlifeAudio.MEDIA_DATA || type == CarlifeAudio.TTS_DATA || type == CarlifeAudio.VR_DATA
         val time = if (isData) (System.currentTimeMillis() and 0xFFFFFFFFL).toInt() else 0
         send(channel, Wire.dataInner(type, time, payload))
@@ -1146,18 +1171,14 @@ class CarLifeSession(
         if (cfg.desktopVideo == null) return sendAudio(channel, type, payload)
         if (closed.get()) return false
         val nowUs = System.nanoTime() / 1000
-        val ageMs = ((nowUs - capturedAtUs) / 1000).coerceAtLeast(0)
-        // Interactive projection cannot replay seconds of stale PCM after a blocked video write.
-        // Carry capture time through to the protocol, and expire only DATA, never INIT/STOP.
-        if (ageMs >= DESKTOP_AUDIO_MAX_AGE_MS) return false
         val time = mediaClock.wireAudioMillis(capturedAtUs, nowUs)
-        transport.sendTimed(channel, Wire.dataInner(type, time, payload), DESKTOP_AUDIO_MAX_AGE_MS - ageMs)
-        return true
+        return desktopAv.pcm(channel, Wire.dataInner(type, time, payload), capturedAtUs)
     }
 
     /** h425: хвост MEDIA_DATA, ещё не записанный в USB, выбрасываем (ГУ ушло в звонок и не читает). Очередь общая: другие каналы не трогаем. */
     override fun dropQueuedMedia(): Int {
         if (closed.get()) return 0
+        desktopAv.clearAudio()
         return transport.dropQueued(Ch.MEDIA) { it.size >= 12 && Wire.u32(it, 8) == CarlifeAudio.MEDIA_DATA }
     }
 
@@ -1254,29 +1275,23 @@ class CarLifeSession(
         }
     }
 
-    private var hondaRoadLogged = false
-
-    /** Honda (channel 2077xxxx/2083xxxx): roadName под ≤24 клетки / ≤31 Б, иначе приборка отбрасывает строку. Остальные ГУ - без изменений. */
-    private fun fitRoad(info: NaviTurnInfo): NaviTurnInfo {
-        if (!bridge.huHonda) return info
-        if (!hondaRoadLogged) {
-            hondaRoadLogged = true
-            AppLog.i("== Honda приборка: roadName подгоняю под ≤24 клетки / ≤31 Б")
-        }
-        val road = HondaClusterRoad.fit(info.roadName)
-        if (road == info.roadName) return info
-        AppLog.i("метаданные: подпись дороги сокращена до ${road.toByteArray(Charsets.UTF_8).size} Б", ui = false)
-        return NaviTurnInfo(info.action, info.nextTurn, road, info.totalDistance, info.remainDistance, info.timeSeconds)
+    override fun sendNaviTurn(info: NaviTurnInfo): Boolean = synchronized(bridge) {
+        val subscription = naviHud
+        if (closed.get() || !navigationEnabled || !subscription.on) return@synchronized false
+        sendNavigationDelivery(navigationStreetPresentation.accept(info), subscription)
     }
 
-    override fun sendNaviTurn(info: NaviTurnInfo): Boolean {
-        val subscription = naviHud
-        if (!navigationEnabled || !subscription.on) return false
-        val sent = fitRoad(info)
-        if (clearingNavigation && sent.action == 3) {
+    /** Presentation changes use the same metadata queue and never rearm navigation or change its distance. */
+    private fun sendNavigationDelivery(delivery: NavigationStreetPresentation.Delivery, subscription: HudSubscription): Boolean {
+        val info = delivery.info
+        val honda = bridge.huHonda
+        val sent = NavigationStreetNames.format(info, delivery.enabled, honda)
+        // Honda requires bytes field6 even if an older installation has disabled bitmap icons.
+        val field6 = NavigationStreetNames.field6(cfg.naviField6, honda)
+        if (clearingNavigation && info.action == 3) {
             // Queue the final HIDE before changing the advertised capability. A HU
             // can send STOP immediately on seeing DONE(false).
-            sendCmd(Msg.NAVI_NEXT_TURN_INFO, Msgs.naviNextTurn(sent, cfg.naviField6, ByteArray(0)))
+            sendCmd(Msg.NAVI_NEXT_TURN_INFO, Msgs.naviNextTurn(sent, field6, ByteArray(0)))
             return true
         }
         return metaSubmit("NAVI_NEXT_TURN_INFO") {
@@ -1286,9 +1301,12 @@ class CarLifeSession(
                     AppLog.i("метаданные: стрелка nextTurn=${info.nextTurn} ${PbText.blob(it)}", ui = false)
                 }
             }
-            val body = Msgs.naviNextTurn(sent, cfg.naviField6, icon)
+            val body = Msgs.naviNextTurn(sent, field6, icon)
             synchronized(bridge) {
-                if (naviHud === subscription) sendCmd(Msg.NAVI_NEXT_TURN_INFO, body)
+                if (naviHud === subscription && navigationStreetPresentation.current(delivery)) {
+                    sendCmd(Msg.NAVI_NEXT_TURN_INFO, body)
+                    navigationStreetPresentation.submitted(delivery)
+                }
             }
         }
     }
@@ -1589,7 +1607,7 @@ class CarLifeSession(
         if (now - lastStatsAt >= 5000 && (vFrames > 0 || vBeats > 0)) {
             if (cfg.desktopVideo != null) AppLog.i("DESKTOP AV: videoWriteMs=${transport.videoWriteAgeMs} " +
                 "videoPendingBytes=${transport.queuedVideoBytes} expiredAudio=${transport.audioExpiredPackets} " +
-                "overflowAudio=${transport.audioOverflowPackets}", false)
+                "overflowAudio=${transport.audioOverflowPackets} ${desktopAv.diagnostics()}", false)
             AppLog.i("видео: отправлено кадров=$vFrames (ключевых=$vKeys) байт=$vBytes heartbeat=$vBeats сброшено=$vDropped очередь=${transport.queueSize(Ch.VIDEO)} (+${vFrames - lastStatsFrames} за ${(now - lastStatsAt) / 1000}с)")
             lastStatsAt = now
             lastStatsFrames = vFrames
@@ -1704,7 +1722,6 @@ class CarLifeSession(
         private val TOUCH_TO_AA = setOf(0, 1, 2, 5, 6)
         private const val TTS_TX_LOGGED = 8           // TTS_DATA после INIT с временем записи в транспорт (h222)
         private const val MAX_AUDIO_QUEUE = 180       // Legacy AA queue limit; desktop PCM uses capture deadlines.
-        private const val DESKTOP_AUDIO_MAX_AGE_MS = 150L
         private const val BITRATE_POLL_MS = 100L
         private const val VW_20082138_CEILING_BPS = 2_000_000
         private const val VW_20082138_MIN_BPS = 1_500_000

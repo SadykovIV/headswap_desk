@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.RectF
 import com.headswap.desk.aa.AaMeta
 import java.io.ByteArrayOutputStream
@@ -55,9 +56,14 @@ object MetaImages {
                 val drawable = software ?: return null
                 // JPEG has no alpha; blend the cover onto a bounded opaque image.
                 opaque = Bitmap.createBitmap(drawable.width, drawable.height, Bitmap.Config.ARGB_8888)
+                opaque.density = Bitmap.DENSITY_NONE
                 Canvas(opaque).apply {
                     drawColor(Color.BLACK)
-                    drawBitmap(drawable, 0f, 0f, null)
+                    // The float-position overload applies source/Canvas density a second time.
+                    // MediaSession artwork often has 160 DPI even on a high-DPI phone: that
+                    // enlarged and cropped the JPEG. Explicit pixel bounds preserve every edge.
+                    drawBitmap(drawable, null, Rect(0, 0, drawable.width, drawable.height),
+                        Paint(Paint.FILTER_BITMAP_FLAG))
                 }
                 var q = 90
                 while (q >= 10) {

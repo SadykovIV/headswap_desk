@@ -80,6 +80,7 @@ internal object VdmHostRecovery {
             val expiry = deadlines.schedule({
                 if (current()) {
                     failure = VdmRecoveryPolicy.OFFLINE_MESSAGE
+                    if (failureReason == null) failureReason = DexAccessReason.TIMEOUT
                     close()
                 }
             }, timeoutMs, TimeUnit.MILLISECONDS)
@@ -113,32 +114,43 @@ internal object VdmHostRecovery {
                 // SELinux/hidden-API denial is harmless: saved endpoint and mDNS remain available.
                 val independent = IndependentRecoveryAccess.recoveryEndpoint(context)
                 managedEndpoint = independent
+                AppLog.i("VDM recovery start: wifi=$radioEnabled wirelessDebugging=$wifiDebugging " +
+                    "tlsPort=${VdmRecoveryEndpoints.tlsLoopback(tlsPort)?.port ?: 0} ${IndependentRecoveryAccess.diagnosticState(context)}", false)
                 independent?.let { enqueue(it, savedPairedPort = true) }
                 VdmRecoveryEndpoints.tlsLoopback(tlsPort)?.let { enqueue(it, savedPairedPort = true) }
                 enqueue(DexEndpoint(prefs.host, prefs.connectPort), savedPairedPort = true)
                 if (!localOnly) main.post {
                     if (current()) discovery = DexDiscovery(context) { _, endpoint, _ -> endpoint?.let(::enqueue) }.also { it.start() }
                 }
-                val tried = mutableSetOf<DexEndpoint>()
-                var managedRetryAt = 0L
-                var managedRetries = 0
+                val candidates = VdmRecoverySchedule()
+                var nextEnvironmentCheck = 0L
                 while (current() && SystemClock.elapsedRealtime() < deadline) {
                     if (VdmHostLink.isReady) return true
                     val now = SystemClock.elapsedRealtime()
-                    if (managedRetryAt > 0 && now >= managedRetryAt && independent != null) {
-                        tried.remove(independent)
-                        endpoints.add(independent)
-                        managedRetryAt = 0
+                    if (now >= nextEnvironmentCheck) {
+                        // A restarted adbd may publish a new port after the first attempt,
+                        // without delivering mDNS on this network. Re-read; never scan ports.
+                        val currentTls = localTlsPort()
+                        val (wifi, debugging) = PhoneAdbEndpointRequest.environment(context)
+                        val wasLocalOnly = localOnly
+                        localOnly = !VdmRecoveryPolicy.discoveryAllowed(wifi, debugging, currentTls)
+                        VdmRecoveryEndpoints.tlsLoopback(currentTls)?.let { enqueue(it, savedPairedPort = true) }
+                        if (wasLocalOnly && !localOnly) main.post {
+                            if (current() && discovery == null) discovery = DexDiscovery(context) { _, endpoint, _ ->
+                                endpoint?.let(::enqueue)
+                            }.also { it.start() }
+                        }
+                        nextEnvironmentCheck = now + 500
                     }
-                    val endpoint = endpoints.poll()
+                    while (true) candidates.offer(endpoints.poll() ?: break)
+                    val endpoint = candidates.take(now)
                     if (endpoint == null) {
-                        // A disabled radio cannot discover a replacement listener. Still try
-                        // every known loopback port first: it may survive a network change.
-                        if (localOnly && managedRetryAt == 0L) return fail(VdmRecoveryPolicy.OFFLINE_MESSAGE)
+                        // Known local ports may return after USB reconfiguration even with
+                        // Wi-Fi disabled. The request deadline, not one refusal, ends recovery.
                         Thread.sleep(80)
                         continue
                     }
-                    if (!tried.add(endpoint)) continue
+                    if (!VdmRecoveryPolicy.endpointAllowed(endpoint, localOnly) || !DexAccess.acceptsHost(endpoint.host)) continue
                     // DexAccess already caps TCP connect at 3s. Keep a separate, longer read
                     // deadline for the authenticated bootstrap command (up to 15s).
                     val remaining = (deadline - now).coerceIn(1, 20_000).toInt()
@@ -193,23 +205,24 @@ internal object VdmHostRecovery {
                                 AppLog.i("VDM: независимый экран восстановлен через сохранённое сопряжение", false)
                                 return true
                             }
+                            // A completed bootstrap rejection is not a network outage. Do not
+                            // repeat unsupported setup or expose its raw shell output in the UI.
+                            failureReason = DexAccessReason.INTERNAL
+                            AppLog.i("VDM bootstrap not ready: exit=${result.exitCode}; hostReady=${VdmHostLink.isReady}", false)
+                            return fail("Не удалось запустить службу независимого экрана. Отправьте журнал HeadSwap.")
                         } finally { connection = null; adb.close() }
                     } catch (error: Exception) {
                         if (!current()) return false
                         // No private record, nonce, command or ADB response belongs in logs.
                         val reason = DexAccessDiagnostics.classify(error)
-                        if (reason in setOf(DexAccessReason.REFUSED, DexAccessReason.TIMEOUT,
-                                DexAccessReason.NETWORK_UNREACHABLE, DexAccessReason.CONNECTION_CLOSED)) lastTransportFailure = reason
+                        if (VdmRecoveryPolicy.retryableTransport(reason)) lastTransportFailure = reason
                         if (endpoint == independent && reason == DexAccessReason.REFUSED) managedRefused = true
                         AppLog.i("VDM recovery attempt: route=${if (endpoint == independent) "managed" else "tls"} port=${endpoint.port} reason=$reason", false)
                         if (VdmRecoveryPolicy.terminal(reason)) {
                             failureReason = reason
                             return fail(DexAccessException(DexAccessStage.CONNECT, reason).message ?: VdmRecoveryPolicy.OFFLINE_MESSAGE)
                         }
-                        VdmRecoveryPolicy.managedRetryDelay(reason, endpoint == independent, managedRetries)?.let { delay ->
-                            managedRetries++
-                            managedRetryAt = SystemClock.elapsedRealtime() + delay
-                        }
+                        candidates.failed(endpoint, reason, SystemClock.elapsedRealtime())
                     } finally {
                         IndependentRecoveryAccess.cancelManagedRecovery(proofAttempt)
                         if (managedProof === proofAttempt) managedProof = null
@@ -220,9 +233,14 @@ internal object VdmHostRecovery {
                 Thread.currentThread().interrupt(); return false
             } finally {
                 expiry.cancel(false)
-                if (!VdmHostLink.isReady && failureReason == null) failureReason = lastTransportFailure
+                if (!VdmHostLink.isReady && (failureReason == null || failureReason == DexAccessReason.TIMEOUT))
+                    failureReason = lastTransportFailure ?: failureReason
                 if (managedRefused && !VdmHostLink.isReady) managedEndpoint?.let {
                     IndependentRecoveryAccess.noteUnavailable(context, it, DexAccessReason.REFUSED)
+                }
+                if (!VdmHostLink.isReady && managedEndpoint != null && failure != null) {
+                    AppLog.i("VDM recovery unavailable: reason=$failureReason " +
+                        "accessReady=${DelegatedDesktopAccess.isReady(context)} ${IndependentRecoveryAccess.diagnosticState(context)}", false)
                 }
                 val pending = launch
                 if (!VdmHostLink.isReady && pending != null) VdmHostLink.cancelLaunch(pending)

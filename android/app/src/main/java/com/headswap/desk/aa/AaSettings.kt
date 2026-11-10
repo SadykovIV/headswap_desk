@@ -149,6 +149,20 @@ class AaPrefs(ctx: Context) {
         get() = sp.getBoolean("metaNavi", true)
         set(v) = sp.edit().putBoolean("metaNavi", v).apply()
 
+    /** Experimental next-street text; arrows and distances are controlled separately by metaNavi. */
+    var metaNaviStreetNames: Boolean
+        get() = sp.getBoolean("metaNaviStreetNames", false)
+        set(v) = sp.edit().putBoolean("metaNaviStreetNames", v).apply()
+
+    fun observeNavigationStreetNames(changed: (Boolean) -> Unit): () -> Unit {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == "metaNaviStreetNames" || key == null) changed(metaNaviStreetNames)
+        }
+        sp.registerOnSharedPreferenceChangeListener(listener)
+        changed(metaNaviStreetNames)
+        return { sp.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
     /** Observe the same preference as the developer screen; retain the listener until unsubscribe. */
     fun observeNavigationHints(changed: (Boolean) -> Unit): () -> Unit {
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->

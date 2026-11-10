@@ -6,11 +6,19 @@ internal class DesktopRecoveryPolicy {
     private var serial = 0L
     private var attempts = 0
     private var pending: Attempt? = null
+    private var isolatedConnection = false
 
     /** Only a new transport session resets the budget; a recovered frame does not. */
     fun newConnection() {
         cancel()
         attempts = 0
+        isolatedConnection = false
+    }
+
+    /** A failed replacement has no display yet; keep the original connection's proven isolation. */
+    fun observeIsolation(confirmed: Boolean): Boolean {
+        isolatedConnection = isolatedConnection || confirmed
+        return isolatedConnection
     }
 
     fun begin(eligible: Boolean): Attempt? {

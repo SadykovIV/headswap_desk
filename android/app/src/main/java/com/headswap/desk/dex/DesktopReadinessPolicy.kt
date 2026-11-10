@@ -4,11 +4,13 @@ package com.headswap.desk.dex
 internal object DesktopReadinessPolicy {
     data class Facts(val grants: Boolean, val audio: Boolean, val panel: Boolean,
                      val panelUnsupported: Boolean, val hostRequired: Boolean, val host: Boolean,
-                     val modePending: Boolean, val recoveryNeedsVerification: Boolean = false)
+                     val modePending: Boolean, val recoveryNeedsVerification: Boolean = false,
+                     val usbDebuggingMissing: Boolean = false)
     data class Requirements(val audio: Boolean, val panel: Boolean)
-    enum class Step { READY, ACQUIRE_GRANTS, APPLY_MODE, VERIFY_RECOVERY, RECOVER_HOST, RECONFIGURATION_REQUIRED, USER_ACTIVATION_REQUIRED }
+    enum class Step { READY, ACQUIRE_GRANTS, APPLY_MODE, VERIFY_RECOVERY, RECOVER_HOST, RECONFIGURATION_REQUIRED, USER_ACTIVATION_REQUIRED, USB_DEBUGGING_REQUIRED }
 
     fun next(facts: Facts, needs: Requirements, explicit: Boolean, allowAcquireGrants: Boolean = true): Step {
+        if (facts.usbDebuggingMissing) return Step.USB_DEBUGGING_REQUIRED
         val sufficient = facts.grants && (!needs.audio || facts.audio) &&
             (!needs.panel || facts.panel || facts.panelUnsupported)
         if (facts.grants && !sufficient) return Step.RECONFIGURATION_REQUIRED

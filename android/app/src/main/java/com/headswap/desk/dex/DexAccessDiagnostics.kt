@@ -20,7 +20,8 @@ enum class DexAccessReason {
     INVALID_HOST, INVALID_PORT, INVALID_CODE, REFUSED, TIMEOUT, NETWORK_UNREACHABLE,
     PERMISSION_DENIED, TLS_HANDSHAKE, TLS_PROTOCOL, TLS_PROVIDER, PAIR_REJECTED,
     CONNECTION_CLOSED, IDENTITY_FAILURE, SHELL_REJECTED, IO_FAILURE, INTERNAL,
-    AUTHORIZATION_REJECTED, TLS_VERSION_UNSUPPORTED, LOCAL_ADB_CONFIGURATION, LOCAL_ADB_RESTORE_REQUIRED
+    AUTHORIZATION_REJECTED, TLS_VERSION_UNSUPPORTED, LOCAL_ADB_CONFIGURATION, LOCAL_ADB_RESTORE_REQUIRED,
+    USB_DEBUGGING_DISABLED
 }
 
 /** Deliberately omits the raw cause: library errors can carry pairing material. */
@@ -64,6 +65,7 @@ internal object DexAccessDiagnostics {
         DexAccessReason.IO_FAILURE -> "ошибка обмена с телефоном. Сохраните журнал с этапом сбоя"
         DexAccessReason.LOCAL_ADB_CONFIGURATION -> "не удалось включить восстановление без Wi-Fi. Требуется собственное сопряжение HeadSwap и обычная конфигурация отладки; существующая настройка другого приложения не заменяется. Отправьте журнал или выключите эту опцию и повторите активацию"
         DexAccessReason.LOCAL_ADB_RESTORE_REQUIRED -> "обычный режим отладки не подтверждён. Включите Wi-Fi и выберите «Активация → Исправить настройку активации». Если отладка недоступна, выполните на компьютере adb usb"
+        DexAccessReason.USB_DEBUGGING_DISABLED -> DesktopUsbDebugging.MISSING
         DexAccessReason.INTERNAL -> "внутренняя ошибка подготовки подключения. Сохраните журнал"
         }
     }

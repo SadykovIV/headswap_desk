@@ -48,16 +48,15 @@ class VdmRecoveryPolicyTest {
         assertTrue(localOnly)
         assertTrue(VdmRecoveryPolicy.endpointAllowed(DexEndpoint("127.0.0.1", 43129), localOnly))
     }
-    @Test fun managedListenerGetsBoundedRestartWindowOnlyForRefused() {
-        val delays = (0..8).mapNotNull { VdmRecoveryPolicy.managedRetryDelay(DexAccessReason.REFUSED, true, it) }
-        assertEquals(listOf(200L, 400L, 800L) + List(6) { 1500L }, delays)
-        // The request's hard deadline bounds retries. A daemon returning after 5 seconds
-        // must still be retried, unlike stale TLS ports which are never retried.
-        assertEquals(1500L, VdmRecoveryPolicy.managedRetryDelay(DexAccessReason.REFUSED, true, 100))
-        assertNull(VdmRecoveryPolicy.managedRetryDelay(DexAccessReason.REFUSED, true, -1))
-        assertNull(VdmRecoveryPolicy.managedRetryDelay(DexAccessReason.REFUSED, false, 0))
-        for (reason in DexAccessReason.entries.filter { it != DexAccessReason.REFUSED })
-            assertNull(VdmRecoveryPolicy.managedRetryDelay(reason, true, 0))
+    @Test fun transientTransportFailureIsRecoverableWithoutNewGrants() {
+        for (reason in DexAccessReason.entries) {
+            val expected = reason in setOf(DexAccessReason.REFUSED, DexAccessReason.TIMEOUT,
+                DexAccessReason.NETWORK_UNREACHABLE, DexAccessReason.CONNECTION_CLOSED,
+                DexAccessReason.TLS_HANDSHAKE, DexAccessReason.TLS_PROTOCOL)
+            assertEquals(reason.name, expected, VdmRecoveryException("unavailable", reason).retryable)
+        }
+        assertFalse(VdmRecoveryException("missing pairing", null).retryable)
+        assertFalse(VdmRecoveryPolicy.OFFLINE_MESSAGE.contains("Повторная активация"))
     }
     @Test fun unsafeAuthenticationOrForeignPrivateProofNeverFallsBackToOtherAddresses() {
         assertTrue(VdmRecoveryPolicy.terminal(DexAccessReason.LOCAL_ADB_CONFIGURATION))

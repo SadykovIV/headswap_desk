@@ -97,6 +97,18 @@ internal class RouteGuidanceCoordinator(
         if (gap == null) requestSample() // the gap owns its one retry and its original deadline
     }
 
+    /** Preference changes must not replay a previously sampled street, including late Assist replies. */
+    fun streetNamesChanged() {
+        pending = null
+        notification = notification?.copy(road = "")
+        retiredNotification = retiredNotification?.copy(road = "")
+        foreground = (foreground as? ForegroundGuidance.Maneuver)?.let {
+            it.copy(hint = it.hint.copy(road = ""))
+        } ?: foreground
+        publish()
+        requestSample()
+    }
+
     private fun requestSample() {
         val request = requestForeground ?: return
         if (!enabled || pending != null) return

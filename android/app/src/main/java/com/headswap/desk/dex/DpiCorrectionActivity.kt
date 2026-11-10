@@ -39,8 +39,10 @@ class DpiCorrectionActivity : Activity() {
         ui.button(page, "Назад") { finish() }
         ui.text(page, "Исправить DPI приложения", 23f, true)
         val settings = ui.section(page)
-        ui.toggle(settings, "Включить исправление DPI", prefs.compactMapSymbols) { prefs.compactMapSymbols = it }
-        ui.text(settings, "Для приложений в списке HeadSwap увеличивает внутреннее разрешение и выводит изображение в исходном размере окна ГУ. Выбор применяется при следующем подключении Android Desktop или DriveDeck.")
+        val correction = ui.toggle(settings, "Включить исправление DPI", prefs.compactMapSymbols) { prefs.compactMapSymbols = it }
+        ui.help(correction.row, "Включить исправление DPI") {
+            "Для приложений в списке HeadSwap увеличивает внутреннее разрешение и выводит изображение в исходном размере окна ГУ. Выбор применяется при следующем подключении Android Desktop или DriveDeck."
+        }
         val apps = ui.section(page, "Приложения")
         rows = ui.group(apps)
         add = ui.button(apps, "Добавить приложение") { chooseApp() }

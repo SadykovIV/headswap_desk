@@ -74,7 +74,7 @@ internal object FirstRunProbe {
                 val root = componentPage.window.decorView
                 check(root.hasText("Разрешения DriveDeck"))
                 if (component.availability == DriveDeckPermissions.Availability.READY) {
-                    check(root.button("Открыть доступ к уведомлениям").isShown)
+                    check(root.hasText("Приблизительное местоположение") && root.hasText("Контакты"))
                     val row = root.nodes().first { it.contentDescription == "Доступ DriveDeck к музыкальным данным" }
                     check(row.stateDescription.toString().startsWith(if (component.musicAccess == true) "Доступ есть." else "Нет доступа."))
                 } else check(root.button("Установить компоненты").isShown)
@@ -88,7 +88,7 @@ internal object FirstRunProbe {
 
             // Instrumentation.waitForMonitorWithTimeout removes its monitor after the wait.
             // Each expected launch therefore owns a new monitor, registered before the click.
-            val permissionsMonitor = monitor(DexSetupActivity::class.java)
+            val activationMonitor = monitor(DesktopWizardActivationActivity::class.java)
             // Choose the built-in profile through the real picker so this probe works without a DD APK.
             onUi(test) {
                 wizard.window.decorView.button("Выбрать рабочий стол").performClick()
@@ -99,44 +99,42 @@ internal object FirstRunProbe {
                 check(prefs.desktopMode == DesktopModePolicy.ANDROID_DESKTOP)
                 check(wizard.window.decorView.button("Далее").isEnabled)
                 wizard.window.decorView.button("Далее").performClick()
-                check(wizard.window.decorView.hasText("2. Разрешения"))
-                wizard.window.decorView.button("Разрешения приложения").performClick()
+                val page = wizard.window.decorView
+                check(page.hasText("Разрешения HeadSwap Desktop") && page.hasText("Разрешения DriveDesk"))
+                check(page.hasText("Отладка по USB") && page.hasText("Беспроводная отладка (Wi-Fi)"))
+                check(!page.hasText("Доступ к рабочему столу") && !page.hasText("Открыть активацию"))
+                if (component.availability == DriveDeckPermissions.Availability.READY) {
+                    for (name in listOf("Доступ DriveDeck к музыкальным данным", "Контакты", "Точное местоположение",
+                        "Приблизительное местоположение", "Состояние телефона", "Поиск устройств Bluetooth"))
+                        check(page.hasText(name)) { name }
+                }
+                page.button("Далее").performClick()
             }
-            val permissions = opened(permissionsMonitor)
+            var activation = opened(activationMonitor)
+            val backMonitor = monitor(DesktopOnboardingActivity::class.java)
             onUi(test) {
-                check(permissions.intent.getBooleanExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, false))
-                check(permissions.window.decorView.hasText("Разрешения приложения"))
-                permissions.window.decorView.button("Назад").performClick()
+                val page = activation.window.decorView
+                check(page.hasText("Первоначальная настройка · 3 из 3") && page.hasText("Активация"))
+                check(!page.button("Завершить настройку").isEnabled)
+                check(!page.hasText("Завершить доступ и закрыть HeadSwap"))
+                check(page.button("Активировать").isShown)
+                page.button("Назад").performClick()
             }
-            awaitWindow(test, wizard.window.decorView)
-            val activationMonitor = monitor(DexSetupActivity::class.java)
-            onUi(test) {
-                check(wizard.window.decorView.hasText("2. Разрешения"))
-                wizard.window.decorView.button("Далее").performClick()
-                check(wizard.window.decorView.hasText("3. Активация"))
-                check(!wizard.window.decorView.button("Завершить настройку").isEnabled)
-                wizard.window.decorView.button("Открыть активацию").performClick()
-            }
-            val activation = opened(activationMonitor)
-            onUi(test) {
-                check(activation.intent.getBooleanExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, false))
-                activation.window.decorView.button("Вернуться к настройке").performClick()
-            }
-            awaitWindow(test, wizard.window.decorView)
+            wizard = opened(backMonitor)
+            check(prefs.initialSetupStep == 1 && !prefs.initialSetupCompleted)
+            val again = monitor(DesktopWizardActivationActivity::class.java)
+            onUi(test) { wizard.window.decorView.button("Далее").performClick() }
+            activation = opened(again)
             check(prefs.initialSetupStep == 2 && prefs.initialSetupReviewed && prefs.initialSetupInProgress)
-            check(!prefs.initialSetupCompleted && !PhonePairingService.active)
-            result.putString("flow", "Components → Permissions → Activation; child pages return to current step; no implicit activation or false completion")
-
-            // A vanished wizard Activity (e.g. activation bootstrap) must resume its persisted step.
-            onUi(test) { wizard.finish() }
+            result.putString("flow", "Inline package permissions, both debugging settings, activation methods and finish on step 3; Back returns to step 2")
+            onUi(test) { activation.finish() }
             awaitWindow(test, main.window.decorView)
-            val resumedWizardMonitor = monitor(DesktopOnboardingActivity::class.java)
+            val resumed = monitor(DesktopWizardActivationActivity::class.java)
             onUi(test) { main.startActivity(Intent(context, DesktopOnboardingActivity::class.java)) }
-            wizard = opened(resumedWizardMonitor)
+            activation = opened(resumed)
             onUi(test) {
-                check(wizard.window.decorView.hasText("3. Активация"))
-                check(!wizard.window.decorView.button("Завершить настройку").isEnabled)
-                wizard.window.decorView.button("Закрыть настройку").performClick()
+                check(!activation.window.decorView.button("Завершить настройку").isEnabled)
+                activation.window.decorView.button("Закрыть настройку").performClick()
             }
             check(!prefs.initialSetupInProgress && !prefs.initialSetupCompleted)
             result.putString("resume", "Activation step survives Activity replacement; explicit close does not claim completion")

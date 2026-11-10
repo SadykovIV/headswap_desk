@@ -30,6 +30,9 @@ class NavigationHintsSessionTest {
         override fun start(sink: (Int, ByteArray) -> Unit, onWritten: (Int, ByteArray) -> Unit,
                            onClosed: (String) -> Unit) { this.sink = sink }
 
+        override fun sendVideoFragment(inner: ByteArray, frame: com.headswap.desk.link.VideoWrite, last: Boolean) {
+            if (frame.begin()) { send(com.headswap.desk.Ch.VIDEO, inner); if (last) frame.written() }
+        }
         override fun send(chan: Int, inner: ByteArray) {
             if (chan == Ch.CMD) Wire.parseCmd(inner)?.let(sent::add)
         }
@@ -190,5 +193,70 @@ class NavigationHintsSessionTest {
         } finally {
             session.close("test finished")
         }
+    }
+
+    @Test fun streetNamesToggleWaitsForStartThenUpdatesOnlyRoadWithRequiredHondaFieldSix() {
+        val peer = WirePeer()
+        var now = 1_000_000L
+        val bridge = AaBridgeCore(log = { _, _ -> }, clockMs = { now })
+        val session = CarLifeSession(peer, SessionConfig(naviField6 = NaviField6.TIME), bridge, onClosed = {})
+        fun assertTurn(expectedRoad: String, action: Int, total: Int = 500, remain: Int = 180) {
+            val fields = PbReader.parse(peer.until(Msg.NAVI_NEXT_TURN_INFO).body)!!
+            assertEquals(action, PbReader.int(fields, 1))
+            assertEquals(7, PbReader.int(fields, 2))
+            assertEquals(expectedRoad, PbReader.str(fields, 3))
+            assertEquals(total, PbReader.int(fields, 4))
+            assertEquals(remain, PbReader.int(fields, 5))
+            assertTrue(PbReader.all(fields, 6).any { it.wire == 2 && it.data?.isEmpty() == true })
+        }
+        try {
+            session.start()
+            bridge.onHuStatistic("20832125")
+            bridge.onCarlifeStart()
+            peer.subscription(Msg.CARLIFE_DATA_SUBSCRIBE, 0)
+            peer.expectSupport(0, 1)
+            session.onClusterNavigation(ClusterNavigationHint(7, "", 500))
+            peer.until(Msg.MODULE_STATUS, forbidden = Msg.NAVI_NEXT_TURN_INFO)
+            session.setNavigationStreetNames(true)
+            // The opt-in source supplies a fresh street; the disabled path retained no name.
+            session.onClusterNavigation(ClusterNavigationHint(7, "TEST HUD 123", 500))
+            assertTrue(session.sendMediaProgress(100))
+            peer.until(Msg.MEDIA_PROGRESS_BAR, forbidden = Msg.NAVI_NEXT_TURN_INFO)
+            peer.subscription(Msg.CARLIFE_DATA_SUBSCRIBE_START, 0)
+            assertTurn("TEST HUD 123", 1, remain = 500)
+            now += 1_000
+            session.onClusterNavigation(ClusterNavigationHint(7, "TEST HUD 123", 180))
+            assertTurn("TEST HUD 123", 2)
+            peer.sent.clear()
+
+            session.setNavigationStreetNames(false)
+            assertTurn("", 2)
+            session.onClusterNavigation(ClusterNavigationHint(7, "", 180))
+            assertTurn("", 2)
+            session.setNavigationStreetNames(true)
+            assertTurn("", 2)
+            session.onClusterNavigation(ClusterNavigationHint(7, "TEST HUD 123", 180))
+            assertTurn("TEST HUD 123", 2)
+            // Road can change while arrow and remaining distance stay exactly the same.
+            session.onClusterNavigation(ClusterNavigationHint(7, "ул. Ленина", 180))
+            assertTurn("ул. Ленина", 1, total = 180)
+            // Consecutive same-arrow turns remain detectable by a distance increase too.
+            session.onClusterNavigation(ClusterNavigationHint(7, "ул. Ленина", 500))
+            assertTurn("ул. Ленина", 1, remain = 500)
+            // A long street still sends SHOW and subsequent UPDATE; it must not reset the subscription.
+            session.onClusterNavigation(ClusterNavigationHint(7, "Нахимовский проспект", 500))
+            assertTurn("Нахимовский", 1, remain = 500)
+            now += 1_000
+            session.onClusterNavigation(ClusterNavigationHint(7, "Нахимовский проспект", 180))
+            assertTurn("Нахимовский", 2)
+            session.onClusterNavigation(ClusterNavigationHint(7, "Улица Мира", 180))
+            assertTurn("ул Мира", 1, total = 180)
+            assertFalse(peer.sent.any { it.type == Msg.MODULE_STATUS || it.type == Msg.CARLIFE_DATA_SUBSCRIBE_DONE })
+
+            peer.subscription(Msg.CARLIFE_DATA_SUBSCRIBE_STOP, 0)
+            session.setNavigationStreetNames(false)
+            assertTrue(session.sendMediaProgress(200))
+            peer.until(Msg.MEDIA_PROGRESS_BAR, forbidden = Msg.NAVI_NEXT_TURN_INFO)
+        } finally { session.close("test finished") }
     }
 }

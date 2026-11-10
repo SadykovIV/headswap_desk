@@ -94,13 +94,16 @@ class StreamTransport(
     override fun sendTimed(chan: Int, inner: ByteArray, maxAgeMs: Long) =
         enqueue(chan, inner, AudioPacketDeadline.deadline(chan, inner, clock(), maxAgeMs))
 
-    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long) {
+    override fun sendVideoFragment(inner: ByteArray, frame: VideoWrite, last: Boolean) =
+        enqueue(Ch.VIDEO, inner, Long.MAX_VALUE, frame, last)
+
+    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long, frame: VideoWrite? = null, last: Boolean = true) {
         if (closed.get()) return
         if (chan == Ch.VIDEO) {
             videoBytes.addAndGet(inner.size.toLong())
             videoFrames.incrementAndGet()
         }
-        AudioQueueAdmission.offer(queue, QueuedTransportPacket(chan, inner, deadlineMs), clock(),
+        AudioQueueAdmission.offer(queue, QueuedTransportPacket(chan, inner, deadlineMs, frame, last), clock(),
             { audioExpired.addAndGet(it) }, { audioOverflow.addAndGet(it) })
     }
 
@@ -161,6 +164,11 @@ class StreamTransport(
                     continue
                 }
                 val video = o.chan == Ch.VIDEO
+                if (o.frame?.begin() == false) {
+                    videoBytes.addAndGet(-o.inner.size.toLong())
+                    videoFrames.decrementAndGet()
+                    continue
+                }
                 if (video) videoWriteStartedMs = clock()
                 // заголовок отдельным write, тело следом кусками <= 16384 (спека §1.4); Mobis CCNC - тело одним write, как Baidu
                 val t0 = System.nanoTime()
@@ -177,6 +185,7 @@ class StreamTransport(
                         videoFrames.decrementAndGet()
                     }
                 }
+                if (o.lastFragment) o.frame?.written()
                 drain.onWrite(clock(), video, o.inner.size, System.nanoTime() - t0)
                 onWritten(o.chan, o.inner)
             }

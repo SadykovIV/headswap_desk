@@ -3,6 +3,7 @@ package com.headswap.desk.cluster
 import com.headswap.desk.aa.AaMeta
 import kotlin.math.roundToInt
 
+/** road is the next manoeuvre's street from a known navigation field, or empty; never an instruction fallback. */
 internal data class ClusterNavigationHint(val nextTurn: Int, val road: String, val distanceMeters: Int?, val timeSeconds: Int? = null)
 
 /** CarLife accepts a manoeuvre enum, not free text. Unknown directions stay unknown. */
@@ -43,6 +44,11 @@ internal object NavigationHintParser {
         commands.mapNotNull { (pattern, action) -> pattern.find(text)?.let { it.range.first to action } }
             .minByOrNull { it.first }?.second
 
+    internal fun roadLabel(value: String): String = value.trim().takeIf {
+        it.length <= YandexNextRoad.MAX_CHARS && it.none(Char::isISOControl) && turn(it) == null &&
+            distance.find(it) == null && !durationOrTotal.containsMatchIn(it)
+    }.orEmpty()
+
     fun parse(title: String, detail: String, iconTurn: Int?, guidanceLayout: Boolean): ClusterNavigationHint? {
         val lines = listOf(title, detail).map { nextInstruction.split(it.take(260), limit = 2).first().trim() }
         val action = iconTurn ?: lines.firstNotNullOfOrNull(::turn) ?: return null
@@ -50,9 +56,7 @@ internal object NavigationHintParser {
             ?: lines.firstNotNullOfOrNull(::metres) ?: return null
         // The known Yandex manoeuvre card puts its street below the primary title.
         // Do not send a whole notification, an ETA, or the distance left on the route as a street.
-        val road = if (guidanceLayout && lines[1].isNotEmpty() && turn(lines[1]) == null &&
-            distance.find(lines[1]) == null && !durationOrTotal.containsMatchIn(lines[1]))
-            lines[1].filterNot(Char::isISOControl).take(100) else ""
+        val road = if (guidanceLayout) roadLabel(lines[1]) else ""
         return ClusterNavigationHint(action, road, meters)
     }
 }

@@ -394,14 +394,17 @@ class MultiSocketTransport internal constructor(
         return dropped
     }
 
-    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long) {
+    override fun sendVideoFragment(inner: ByteArray, frame: VideoWrite, last: Boolean) =
+        enqueue(Ch.VIDEO, inner, Long.MAX_VALUE, frame, last)
+
+    private fun enqueue(chan: Int, inner: ByteArray, deadlineMs: Long, frame: VideoWrite? = null, last: Boolean = true) {
         if (closed.get()) return
         val q = queues[chan] ?: return
         if (chan == Ch.VIDEO) {
             videoBytes.addAndGet(inner.size.toLong())
             videoFrames.incrementAndGet()
         }
-        AudioQueueAdmission.offer(q, QueuedTransportPacket(chan, inner, deadlineMs), clock(),
+        AudioQueueAdmission.offer(q, QueuedTransportPacket(chan, inner, deadlineMs, frame, last), clock(),
             { audioExpired.addAndGet(it) }, { audioOverflow.addAndGet(it) })
     }
 
@@ -484,6 +487,11 @@ class MultiSocketTransport internal constructor(
                     continue
                 }
                 val inner = packet.inner
+                if (packet.frame?.begin() == false) {
+                    videoBytes.addAndGet(-inner.size.toLong())
+                    videoFrames.decrementAndGet()
+                    continue
+                }
                 if (video) videoWriteStartedMs = clock()
                 val t = System.nanoTime()
                 try {
@@ -496,6 +504,7 @@ class MultiSocketTransport internal constructor(
                         videoFrames.decrementAndGet()
                     }
                 }
+                if (packet.lastFragment) packet.frame?.written()
                 if (video) drain.onWrite(clock(), true, inner.size, System.nanoTime() - t)
                 synchronized(txLock) { onWritten(chan, inner) }
             }

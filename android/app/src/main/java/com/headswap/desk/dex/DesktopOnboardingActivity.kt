@@ -1,12 +1,9 @@
 package com.headswap.desk.dex
 
-import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.PowerManager
@@ -15,7 +12,6 @@ import android.view.WindowInsets
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import com.headswap.desk.update.ComponentUpdatesActivity
-import com.headswap.desk.update.DriveDeckPermissions
 import com.headswap.desk.update.ComponentPackages
 import com.headswap.desk.update.DesktopComponent
 import com.headswap.desk.component.DesktopComponents
@@ -27,9 +23,16 @@ class DesktopOnboardingActivity : Activity() {
     private val prefs by lazy { DexPrefs(this) }
     private var step = 0
     private var ready = false
+    private var positions = IntArray(2)
+    private var displayedStep = -1
+    private var viewport: ScrollView? = null
+    private fun rememberScroll() {
+        if (displayedStep in positions.indices) viewport?.let { positions[displayedStep] = it.scrollY }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        positions = savedInstanceState?.getIntArray("positions")?.takeIf { it.size == 2 } ?: positions
         step = (savedInstanceState?.getInt("step")
             ?: if (prefs.initialSetupInProgress) prefs.initialSetupStep else 0).coerceIn(0, 2)
         prefs.initialSetupAutoPending = false
@@ -37,10 +40,11 @@ class DesktopOnboardingActivity : Activity() {
         saveProgress()
         ready = true
     }
-    override fun onResume() { super.onResume(); if (ready) render() }
-    override fun onSaveInstanceState(outState: Bundle) { outState.putInt("step", step); super.onSaveInstanceState(outState) }
+    override fun onResume() { super.onResume(); if (ready) { if (step == 2) openActivationStep() else render() } }
+    override fun onSaveInstanceState(outState: Bundle) { rememberScroll(); outState.putIntArray("positions", positions); outState.putInt("step", step); super.onSaveInstanceState(outState) }
 
     private fun render() {
+        rememberScroll()
         val body = ui.column().apply { setPadding(ui.dp(20), ui.dp(16), ui.dp(20), ui.dp(24)) }
         val scroll = ScrollView(this).apply {
             setBackgroundColor(ui.background)
@@ -53,7 +57,10 @@ class DesktopOnboardingActivity : Activity() {
             }
         }
         window.setDecorFitsSystemWindows(false)
+        viewport = scroll; displayedStep = step
         setContentView(scroll)
+        val y = positions.getOrNull(step) ?: 0
+        if (y > 0) scroll.post { scroll.scrollTo(0, y) }
         val header = LinearLayout(this).apply {
             gravity = android.view.Gravity.CENTER_VERTICAL
             body.addView(this, LinearLayout.LayoutParams(-1, -2))
@@ -65,7 +72,7 @@ class DesktopOnboardingActivity : Activity() {
         when (step) {
             0 -> components(body)
             1 -> permissions(body)
-            else -> activation(body)
+            else -> return
         }
         if (step < 2) ui.button(body, "Далее") { moveTo(step + 1) }
             .isEnabled = step != 0 || profileAvailable()
@@ -73,30 +80,9 @@ class DesktopOnboardingActivity : Activity() {
         ui.button(body, "Закрыть настройку") { closeSetup() }
     }
     private fun permissions(parent: LinearLayout) {
-        val card = ui.section(parent, "2. Разрешения")
-        ui.text(card, "Разрешите уведомления для ввода кода сопряжения без переключения между окнами. Исключение из экономии батареи помогает Android сохранять активное соединение с магнитолой.")
-        val notices = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
-        ui.button(card, if (notices) "Уведомления разрешены ✓" else "Разрешить уведомления") {
-            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATIONS)
-            else startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
-        }
-        val battery = batteryExempt(this)
-        ui.button(card, if (battery) "Работа в фоне разрешена ✓" else "Снять ограничение батареи") { requestBatteryExemption(this) }
-        ui.button(card, "Разрешения приложения") {
-            // Keep this wizard in the task: Back from the shared permission screen returns here.
-            startActivity(Intent(this, DexSetupActivity::class.java)
-                .putExtra(DexSetupActivity.EXTRA_SHOW_PERMISSIONS, true)
-                .putExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, true))
-        }
-        ui.text(card, "В списке виден каждый доступ и его состояние. Доступ к уведомлениям других приложений нужен для подсказок навигации; показ поверх приложений сейчас не требуется. Настроить разрешения можно и позже.", 13f)
-        val driveDeck = DriveDeckPermissions.snapshot(this)
-        if (prefs.desktopMode == DesktopModePolicy.DRIVEDECK || driveDeck.availability != DriveDeckPermissions.Availability.MISSING) {
-            val music = ui.section(parent, "DriveDeck · музыка и обложки")
-            ui.text(music, driveDeck.description, 14f)
-            ui.button(music, "Разрешения DriveDeck") { DriveDeckPermissions.open(this) }
-            ui.text(music, "Это отдельный доступ DriveDeck: разрешение HeadSwap для приборной панели его не заменяет. Можно настроить позже; без него музыкальный виджет может не показывать трек.", 13f)
-        }
+        val list = DesktopPermissionList(this, ui)
+        list.headswap(ui.section(parent, "Разрешения HeadSwap Desktop"))
+        list.drivedeck(ui.section(parent, "Разрешения DriveDesk"))
     }
     private fun components(parent: LinearLayout) {
         val card = ui.section(parent, "1. Компоненты")
@@ -119,11 +105,7 @@ class DesktopOnboardingActivity : Activity() {
             else "Установите выбранный компонент или выберите встроенный Android Desktop, чтобы продолжить.", 14f)
     }
 
-    private fun profileAvailable(): Boolean = when (prefs.desktopMode) {
-        DesktopModePolicy.DRIVEDECK -> runCatching { ComponentPackages.trustedInstalled(this, DesktopComponent.DRIVEDECK) != null }.getOrDefault(false)
-        DesktopModePolicy.SAMSUNG_DEX -> SamsungDexCapability.isAvailable(this)
-        else -> true
-    }
+    private fun profileAvailable() = profileAvailable(this, prefs)
 
     private fun choiceUnlocked(): Boolean = !CarLifeState.running && !PhonePairingService.active && !DexState.running
 
@@ -150,38 +132,19 @@ class DesktopOnboardingActivity : Activity() {
         }
     }
 
-    private fun accessReady(): Boolean = if (prefs.useDelegated) DesktopAccess.activationSetupComplete(this)
-        else DesktopAccess.isReadyForProjection(this)
-
-    private fun canComplete() = DesktopOnboardingPolicy.canComplete(prefs.initialSetupReviewed, profileAvailable(), accessReady())
-
-    private fun activation(parent: LinearLayout) {
-        val card = ui.section(parent, "3. Активация")
-        ui.text(card, "Выдайте HeadSwap временный доступ к рабочему столу и касаниям. На следующем экране выберите Wi-Fi, Shizuku или компьютер и следуйте короткой инструкции.")
-        ui.text(card, "При сопряжении по Wi-Fi один и тот же код можно ввести в приложении или уведомлении. После активации вернитесь сюда и завершите настройку.", 14f)
-        ui.button(card, "Открыть активацию") { openActivation() }
-        ui.text(card, when {
-            !profileAvailable() -> "Компонент рабочего стола отсутствует. Вернитесь на шаг «Компоненты» и установите его."
-            accessReady() -> "Доступ готов. Можно завершить настройку и подключить магнитолу."
-            else -> "Активация ещё не завершена. После выдачи доступа этот шаг станет готов к завершению."
-        }, 14f)
-        ui.text(card, "Звук CarLife включён по умолчанию. Управление дисплеем телефона выключено; его можно включить в настройках перед активацией. После перезагрузки телефона или обновления APK доступ потребуется выдать снова.", 13f)
-        ui.button(card, "Завершить настройку") {
-            // Recheck live capabilities and the selected component at the explicit finish action.
-            if (canComplete()) {
-                prefs.initialSetupCompleted = true
-                prefs.initialSetupAutoPending = false
-                prefs.initialSetupInProgress = false
-                finish()
-            } else render()
-        }.isEnabled = canComplete()
+    private fun openActivationStep() {
+        if (isFinishing) return
+        startActivity(Intent(this, DesktopWizardActivationActivity::class.java)
+            .putExtra(DexSetupActivity.EXTRA_SHOW_ACTIVATION, true)
+            .putExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, true))
+        finish()
     }
 
     private fun saveProgress() {
         prefs.initialSetupStep = step
         if (step == 2) prefs.initialSetupReviewed = true
     }
-    private fun moveTo(next: Int) { step = next.coerceIn(0, 2); saveProgress(); render() }
+    private fun moveTo(next: Int) { step = next.coerceIn(0, 2); saveProgress(); if (step == 2) openActivationStep() else render() }
     private fun closeSetup() { prefs.initialSetupInProgress = false; finish() }
     private fun openActivation() {
         saveProgress()
@@ -191,12 +154,16 @@ class DesktopOnboardingActivity : Activity() {
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == NOTIFICATIONS) render()
+        if (requestCode == DesktopPermissionList.REQUEST && step == 1) render()
     }
     @Suppress("DEPRECATION") override fun onBackPressed() { if (step > 0) moveTo(step - 1) else closeSetup() }
 
     companion object {
-        private const val NOTIFICATIONS = 401
+        internal fun profileAvailable(context: Context, prefs: DexPrefs): Boolean = when (prefs.desktopMode) {
+            DesktopModePolicy.DRIVEDECK -> runCatching { ComponentPackages.trustedInstalled(context, DesktopComponent.DRIVEDECK) != null }.getOrDefault(false)
+            DesktopModePolicy.SAMSUNG_DEX -> SamsungDexCapability.isAvailable(context)
+            else -> true
+        }
         fun batteryExempt(context: Context): Boolean = context.getSystemService(PowerManager::class.java)
             ?.isIgnoringBatteryOptimizations(context.packageName) == true
         fun requestBatteryExemption(activity: Activity) {

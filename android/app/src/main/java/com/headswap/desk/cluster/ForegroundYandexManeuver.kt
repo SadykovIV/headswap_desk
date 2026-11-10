@@ -70,6 +70,7 @@ internal object ForegroundYandexManeuver {
         val value = distance?.trim()?.takeIf(number::matches) ?: return null
         val symbol = unit?.trim()?.takeIf(unitName::matches) ?: return null
         val metres = NavigationHintParser.metres(value.filterNot(Char::isWhitespace) + " " + symbol) ?: return null
-        return ClusterNavigationHint(turn, road.orEmpty().trim().filterNot(Char::isISOControl).take(100), metres)
+        val nextRoad = NavigationHintParser.roadLabel(road.orEmpty()).takeUnless(turnLabels::containsKey).orEmpty()
+        return ClusterNavigationHint(turn, nextRoad, metres)
     }
 }

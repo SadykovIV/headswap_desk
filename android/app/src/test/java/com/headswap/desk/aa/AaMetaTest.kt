@@ -631,6 +631,43 @@ class AaMetaTest {
         assertEquals(60, r.link.turns.last().totalDistance)
     }
 
+    @Test fun missingRoadIsPresentationOnlyAndRetiredSessionCannotChangeItsVisibility() {
+        val r = Rig()
+        r.core.onCarlifeSubscribe(listOf(0), true)
+        r.start()
+        fun sample(road: String, metres: Int = 180, from: MetaLink = r.link) = r.core.onDesktopNavigation(from,
+            AaNavTurn(AaMeta.T_RIGHT, road, "Android", null, null), AaNavDistance(metres, 12))
+        sample("First Street", 500)
+        r.now += 1_000
+        sample("First Street")
+        sample("")
+        assertEquals(500, r.link.turns.last().totalDistance)
+        assertEquals(2, r.link.turns.last().action)
+        sample("First Street")
+        assertEquals(500, r.link.turns.last().totalDistance)
+        assertEquals(2, r.link.turns.last().action)
+        sample("Second Street")
+        assertEquals(180, r.link.turns.last().totalDistance)
+        assertEquals(1, r.link.turns.last().action)
+
+        r.core.onNavigationStreetNames(r.link, false)
+        sample("Must Not Be Cached")
+        assertEquals("", r.link.turns.last().roadName)
+        r.core.onNavigationStreetNames(r.link, true)
+        r.core.onCarlifeSubscribe(listOf(0), false)
+        r.core.onCarlifeSubscribe(listOf(0), true)
+        assertEquals("", r.link.turns.last().roadName) // Opt-in needs a fresh street, not a hidden cache.
+
+        val successor = MetaLink()
+        r.core.attach(successor)
+        r.core.onCarlifeStart()
+        r.core.onCarlifeSubscribe(listOf(0), true)
+        r.core.onNavigationStreetNames(successor, true)
+        r.core.onNavigationStreetNames(r.link, false) // Old UI/source callback cannot affect the new link.
+        sample("Successor Street", from = successor)
+        assertEquals("Successor Street", successor.turns.last().roadName)
+    }
+
     @Test
     fun legacyEventsWork() {
         val r = Rig()
@@ -682,6 +719,7 @@ class AaMetaTest {
         r.core.onNavTurn(AaMeta.parseNavState(cueOnly("Turn right in 250 m"))!!)
         r.core.onNavDistance(AaMeta.parseNavPosition(navPosition(250, 25))!!)
         assertEquals("тот же манёвр: троттлинг не обойдён", 1, r.link.turns.size)
+        assertEquals("cue is an instruction, not a road name", "", r.link.turns.single().roadName)
     }
 
     @Test
@@ -1575,8 +1613,8 @@ class AaMetaTest {
 
 
     @Test
-    fun hondaEmptyRoadGetsManeuverText() {
-        // Google Maps на выездах со двора шлёт legacy 0x8004 с road="": Honda - подпись манёвра, остальное как прислал AA
+    fun missingRoadNeverBecomesAnInstructionEvenOnHonda() {
+        // roadName has street semantics; a manoeuvre label is not a street supplied by navigation.
         for (honda in listOf(true, false)) for (road in listOf("", "  ", "ул. Мадояна")) {
             val r = Rig()
             r.link.huResubscribes = honda
@@ -1589,14 +1627,9 @@ class AaMetaTest {
             r.core.onNavDistance(AaMeta.parseLegacyDistance(legacyDistance(50, 10))!!)
             r.pumpSubscribe()
             with(r.link.turns.last()) {
-                if (honda && road.isBlank()) assertEquals("Honda, пустая улица «$road»", AaMeta.noRoadName(nextTurn), roadName)
-                else assertEquals("honda=$honda: улица как прислал AA", road, roadName)
+                assertEquals("honda=$honda: улица как прислал AA", road, roadName)
             }
         }
-        assertEquals("Направо", AaMeta.noRoadName(AaMeta.T_RIGHT))
-        assertEquals("Налево", AaMeta.noRoadName(AaMeta.T_LEFT_FRONT))
-        assertEquals("Правее", AaMeta.noRoadName(AaMeta.T_BRANCH_RIGHT))
-        for (code in 0..40) assertTrue("код $code: не длиннее 16 Б", AaMeta.noRoadName(code).toByteArray().size <= 16)
     }
 
     @Test

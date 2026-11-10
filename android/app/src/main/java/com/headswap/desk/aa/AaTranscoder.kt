@@ -232,6 +232,10 @@ class AaTranscoder(
         f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+        // Encoder lookahead is expressed in frames. Keep the existing capability fallback
+        // (levels 1 and 2) for encoders that reject the optional zero-latency request.
+        if (directSurface && (level == 0 || level == BAIDU_WITH_LEVEL || level == BAIDU_NO_LEVEL))
+            f.setInteger(MediaFormat.KEY_LATENCY, 0)
         // как у Baidu (Recorder.java:1364, MediaFormatUtils.java:48): на статичном экране кадр повторяется раз в 100 мс
         val repeat = Regex("""repeat=(\d+)""").find(tuning)?.groupValues?.get(1)?.toLong() ?: REPEAT_AFTER_US
         f.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, repeat)
