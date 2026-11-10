@@ -4,8 +4,8 @@ package com.headswap.desk.dex
 internal object DesktopConnectionButtonPolicy {
     enum class State(val label: String, val stopsSession: Boolean) {
         IDLE("Подключить", false),
-        CONNECTING("Подключение…", true),
-        CONNECTED("Остановить", true),
+        CONNECTING("Остановить ожидание", true),
+        CONNECTED("Отключить", true),
     }
 
     fun state(stopped: Boolean, detached: Boolean, serviceAlive: Boolean,
@@ -16,8 +16,9 @@ internal object DesktopConnectionButtonPolicy {
         serviceAlive && desktopRunning && carLifeRunning && videoFlowing && !failed -> State.CONNECTED
         // An explicit retry may still be retiring the preceding failed generation.
         working -> State.CONNECTING
-        failed -> State.IDLE
-        connectionPending -> State.CONNECTING
+        // A failed desktop can still own a live transport or an armed wait. Keep Stop available
+        // until teardown finishes, so recovery/settings never require another doomed retry.
+        serviceAlive || connectionPending -> State.CONNECTING
         else -> State.IDLE
     }
 }

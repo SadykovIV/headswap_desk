@@ -10,7 +10,8 @@ class PairingNotificationPolicyTest {
     }
     @Test fun blockedPairingChannelCannotStartAnInvisibleCodePrompt() {
         assertEquals(PairingNotificationBlock.CODE_CHANNEL, PairingNotificationPolicy.block(true, 2, 0, true))
-        // Reactivation from an existing key does not prompt for a new code.
+        // Existing-key startup can proceed, but a later authorization rejection must
+        // reevaluate with needsCode=true and use in-app input for this blocked channel.
         assertNull(PairingNotificationPolicy.block(true, 2, 0, false))
     }
     @Test fun progressChannelIsRequiredForStatusAndCancellation() {

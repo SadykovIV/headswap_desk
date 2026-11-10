@@ -98,6 +98,7 @@ class BridgeService : Service() {
     private var unobserveNavigationHints: (() -> Unit)? = null
     private var unobserveWirelessEnabled: (() -> Unit)? = null
     private var host: BridgeHost? = null
+    private var powerDiagnostics: com.headswap.desk.dex.DesktopPowerDiagnostics? = null
     private var phoneIdleTimer: com.headswap.desk.dex.CarLifePhoneIdleTimer? = null
     private val desktopAudio by lazy { DesktopAudioCapture(applicationContext) }
     private var stopRequested = false
@@ -331,6 +332,12 @@ class BridgeService : Service() {
             return
         }
         // автостарт по Bluetooth машины: обрабатываем до проверки session, при идущей сессии нужен только флаг
+        if (session == null && com.headswap.desk.dex.PhonePairingService.blocksProjectionForCommittedActivation(this)) {
+            CarLifeState.status = "Завершаю проверку активации рабочего стола…"
+            AppLog.i("DESKTOP transport start deferred until phone activation completes", false)
+            failStart()
+            return
+        }
         if (intent?.action == ACTION_WIFI_B_AUTO) {
             onCarAuto()
             return
@@ -1072,6 +1079,8 @@ class BridgeService : Service() {
         com.headswap.desk.dex.DelegatedPanelAccess.attachOutput(s) {
             session === s && desktopOutput && s.canCaptureDesktopAudio()
         }
+        powerDiagnostics?.stop()
+        powerDiagnostics = if (desktopOutput) com.headswap.desk.dex.DesktopPowerDiagnostics(this).also { it.start() } else null
         phoneIdleTimer?.stop()
         phoneIdleTimer = if (desktopOutput) {
             com.headswap.desk.dex.CarLifePhoneIdleTimer(this,
@@ -1298,6 +1307,8 @@ class BridgeService : Service() {
         if (!stopRequested && s.transportKind == TransportCaps.USB_AOA.kind) {
             observePhysicalUsbDetach("USB session closed and accessory absent")
         }
+        powerDiagnostics?.stop()
+        powerDiagnostics = null
         phoneIdleTimer?.stop()
         phoneIdleTimer = null
         com.headswap.desk.dex.DelegatedPanelAccess.detachOutput(s)
@@ -1393,6 +1404,8 @@ class BridgeService : Service() {
         stopCarNet(CarNetEvent.DESTROY, "destroy")
         cancelLinkWait()
         btProbe.stop("сервис уничтожен")
+        powerDiagnostics?.stop()
+        powerDiagnostics = null
         phoneIdleTimer?.stop()
         phoneIdleTimer = null
         audioDiag.stop()

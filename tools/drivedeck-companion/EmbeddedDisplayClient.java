@@ -29,6 +29,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import com.headswap.desk.embed.IEmbeddedDisplayGateway;
 import com.headswap.desk.shared.DesktopRenderPolicy;
+import com.headswap.desk.shared.MotionDispatchBuffer;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
@@ -36,6 +37,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.WeakHashMap;
 import java.util.function.Consumer;
 
@@ -88,6 +90,10 @@ public final class EmbeddedDisplayClient {
         final Map<String, TaskState> states = new HashMap<>();
         final HashSet<String> queries = new HashSet<>();
         boolean touchDown;
+        final MotionDispatchBuffer inputMoves = new MotionDispatchBuffer(command -> {
+            if (!WORK.post(command)) throw new java.util.concurrent.RejectedExecutionException("Display worker stopped");
+        });
+        final InputTiming inputTiming = new InputTiming(); // WORK only; numeric aggregates.
         EmbeddedTouchPacket lastTouch; // WORK only; copied before caller MotionEvent can be recycled.
         int capabilities;
         IBinder producerLifetime;
@@ -740,6 +746,7 @@ public final class EmbeddedDisplayClient {
     public static boolean launch(int handle, String packageName) {
         Lease lease = find(handle);
         if (lease == null || lease.producer == null || packageName == null || packageName.isEmpty()) return false;
+        lease.inputMoves.barrier();
         synchronized (LOCK) { lease.states.remove(packageName); }
         // A reused pane must shrink back for music/other apps before their launch.
         MAIN.post(() -> {
@@ -786,7 +793,7 @@ public final class EmbeddedDisplayClient {
         if (event instanceof KeyEvent) {
             KeyEvent key = (KeyEvent) event;
             if (key.getKeyCode() != KeyEvent.KEYCODE_BACK) return false;
-            if (key.getAction() == KeyEvent.ACTION_UP) WORK.post(() -> {
+            if (key.getAction() == KeyEvent.ACTION_UP) lease.inputMoves.submit(null, () -> {
                 if (!lease.closed) try { lease.producer.back(handle); } catch (Exception error) { Log.w(TAG, "Embedded back rejected", error); }
             });
             return true;
@@ -818,8 +825,15 @@ public final class EmbeddedDisplayClient {
                     new float[]{motion.getX()}, new float[]{motion.getY()}, coordinates.width, coordinates.height);
         }
         if (packet == null) return false;
-        WORK.post(() -> {
+        final long arrived = SystemClock.uptimeMillis();
+        final long delivered = motion.getEventTime();
+        final String selected = lease.selectedPackage;
+        final Object moveKey = packet.action == MotionEvent.ACTION_MOVE
+                ? Arrays.asList(coordinates, selected, Arrays.toString(packet.ids)) : null;
+        lease.inputMoves.submit(moveKey, () -> {
             if (lease.closed || lease.geometryBlocked || !coordinates.sameAs(lease.remoteGeometry)) return;
+            if (!selected.equals(lease.selectedPackage)) return;
+            final long started = SystemClock.uptimeMillis();
             if (packet.action == MotionEvent.ACTION_DOWN) lease.touchDown = true;
             if (!lease.touchDown && packet.action != MotionEvent.ACTION_DOWN) return;
             lease.lastTouch = packet;
@@ -830,8 +844,23 @@ public final class EmbeddedDisplayClient {
                     lease.touchDown = false; lease.lastTouch = null;
                 }
             } catch (Exception error) { Log.w(TAG, "Embedded touch rejected", error); }
+            finally { lease.inputTiming.record(delivered, arrived, started, SystemClock.uptimeMillis(), lease.inputMoves.coalescedCount()); }
         });
         return true;
+    }
+    /** Includes parent InputDispatcher delivery; no coordinates, text, package names or event data. */
+    private static final class InputTiming {
+        long since, count, deliveryMax, queueMax, callMax;
+        void record(long event, long arrived, long started, long finished, long coalesced) {
+            if (count++ == 0) since = arrived;
+            if (event > 0 && event <= arrived) deliveryMax = Math.max(deliveryMax, arrived - event);
+            queueMax = Math.max(queueMax, started - arrived);
+            callMax = Math.max(callMax, finished - started);
+            if (finished - since < 5000) return;
+            Log.i(TAG, "INPUT child: count=" + count + " parentDeliveryMaxMs=" + deliveryMax
+                    + " queueMaxMs=" + queueMax + " callMaxMs=" + callMax + " coalescedMoves=" + coalesced);
+            count = deliveryMax = queueMax = callMax = 0;
+        }
     }
     private static void cancelActiveTouch(Lease lease) throws RemoteException {
         if (!lease.touchDown) return;

@@ -25,6 +25,7 @@ class DesktopPrefsTest {
         private val prefs = Proxy.newProxyInstance(SharedPreferences::class.java.classLoader,
             arrayOf(SharedPreferences::class.java)) { _, method, args ->
             when (method.name) {
+                "getAll" -> values.toMap()
                 "getString", "getInt", "getBoolean" -> values[args!![0] as String] ?: args[1]
                 "contains" -> values.containsKey(args!![0] as String)
                 "edit" -> editor
@@ -32,6 +33,42 @@ class DesktopPrefsTest {
             }
         } as SharedPreferences
         override fun getSharedPreferences(name: String, mode: Int): SharedPreferences = prefs
+    }
+    @Test fun onlyEmptyInstallDefaultsToDriveDeckAndSchedulesSetup() {
+        val fresh = MemoryPrefs()
+        assertEquals(DesktopModePolicy.DRIVEDECK, DexPrefs(fresh).desktopMode)
+        assertTrue(DexPrefs(fresh).initialSetupAutoPending)
+        DexPrefs(fresh).enabled = true
+        assertEquals(DesktopModePolicy.DRIVEDECK, DexPrefs(fresh).desktopMode)
+        val existing = MemoryPrefs().apply { values["desktop_bitrate_mbps"] = 7 }
+        assertEquals(DesktopModePolicy.ANDROID_DESKTOP, DexPrefs(existing).desktopMode)
+        assertFalse(DexPrefs(existing).initialSetupAutoPending)
+        for (mode in listOf(DesktopModePolicy.ANDROID_DESKTOP, DesktopModePolicy.DRIVEDECK, DesktopModePolicy.SAMSUNG_DEX)) {
+            val chosen = MemoryPrefs().apply { values["desktop_mode"] = mode }
+            assertEquals(mode, DexPrefs(chosen).desktopMode)
+            assertFalse(DexPrefs(chosen).initialSetupAutoPending)
+        }
+    }
+    @Test fun wizardProgressSurvivesActivationProcessRestartWithoutClaimingCompletion() {
+        val context = MemoryPrefs()
+        DexPrefs(context).apply {
+            initialSetupAutoPending = false
+            initialSetupInProgress = true
+            initialSetupStep = 2
+            initialSetupReviewed = true
+        }
+        val restored = DexPrefs(context)
+        assertTrue(restored.initialSetupInProgress)
+        assertEquals(2, restored.initialSetupStep)
+        assertTrue(restored.initialSetupReviewed)
+        assertFalse(restored.initialSetupCompleted)
+        restored.initialSetupInProgress = false
+        assertFalse(DexPrefs(context).initialSetupInProgress)
+        assertFalse(DexPrefs(context).initialSetupCompleted)
+        context.values["initial_setup_step"] = 100
+        assertEquals(2, DexPrefs(context).initialSetupStep)
+        context.values["initial_setup_step"] = -1
+        assertEquals(0, DexPrefs(context).initialSetupStep)
     }
     @Test fun newTransportControlsHaveSafeDefaultsAndKeepExplicitChoices() {
         val context = MemoryPrefs()
@@ -51,6 +88,50 @@ class DesktopPrefsTest {
         assertTrue(restored.initialSetupCompleted)
         assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 0 }
         assertThrows(IllegalArgumentException::class.java) { prefs.desktopBitrateMbps = 21 }
+    }
+    @Test fun activationMethodRemembersTransportWithoutSplittingTheDelegatedBackend() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        assertEquals(ActivationMethod.WIFI, prefs.activationMethod)
+        prefs.activationMethod = ActivationMethod.COMPUTER
+        assertEquals(DesktopAccessMode.COMPUTER, prefs.accessMode)
+        assertEquals(ActivationMethod.COMPUTER, DexPrefs(context).activationMethod)
+        prefs.activationMethod = ActivationMethod.WIFI
+        assertEquals(DesktopAccessMode.COMPUTER, prefs.accessMode)
+        assertEquals(ActivationMethod.WIFI, DexPrefs(context).activationMethod)
+        prefs.activationMethod = ActivationMethod.SHIZUKU
+        assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        prefs.activationMethod = ActivationMethod.WIFI
+        assertEquals(DesktopAccessMode.LEGACY_ADB, prefs.accessMode)
+        assertThrows(IllegalArgumentException::class.java) { prefs.activationMethod = ActivationMethod.COMPUTER }
+        assertEquals(ActivationMethod.WIFI, DexPrefs(context).activationMethod)
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        assertEquals(ActivationMethod.SHIZUKU, DexPrefs(context).activationMethod)
+        assertFalse(prefs.independentRecoveryWithoutWifi)
+        assertFalse(context.values.containsKey("host"))
+        assertFalse(context.values.containsKey("connect_port"))
+    }
+
+    @Test fun independentRecoveryRequiresExplicitOptInAndKeepsTheChoiceAcrossProfiles() {
+        val context = MemoryPrefs()
+        val prefs = DexPrefs(context)
+        assertFalse(prefs.independentRecoveryWithoutWifi)
+        assertFalse(context.values.containsKey("independent_recovery_without_wifi"))
+        prefs.independentRecoveryWithoutWifi = true
+        assertEquals(true, context.values["independent_recovery_without_wifi"])
+        assertTrue(DexPrefs(context).independentRecoveryWithoutWifi)
+        prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
+        prefs.useShizuku = true
+        assertTrue(DexPrefs(context).independentRecoveryWithoutWifi)
+        prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
+        assertTrue(DexPrefs(context).independentRecoveryWithoutWifi)
+        prefs.independentRecoveryWithoutWifi = false
+        assertFalse(DexPrefs(context).independentRecoveryWithoutWifi)
+        assertFalse(context.values.containsKey("host"))
+        assertFalse(context.values.containsKey("connect_port"))
+        assertFalse(context.values.containsKey("desktop_panel_control"))
     }
     @Test fun customBitrateAndGeometryRestoreWithoutOverwritingDpiOrLegacyFps() {
         val context = MemoryPrefs()
@@ -174,7 +255,7 @@ class DesktopPrefsTest {
         prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
         prefs.useShizuku = false
         assertEquals(DesktopAccessMode.LEGACY_ADB, prefs.accessMode)
-        assertFalse(prefs.persistActivationSelection(audio = true, screen = true))
+        assertFalse(prefs.persistActivationSelection(audio = true, screen = false))
         assertThrows(IllegalArgumentException::class.java) { prefs.useDelegated = true }
         prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
         assertThrows(IllegalArgumentException::class.java) { prefs.accessMode = DesktopAccessMode.LEGACY_ADB }
@@ -182,7 +263,8 @@ class DesktopPrefsTest {
         prefs.desktopMode = DesktopModePolicy.DRIVEDECK
         assertEquals(DesktopAccessMode.SHIZUKU, DexPrefs(context).accessMode)
         prefs.useShizuku = false
-        assertTrue(prefs.persistActivationSelection(audio = true, screen = true))
+        assertTrue(prefs.persistActivationSelection(audio = true, screen = false))
+        assertFalse(DexPrefs(context).desktopPanelControl)
         prefs.desktopMode = DesktopModePolicy.SAMSUNG_DEX
         assertEquals(DesktopAccessMode.LEGACY_ADB, DexPrefs(context).accessMode)
         prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
@@ -202,17 +284,20 @@ class DesktopPrefsTest {
         assertEquals(DesktopModePolicy.ANDROID_DESKTOP, prefs.desktopMode)
     }
 
-    @Test fun firstActivationOffersAudioAndPanelAndPreservesIndependentOptOutsAfterUpdate() {
+    @Test fun firstActivationOffersAudioButPanelControlIsOptInAndUpdateKeepsExplicitChoices() {
         val context = MemoryPrefs()
         val fresh = DexPrefs(context)
         assertTrue(fresh.usbPlaybackAudio)
-        assertTrue(fresh.desktopPanelControl)
-        assertTrue(fresh.persistActivationSelection(audio = true, screen = true))
+        assertFalse(fresh.desktopPanelControl)
+        assertTrue(fresh.persistActivationSelection(audio = true, screen = false))
+        assertFalse(DexPrefs(context).desktopPanelControl)
 
+        fresh.desktopPanelControl = true
         fresh.usbPlaybackAudio = false
         val updated = DexPrefs(context)
         assertFalse(updated.usbPlaybackAudio)
         assertTrue(updated.desktopPanelControl)
+        assertTrue(updated.persistActivationSelection(audio = false, screen = true))
         updated.desktopPanelControl = false
         assertFalse(DexPrefs(context).desktopPanelControl)
         assertTrue(DexPrefs(context).persistActivationSelection(audio = false, screen = false))

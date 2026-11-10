@@ -15,16 +15,26 @@ import android.view.WindowInsets
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import com.headswap.desk.update.ComponentUpdatesActivity
+import com.headswap.desk.update.DriveDeckPermissions
+import com.headswap.desk.update.ComponentPackages
+import com.headswap.desk.update.DesktopComponent
+import com.headswap.desk.component.DesktopComponents
+import com.headswap.desk.CarLifeState
 
-/** Short, optional setup. Every Android permission is requested only by its own explicit button. */
+/** Resumable first-run setup. Android permissions are granted only through explicit system UI. */
 class DesktopOnboardingActivity : Activity() {
     private val ui by lazy { DesktopSetupViews(this) }
+    private val prefs by lazy { DexPrefs(this) }
     private var step = 0
     private var ready = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        step = savedInstanceState?.getInt("step", 0) ?: 0
+        step = (savedInstanceState?.getInt("step")
+            ?: if (prefs.initialSetupInProgress) prefs.initialSetupStep else 0).coerceIn(0, 2)
+        prefs.initialSetupAutoPending = false
+        prefs.initialSetupInProgress = true
+        saveProgress()
         ready = true
     }
     override fun onResume() { super.onResume(); if (ready) render() }
@@ -51,17 +61,19 @@ class DesktopOnboardingActivity : Activity() {
         ui.brand(header, 64)
         ui.text(header, "HeadSwap Desktop", 27f, true).layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
         ui.text(body, "Первоначальная настройка · ${step + 1} из 3", 15f)
+        ui.text(body, "Компоненты → Разрешения → Активация", 13f)
         when (step) {
-            0 -> permissions(body)
-            1 -> components(body)
+            0 -> components(body)
+            1 -> permissions(body)
             else -> activation(body)
         }
-        if (step < 2) ui.button(body, "Далее") { step++; render() }
-        if (step > 0) ui.button(body, "Назад") { step--; render() }
-        ui.button(body, "Вернуться на главный экран") { finish() }
+        if (step < 2) ui.button(body, "Далее") { moveTo(step + 1) }
+            .isEnabled = step != 0 || profileAvailable()
+        if (step > 0) ui.button(body, "Назад") { moveTo(step - 1) }
+        ui.button(body, "Закрыть настройку") { closeSetup() }
     }
     private fun permissions(parent: LinearLayout) {
-        val card = ui.section(parent, "1. Работа во время поездки")
+        val card = ui.section(parent, "2. Разрешения")
         ui.text(card, "Разрешите уведомления для ввода кода сопряжения без переключения между окнами. Исключение из экономии батареи помогает Android сохранять активное соединение с магнитолой.")
         val notices = getSystemService(NotificationManager::class.java).areNotificationsEnabled()
         ui.button(card, if (notices) "Уведомления разрешены ✓" else "Разрешить уведомления") {
@@ -71,35 +83,117 @@ class DesktopOnboardingActivity : Activity() {
         }
         val battery = batteryExempt(this)
         ui.button(card, if (battery) "Работа в фоне разрешена ✓" else "Снять ограничение батареи") { requestBatteryExemption(this) }
-        ui.text(card, "Эти разрешения можно настроить позже: «Настройки» → «Разрешения приложения».", 13f)
+        ui.button(card, "Разрешения приложения") {
+            // Keep this wizard in the task: Back from the shared permission screen returns here.
+            startActivity(Intent(this, DexSetupActivity::class.java)
+                .putExtra(DexSetupActivity.EXTRA_SHOW_PERMISSIONS, true)
+                .putExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, true))
+        }
+        ui.text(card, "В списке виден каждый доступ и его состояние. Доступ к уведомлениям других приложений нужен для подсказок навигации; показ поверх приложений сейчас не требуется. Настроить разрешения можно и позже.", 13f)
+        val driveDeck = DriveDeckPermissions.snapshot(this)
+        if (prefs.desktopMode == DesktopModePolicy.DRIVEDECK || driveDeck.availability != DriveDeckPermissions.Availability.MISSING) {
+            val music = ui.section(parent, "DriveDeck · музыка и обложки")
+            ui.text(music, driveDeck.description, 14f)
+            ui.button(music, "Разрешения DriveDeck") { DriveDeckPermissions.open(this) }
+            ui.text(music, "Это отдельный доступ DriveDeck: разрешение HeadSwap для приборной панели его не заменяет. Можно настроить позже; без него музыкальный виджет может не показывать трек.", 13f)
+        }
     }
     private fun components(parent: LinearLayout) {
-        val card = ui.section(parent, "2. Рабочий стол")
-        ui.text(card, "Android Desktop уже встроен. Для другого вида рабочего стола установите DriveDeck · HeadSwap или совместимый профиль из каталога компонентов. Обычный DriveDeck не заменяет адаптированную сборку.")
+        val card = ui.section(parent, "1. Компоненты")
+        val selected = DesktopComponents.selected(this).takeIf { prefs.desktopMode == DesktopModePolicy.ANDROID_DESKTOP }
+        val name = selected?.let(DesktopProfilePicker::name) ?: when (prefs.desktopMode) {
+            DesktopModePolicy.DRIVEDECK -> "DriveDeck"
+            DesktopModePolicy.SAMSUNG_DEX -> "Samsung DeX"
+            else -> "Android Desktop"
+        }
+        ui.text(card, "Рабочий стол: $name", 18f, true)
+        ui.text(card, when (prefs.desktopMode) {
+            DesktopModePolicy.DRIVEDECK -> "Для выбранного рабочего стола установите DriveDeck · HeadSwap из комплекта или каталога ниже. Он показывает карту и музыку рядом. Обычная сборка DriveDeck не заменяет адаптированный компонент."
+            DesktopModePolicy.SAMSUNG_DEX -> "Используется рабочий стол Samsung. Для него отдельный компонент не нужен; способ доступа будет выбран на шаге активации."
+            else -> if (selected != null) "Выбран установленный совместимый компонент. Его обновления и разрешения доступны в каталоге."
+                else "Android Desktop уже встроен. Дополнительные компоненты устанавливать не обязательно."
+        })
         ui.button(card, "Компоненты HeadSwap Desktop") { startActivity(Intent(this, ComponentUpdatesActivity::class.java)) }
-        ui.text(card, "Профиль можно выбрать на главном экране после установки компонента.", 13f)
+        ui.button(card, "Выбрать рабочий стол") { chooseProfile() }
+        ui.text(card, if (profileAvailable()) "Рабочий стол готов к настройке ✓"
+            else "Установите выбранный компонент или выберите встроенный Android Desktop, чтобы продолжить.", 14f)
     }
+
+    private fun profileAvailable(): Boolean = when (prefs.desktopMode) {
+        DesktopModePolicy.DRIVEDECK -> runCatching { ComponentPackages.trustedInstalled(this, DesktopComponent.DRIVEDECK) != null }.getOrDefault(false)
+        DesktopModePolicy.SAMSUNG_DEX -> SamsungDexCapability.isAvailable(this)
+        else -> true
+    }
+
+    private fun choiceUnlocked(): Boolean = !CarLifeState.running && !PhonePairingService.active && !DexState.running
+
+    private fun chooseProfile() {
+        if (!choiceUnlocked()) return
+        DesktopProfilePicker.show(this, prefs.desktopMode, ::choiceUnlocked) { mode, entry, media ->
+            if (DesktopBackendTransitionPolicy.requiresActivationEnd(DelegatedDesktopAccess.ownsActivation,
+                    prefs.accessMode, prefs.accessModeFor(mode))) {
+                AlertDialog.Builder(this).setTitle("Смена способа доступа")
+                    .setMessage("Сначала завершите действующую активацию на экране «Активация», затем выберите этот рабочий стол.")
+                    .setPositiveButton("Открыть активацию") { _, _ -> openActivation() }
+                    .setNegativeButton("Отмена", null).show()
+                return@show
+            }
+            if (entry == null) DesktopComponents.clear(this)
+            else if (!DesktopComponents.select(this, entry, media)) {
+                AlertDialog.Builder(this).setTitle("Компонент изменился")
+                    .setMessage("Откройте список профилей заново и проверьте установленный компонент.")
+                    .setPositiveButton("Понятно", null).show()
+                return@show
+            }
+            prefs.desktopMode = mode
+            render()
+        }
+    }
+
+    private fun accessReady(): Boolean = if (prefs.useDelegated) DesktopAccess.activationSetupComplete(this)
+        else DesktopAccess.isReadyForProjection(this)
+
+    private fun canComplete() = DesktopOnboardingPolicy.canComplete(prefs.initialSetupReviewed, profileAvailable(), accessReady())
+
     private fun activation(parent: LinearLayout) {
-        val card = ui.section(parent, "3. Выдать права приложению")
-        ui.text(card, "По Wi-Fi: подключите телефон к сети и включите «Беспроводную отладку» в параметрах разработчика. При первом сопряжении откройте окно с шестизначным кодом. Его можно ввести в HeadSwap или в уведомлении — оба способа дают один и тот же доступ.")
-        ui.button(card, "По Wi-Fi — открыть активацию") { openActivation(computer = false) }
-        ui.text(card, "С компьютера: установите Android Platform Tools, подключите телефон USB-кабелем и подтвердите USB-отладку. HeadSwap покажет команды для ручной активации.")
-        ui.button(card, "С компьютера — показать команды") { openActivation(computer = true) }
-        ui.text(card, "После перезагрузки телефона или обновления APK повторите активацию; сохранённое сопряжение обычно остаётся. На Android 17 для восстановления независимого экрана после перезапуска службы может понадобиться включённая беспроводная отладка.", 14f)
-        ui.text(card, "При выбранных опциях HeadSwap получает временный доступ к воспроизводимому звуку и управлению панелью. Во время подключения экран магнитолы может оставаться доступным при блокировке телефона. Выбор меняется в настройках.", 13f)
+        val card = ui.section(parent, "3. Активация")
+        ui.text(card, "Выдайте HeadSwap временный доступ к рабочему столу и касаниям. На следующем экране выберите Wi-Fi, Shizuku или компьютер и следуйте короткой инструкции.")
+        ui.text(card, "При сопряжении по Wi-Fi один и тот же код можно ввести в приложении или уведомлении. После активации вернитесь сюда и завершите настройку.", 14f)
+        ui.button(card, "Открыть активацию") { openActivation() }
+        ui.text(card, when {
+            !profileAvailable() -> "Компонент рабочего стола отсутствует. Вернитесь на шаг «Компоненты» и установите его."
+            accessReady() -> "Доступ готов. Можно завершить настройку и подключить магнитолу."
+            else -> "Активация ещё не завершена. После выдачи доступа этот шаг станет готов к завершению."
+        }, 14f)
+        ui.text(card, "Звук CarLife включён по умолчанию. Управление дисплеем телефона выключено; его можно включить в настройках перед активацией. После перезагрузки телефона или обновления APK доступ потребуется выдать снова.", 13f)
+        ui.button(card, "Завершить настройку") {
+            // Recheck live capabilities and the selected component at the explicit finish action.
+            if (canComplete()) {
+                prefs.initialSetupCompleted = true
+                prefs.initialSetupAutoPending = false
+                prefs.initialSetupInProgress = false
+                finish()
+            } else render()
+        }.isEnabled = canComplete()
     }
-    private fun openActivation(computer: Boolean) {
+
+    private fun saveProgress() {
+        prefs.initialSetupStep = step
+        if (step == 2) prefs.initialSetupReviewed = true
+    }
+    private fun moveTo(next: Int) { step = next.coerceIn(0, 2); saveProgress(); render() }
+    private fun closeSetup() { prefs.initialSetupInProgress = false; finish() }
+    private fun openActivation() {
+        saveProgress()
         startActivity(Intent(this, DexSetupActivity::class.java)
-            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(DexSetupActivity.EXTRA_SHOW_ACTIVATION, true)
-            .putExtra(DexSetupActivity.EXTRA_COMPUTER_ACTIVATION, computer))
-        finish()
+            .putExtra(DexSetupActivity.EXTRA_RETURN_TO_SETUP, true))
     }
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == NOTIFICATIONS) render()
     }
-    @Suppress("DEPRECATION") override fun onBackPressed() { if (step > 0) { step--; render() } else finish() }
+    @Suppress("DEPRECATION") override fun onBackPressed() { if (step > 0) moveTo(step - 1) else closeSetup() }
 
     companion object {
         private const val NOTIFICATIONS = 401

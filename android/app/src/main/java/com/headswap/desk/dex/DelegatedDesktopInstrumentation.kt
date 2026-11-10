@@ -26,6 +26,9 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         /** Last live route check, shared with the main screen without blocking UI on a helper call. */
         @Volatile internal var keyboardRoutingReady = false
             private set
+        /** Private process-local lease identity, never a persisted grant or a public status field. */
+        @Volatile internal var activationIdentity: String? = null
+            private set
     }
     private var requestAudio = false
     private var requestScreen = false
@@ -83,6 +86,7 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         }
         try {
             check(Application.getProcessName() == context.packageName) { "Activation requires the main app process" }
+            activationIdentity = activationToken ?: DisplayHelperRendezvous.newToken()
             AppLog.init(context)
             check(DexPrefs(context).desktopMode != DesktopModePolicy.SAMSUNG_DEX) {
                 "Для доступа HeadSwap выберите профиль Android Desktop или DriveDeck"
@@ -193,9 +197,11 @@ class DelegatedDesktopInstrumentation : Instrumentation() {
         } finally {
             VdmHostLink.endActivation()
             lease?.let(DelegatedDesktopAccess::end) // reject new panel leases before cleanup snapshot
+            activationIdentity = null
             DesktopMusicPlayback.cancel("activation ended")
             DelegatedPanelAccess.restoreAll()
             ShellPanelClient.close()
+            if (lease?.stopping == true || failureReason != null) IndependentRecoveryAccess.restoreOwnedAfterActivation(context)
             writeHeartbeat(false)
             recovery?.let { record ->
                 runCatching {

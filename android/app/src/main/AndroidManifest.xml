@@ -145,6 +145,7 @@
             android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".dex.DpiCorrectionActivity" android:exported="false" android:theme="@style/Theme.Headswap.Dex" />
         <activity android:name=".update.ComponentUpdatesActivity" android:exported="false" />
+        <activity android:name=".update.ComponentPermissionsActivity" android:exported="false" />
         <provider
             android:name=".update.ComponentApkProvider"
             android:authorities="${applicationId}.components"

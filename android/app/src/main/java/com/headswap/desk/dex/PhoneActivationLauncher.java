@@ -49,7 +49,7 @@ public final class PhoneActivationLauncher {
             try {
                 PrintStream sink = new PrintStream(captured, true, "UTF-8");
                 System.setOut(sink); System.setErr(sink);
-                exit = ManualAccessLauncher.run(options.toArray(new String[0]));
+                exit = ManualAccessLauncher.runPhone(options.toArray(new String[0]), token);
                 sink.flush();
             } finally {
                 timer.cancel();

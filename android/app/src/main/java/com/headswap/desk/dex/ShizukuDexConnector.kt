@@ -56,6 +56,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
     private val inputDiagnostics = DesktopInputDiagnostics("shizuku")
     private val input = ThreadPoolExecutor(1, 1, 0, TimeUnit.SECONDS, LinkedBlockingQueue(128),
         { r -> Thread(r, "dex-mouse").apply { isDaemon = true } })
+    private val inputMoves = com.headswap.desk.shared.MotionDispatchBuffer(input)
     private val watchdog = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "dex-watch").apply { isDaemon = true } }
     // Independent tags prevent a late callback from an old USB session killing its successor.
     private val args = Shizuku.UserServiceArgs(ComponentName(this.context, DexUserService::class.java))
@@ -257,13 +258,17 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
             val xs = points.map { it.x.coerceIn(0, width - 1).toFloat() }.toFloatArray()
             val ys = points.map { it.y.coerceIn(0, height - 1).toFloat() }.toFloatArray()
             if (runCatching { DesktopTouchState.validate(action, actionIndex, ids, xs, ys) }.isFailure) return
-            enqueue { it.injectTouchPoints(action, actionIndex, ids, xs, ys) }
+            enqueue(if (action == MotionEvent.ACTION_MOVE) listOf(generation, desktopMode, width, height, ids.toList()) else null) {
+                it.injectTouchPoints(action, actionIndex, ids, xs, ys)
+            }
         } else {
             // Samsung window captions and resize edges require mouse input.
             val p = points.first()
             if (action !in setOf(MotionEvent.ACTION_DOWN, MotionEvent.ACTION_UP, MotionEvent.ACTION_MOVE, MotionEvent.ACTION_CANCEL)) return
             val buttons = if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) 0 else MotionEvent.BUTTON_PRIMARY
-            enqueue { it.injectPointer(action, p.x.coerceIn(0, width - 1), p.y.coerceIn(0, height - 1), buttons) }
+            enqueue(if (action == MotionEvent.ACTION_MOVE) listOf(generation, desktopMode, width, height, buttons) else null) {
+                it.injectPointer(action, p.x.coerceIn(0, width - 1), p.y.coerceIn(0, height - 1), buttons)
+            }
         }
     }
 
@@ -397,12 +402,12 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
         DexState.phoneScreenError = null
     }
 
-    private fun enqueue(block: (IDexUserService) -> Unit) {
+    private fun enqueue(moveKey: Any? = null, block: (IDexUserService) -> Unit) {
         val token = generation
         if (stopping.get() || token == 0L || retiringGeneration == token || !firstFrame) return
         val arrivedNs = android.os.SystemClock.elapsedRealtimeNanos()
         val observedDepth = input.queue.size + 1
-        try { input.execute {
+        try { inputMoves.submit(moveKey) {
             if (!stopping.get() && generation == token && retiringGeneration != token && firstFrame) {
                 val startedNs = android.os.SystemClock.elapsedRealtimeNanos()
                 var succeeded = false
@@ -413,7 +418,7 @@ class ShizukuDexConnector(context: Context, private val core: AaBridgeCore,
                         // Record the remote call before any failure-triggered teardown work.
                         inputDiagnostics.completed(token, arrivedNs, startedNs,
                             android.os.SystemClock.elapsedRealtimeNanos(), observedDepth, succeeded)
-                            ?.let { AppLog.i(it, false) }
+                            ?.let { AppLog.i(it + " coalescedMoves=${inputMoves.coalescedCount()}", false) }
                     }
                 } catch (e: Exception) {
                     // An already dequeued input can overlap normal USB-detach cleanup.

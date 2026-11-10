@@ -13,7 +13,8 @@ import java.security.SecureRandom
 object PhoneActivationStatus {
     enum class Phase { IDLE, PENDING, READY, FAILED }
     data class Snapshot(val phase: Phase, val message: String, val startedElapsedMs: Long = 0,
-                        val deadlineElapsedMs: Long = 0)
+                        val deadlineElapsedMs: Long = 0,
+                        internal val activationBinding: PhoneCommittedActivationPolicy.Binding = PhoneCommittedActivationPolicy.Binding.NO_ACTIVATION)
     internal data class Request(val token: String, val started: Long, val audio: Boolean, val screen: Boolean)
 
     fun read(context: Context): Snapshot {
@@ -24,6 +25,7 @@ object PhoneActivationStatus {
         val started = request.optLong("startedElapsedMs", -1)
         if (!PhoneActivationPolicy.validToken(token) || request.optInt("protocol") != PhoneActivationPolicy.PROTOCOL)
             return Snapshot(Phase.FAILED, "Сохранённая попытка запуска недействительна")
+        val binding = PhoneCommittedActivationPolicy.binding(token, DelegatedDesktopInstrumentation.activationIdentity)
         val result = readJson(context, PhoneActivationPolicy.statusPath(token))?.takeIf { it.optString("token") == token }
         val phase = result?.optString("phase")
         val partial = phase == PhoneActivationPolicy.READY_WITHOUT_PANEL
@@ -32,15 +34,15 @@ object PhoneActivationStatus {
                 (!request.optBoolean("audio") || DesktopAudioAccess.hasPermission(context)) &&
                 (if (partial) request.optBoolean("screen") && DelegatedPanelAccess.unsupportedThisActivation
                  else !request.optBoolean("screen") || DelegatedPanelAccess.hasPermission(context))
-            return if (ready) Snapshot(Phase.READY, if (partial) PhoneActivationPolicy.PANEL_MESSAGE else "Доступ включён на телефоне", started)
-            else Snapshot(Phase.FAILED, "Доступ завершён. Включите его снова на телефоне или с компьютера.", started)
+            return if (ready) Snapshot(Phase.READY, if (partial) PhoneActivationPolicy.PANEL_MESSAGE else "Доступ включён на телефоне", started, activationBinding = binding)
+            else Snapshot(Phase.FAILED, "Доступ завершён. Включите его снова на телефоне или с компьютера.", started, activationBinding = binding)
         }
         if (result?.optString("phase") == "FAILED")
-            return Snapshot(Phase.FAILED, result.optString("message", "Активация не завершена").take(640), started)
+            return Snapshot(Phase.FAILED, result.optString("message", "Активация не завершена").take(640), started, activationBinding = binding)
         if (!PhoneActivationPolicy.isPending(started, SystemClock.elapsedRealtime()))
-            return Snapshot(Phase.FAILED, "Попытка запуска завершилась без подтверждения. Включите беспроводную отладку и повторите.", started)
+            return Snapshot(Phase.FAILED, "Попытка запуска завершилась без подтверждения. Включите беспроводную отладку и повторите.", started, activationBinding = binding)
         return Snapshot(Phase.PENDING, "Включаю доступ на телефоне… HeadSwap может открыться заново.",
-            started, started + PhoneActivationPolicy.DEADLINE_MS)
+            started, started + PhoneActivationPolicy.DEADLINE_MS, binding)
     }
 
     @Synchronized fun clearFinished(context: Context) {
@@ -70,6 +72,12 @@ object PhoneActivationStatus {
         deletePriorResult(context)
         write(context, PhoneActivationPolicy.REQUEST, request)
         return Request(token, started, audio, screen)
+    }
+
+    internal fun isCurrentPending(context: Context, request: Request): Boolean {
+        val saved = readJson(context, PhoneActivationPolicy.REQUEST) ?: return false
+        return saved.optString("token") == request.token && saved.optInt("uid") == Process.myUid() &&
+            PhoneActivationPolicy.isPending(request.started, SystemClock.elapsedRealtime())
     }
 
     internal fun failed(context: Context, request: Request, message: String) {

@@ -38,13 +38,23 @@ public final class ManualAccessLauncher {
 
     /** Same bounded activation used by the explicitly requested, detached phone bootstrap. */
     public static int run(String[] args) {
+        return run(args, null);
+    }
+
+    /** Private receipt identity follows this phone bootstrap into its new app process. */
+    static int runPhone(String[] args, String phoneRequestToken) {
+        if (!PhoneActivationPolicy.validToken(phoneRequestToken)) throw new IllegalArgumentException("Invalid phone activation request");
+        return run(args, phoneRequestToken);
+    }
+
+    private static int run(String[] args, String phoneRequestToken) {
         int result = 0;
         try {
             ManualAccessPolicy.Options options = ManualAccessPolicy.Options.parse(args);
             if (options.help) {
                 System.out.println("HeadSwap ADB activation: [--audio] [--screen]\n"
                     + "Основной доступ включает клавиатуру на экранах HeadSwap и управление текущей музыкой: пауза при отключении USB и продолжение той же сессии после готовности CarLife.\n"
-                    + "На новой установке обе опции отмечены. Для USB-звука передайте --audio, для управления панелью и чтения времени активности экрана — --screen.\n"
+                    + "На новой установке USB-звук включён, управление дисплеем выключено. Для USB-звука передайте --audio, для выбранного в настройках управления панелью — --screen.\n"
                     + "Служебные API доступны только в активированном процессе HeadSwap.");
                 return 0;
             }
@@ -58,7 +68,7 @@ public final class ManualAccessLauncher {
                 int uid = packageUid();
                 String runAsUid = run(5000, "run-as", ManualAccessPolicy.PACKAGE, "--user", Integer.toString(uid / 100000), "id", "-u").trim();
                 check(runAsUid.equals(Integer.toString(uid)), "Нельзя безопасно прочитать статус этого APK через run-as. Используйте подготовленную debug-сборку HeadSwap.");
-                boolean newActivation = activate(uid, options);
+                boolean newActivation = activate(uid, options, phoneRequestToken);
                 if (newActivation) {
                     try {
                         String opened = run(5000, "am", "start", "--user", "current", "--display", "0", "-n", ManualAccessPolicy.ACTIVITY);
@@ -67,7 +77,10 @@ public final class ManualAccessLauncher {
                         System.out.println("Доступ включён. Откройте HeadSwap на телефоне вручную.");
                     }
                 }
-                System.out.println("HEADSWAP_READY\nГотово. Можно отключить компьютер и подключить телефон к CarLife.\n"
+                System.out.println("HEADSWAP_READY\nПрава и текущая служба рабочего стола готовы.\n"
+                    + (Build.VERSION.SDK_INT >= 37
+                        ? "Для автоматического восстановления после переподключения USB завершите подготовку в HeadSwap → Настройки → Активация. Готовность текущей службы не подтверждает готовность её восстановления.\n"
+                        : "Можно отключить компьютер и подключить телефон к CarLife.\n")
                     + "Повторная активация нужна после перезагрузки, обновления, принудительной остановки или потери доступа.");
             }
         } catch (Exception error) {
@@ -89,7 +102,7 @@ public final class ManualAccessLauncher {
         return uid;
     }
 
-    private static boolean activate(int uid, ManualAccessPolicy.Options options) throws Exception {
+    private static boolean activate(int uid, ManualAccessPolicy.Options options, String phoneRequestToken) throws Exception {
         JSONObject active = heartbeat(uid, null);
         if (active != null) {
             active = ensureKeyboard(uid, active);
@@ -103,7 +116,7 @@ public final class ManualAccessLauncher {
         if (!options.audio && !options.screen && hudApiRequested(uid)) options = options.withHudApi();
         if (options.audio) System.out.println("Запрошен временный маршрут USB-звука: музыка и подсказки в CarLife, без микрофона.");
         if (options.screen) System.out.println("Запрошен временный доступ к панели и системной диагностике (DUMP) для чтения времени активности экрана телефона. Перед выключением панели HeadSwap откроет свой экран для двойного касания.");
-        String token = DisplayHelperRendezvous.newToken();
+        String token = phoneRequestToken != null ? phoneRequestToken : DisplayHelperRendezvous.newToken();
         try { launchDisplayHelper(uid, token, options.screen && DelegatedPanelAccess.INSTANCE.usesShellBackend(), null); }
         catch (Exception error) {
             System.err.println("Не удалось запустить службу клавиатуры на магнитоле: " + error.getClass().getSimpleName());

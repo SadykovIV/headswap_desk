@@ -18,6 +18,7 @@ import android.view.ContextThemeWrapper
 import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.widget.Button
 import android.widget.ScrollView
 import android.widget.Switch
@@ -29,6 +30,8 @@ import com.headswap.desk.embed.EmbeddedSessionRegistry
 import com.headswap.desk.shared.DesktopRenderPolicy
 import com.headswap.desk.update.ComponentUpdatesActivity
 import java.util.concurrent.Executors
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /** Read the actual view tree on a disposable emulator. No updater or system installer is invoked. */
 internal object DesktopSettingsProbe {
@@ -44,7 +47,7 @@ internal object DesktopSettingsProbe {
             checkMapBuffers()
             result.putString("appBuffers", "screen 160 DPI; selected app buffer 320 DPI at 2x for create and resize")
             checkSettings(test)
-            result.putString("settings", "flat settings, permission-only subpage/Back/recreation, persisted phone/audio/HUD/DPI choices, disabled shade and both component cards")
+            result.putString("settings", "flat settings, activation and permission subpages/Back/recreation, persisted phone/audio/HUD/DPI choices, disabled shade and both component cards")
             test.finish(Activity.RESULT_OK, result)
         } catch (error: Throwable) {
             result.putString("error", android.util.Log.getStackTraceString(error))
@@ -133,17 +136,23 @@ internal object DesktopSettingsProbe {
         val originalTimeout = prefs.phoneIdleTimeout
         val originalNav = AaPrefs(context).metaNavi
         val originalSetupCompleted = prefs.initialSetupCompleted
+        val originalSetupProgress = prefs.initialSetupInProgress
+        val originalSetupStep = prefs.initialSetupStep
+        val originalSetupReviewed = prefs.initialSetupReviewed
+        val originalSetupAuto = prefs.initialSetupAutoPending
         val originalCompact = prefs.compactMapSymbols
         val originalPackages = prefs.dpiCorrectionPackages
         val originalAutoplay = prefs.autoMusicPlayback
         val originalAudio = prefs.usbPlaybackAudio
+        val originalIndependentRecovery = prefs.independentRecoveryWithoutWifi
         var activity: Activity? = null
         var components: Activity? = null
         val monitor = test.addMonitor(ComponentUpdatesActivity::class.java.name, null, false)
         try {
             prefs.desktopMode = DesktopModePolicy.ANDROID_DESKTOP
             prefs.initialSetupCompleted = true
-            prefs.useDelegated = true
+            prefs.activationMethod = ActivationMethod.WIFI
+            prefs.independentRecoveryWithoutWifi = false
             prefs.desktopPanelControl = true
             prefs.phoneTimerEnabled = true
             prefs.phoneScreenMode = PhoneIdleMode.CURTAIN
@@ -239,13 +248,13 @@ internal object DesktopSettingsProbe {
                 root.button("Назад").performClick()
                 check(root.button("Подключить").isShown && root.button("Настройки").isShown)
                 // Completed setup opens activation alone; initial onboarding must not return.
-                root.button("Выдать права приложению").performClick()
-                check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "Выдать права приложению" })
+                root.button("Активировать").performClick()
+                check(root.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "Активация" })
                 check(root.nodes().filterIsInstance<TextView>().none { it.isShown && it.text == "Первоначальная настройка" })
-                check(!root.button("Уведомления и работа в фоне").isShown)
-                check(!root.button("Установить компоненты").isShown)
-                check(root.button("Готово — вернуться к подключению").isShown)
-                root.button("Готово — вернуться к подключению").performClick()
+                check(!root.button("Настроить приложение").isShown)
+                check(root.button("На главный экран").isShown)
+                checkActivationMethods(root, prefs)
+                root.button("На главный экран").performClick()
                 root.button("Настройки").performClick()
             }
             test.waitForIdleSync()
@@ -254,9 +263,9 @@ internal object DesktopSettingsProbe {
                 root.navigation("Доступ HeadSwap к уведомлениям").performClick()
                 checkPermissions(root)
                 root.navigation("Доступ к рабочему столу").performClick()
-                check(root.button("Готово — вернуться к подключению").isShown)
-                check(!root.button("Уведомления и работа в фоне").isShown)
-                root.button("Готово — вернуться к подключению").performClick()
+                check(root.button("На главный экран").isShown)
+                check(!root.button("Настроить приложение").isShown)
+                root.button("На главный экран").performClick()
                 root.button("Настройки").performClick()
                 root.button("Установить и обновить компоненты").performClick()
             }
@@ -289,8 +298,9 @@ internal object DesktopSettingsProbe {
             }
             // System pickers were intercepted; no network, download, or installer was started.
             onUi(test) { detail.button("Назад").performClick() }
-            test.waitForIdleSync()
+            awaitVisibleWindow(test, root)
             onUi(test) { checkFlatSettings(root) }
+            checkOnboardingPermissions(test, root)
 
         } finally {
             test.removeMonitor(monitor)
@@ -303,10 +313,104 @@ internal object DesktopSettingsProbe {
             prefs.desktopMode = originalMode
             prefs.autoMusicPlayback = originalAutoplay
             prefs.usbPlaybackAudio = originalAudio
+            prefs.independentRecoveryWithoutWifi = originalIndependentRecovery
             AaPrefs(context).metaNavi = originalNav
             prefs.initialSetupCompleted = originalSetupCompleted
+            prefs.initialSetupInProgress = originalSetupProgress
+            prefs.initialSetupStep = originalSetupStep
+            prefs.initialSetupReviewed = originalSetupReviewed
+            prefs.initialSetupAutoPending = originalSetupAuto
             prefs.compactMapSymbols = originalCompact
             prefs.dpiCorrectionPackages = originalPackages
+        }
+    }
+
+    /** Method changes are local choices. The test never starts network ADB or changes its mode. */
+    private fun checkActivationMethods(root: View, prefs: DexPrefs) {
+        fun shownButton(label: String) = root.nodes().filterIsInstance<Button>().single { it.isShown && it.text == label }
+        fun choose(method: ActivationMethod) {
+            root.buttonStarting("Способ:").performClick()
+            val dialog = android.view.inspector.WindowInspector.getGlobalWindowViews().last { view ->
+                view.nodes().filterIsInstance<android.widget.ListView>().any()
+            }
+            val list = dialog.nodes().filterIsInstance<android.widget.ListView>().single()
+            check((0 until list.count).map { list.getItemAtPosition(it).toString() } == listOf("Wi-Fi", "Shizuku", "С компьютера"))
+            list.performItemClick(null, method.ordinal, list.getItemIdAtPosition(method.ordinal))
+            check(prefs.activationMethod == method)
+            check(!PhonePairingService.active && !prefs.independentRecoveryWithoutWifi)
+        }
+        check(prefs.activationMethod == ActivationMethod.WIFI)
+        check(shownButton("Активировать").isEnabled)
+        check(root.nodes().filterIsInstance<Button>().none { it.isShown && it.text in listOf(
+            "Открыть настройки отладки", "Открыть отладку и ввод в уведомлении", "Сопрячь заново", "С компьютера", "Восстановить рабочий стол") })
+        check(root.nodes().filterIsInstance<Switch>().none { it.isShown && it.contentDescription == "Восстанавливать рабочий стол без Wi-Fi" })
+        check(!root.button("Скачать Android Platform Tools").isShown)
+        if (Build.VERSION.SDK_INT >= 37) {
+            shownButton("Активировать").performClick()
+            val consent = android.view.inspector.WindowInspector.getGlobalWindowViews().last { view ->
+                view.nodes().filterIsInstance<TextView>().any { it.text == "Автоматическое восстановление" }
+            }
+            check(consent.nodes().filterIsInstance<TextView>().any {
+                it.text.contains("сетевые интерфейсы") && it.text.contains("без TLS")
+            })
+            check(!PhonePairingService.active && !prefs.independentRecoveryWithoutWifi)
+            consent.button("Отмена").performClick()
+            check(!PhonePairingService.active && !prefs.independentRecoveryWithoutWifi)
+        }
+        choose(ActivationMethod.COMPUTER)
+        check(shownButton("Скачать Android Platform Tools").isEnabled)
+        check(root.nodes().filterIsInstance<TextView>().any {
+            it.isShown && it.text.contains("./adb -d shell") &&
+                it.text.contains(".\\adb.exe -d shell") && it.text.contains("HEADSWAP_READY")
+        })
+        check(root.nodes().filterIsInstance<Button>().none { it.isShown && it.text == "Активировать" })
+        choose(ActivationMethod.SHIZUKU)
+        check(shownButton("Разрешить доступ Shizuku").isEnabled)
+        check(!root.button("Скачать Android Platform Tools").isShown)
+        choose(ActivationMethod.WIFI)
+        check(shownButton("Активировать").isEnabled)
+        check(!root.button("Разрешить доступ Shizuku").isShown)
+    }
+
+    private fun checkOnboardingPermissions(test: Instrumentation, settings: View) {
+        val wizardMonitor = test.addMonitor(DesktopOnboardingActivity::class.java.name, null, false)
+        var wizard: Activity? = null
+        var permissions: Activity? = null
+        val permissionMonitor = test.addMonitor(DexSetupActivity::class.java.name, null, false)
+        try {
+            onUi(test) { settings.button("Повторить заново первоначальную настройку").performClick() }
+            val openedWizard = checkNotNull(test.waitForMonitorWithTimeout(wizardMonitor, 5000))
+            wizard = openedWizard
+            test.waitForIdleSync()
+            onUi(test) {
+                check(openedWizard.window.decorView.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "1. Компоненты" })
+                openedWizard.window.decorView.button("Далее").performClick()
+                check(openedWizard.window.decorView.nodes().filterIsInstance<TextView>().any { it.isShown && it.text == "2. Разрешения" })
+                openedWizard.window.decorView.button("Разрешения приложения").performClick()
+            }
+            val openedPermissions = checkNotNull(test.waitForMonitorWithTimeout(permissionMonitor, 5000))
+            permissions = openedPermissions
+            test.waitForIdleSync()
+            onUi(test) {
+                val root = openedPermissions.window.decorView
+                checkPermissions(root)
+                root.button("Назад").performClick()
+                check(openedPermissions.isFinishing) { "One Back must return directly to setup" }
+            }
+            awaitVisibleWindow(test, openedWizard.window.decorView)
+            onUi(test) {
+                val root = openedWizard.window.decorView
+                check(root.button("Разрешения приложения").isShown)
+                root.button("Далее").performClick()
+                check(root.button("Открыть активацию").isShown)
+                check(root.button("Завершить настройку").isShown)
+                root.button("Закрыть настройку").performClick()
+            }
+            awaitVisibleWindow(test, settings)
+        } finally {
+            test.removeMonitor(wizardMonitor)
+            test.removeMonitor(permissionMonitor)
+            onUi(test) { permissions?.finish(); wizard?.finish() }
         }
     }
 
@@ -319,7 +423,7 @@ internal object DesktopSettingsProbe {
             check(root.buttonStarting(prefix).isShown)
         for (label in listOf("Передавать звук в CarLife", "Автоматически продолжать музыку при подключении",
             "Управление дисплеем телефона", "Подсказки навигации на приборной панели и HUD")) check(root.toggle(label).isShown)
-        for (label in listOf("Исправить DPI приложения", "Разрешения приложения", "Установить и обновить компоненты",
+        for (label in listOf("Активация", "Исправить DPI приложения", "Разрешения приложения", "Установить и обновить компоненты",
             "Повторить заново первоначальную настройку", "Отправить журнал")) check(root.button(label).isShown)
         check(root.nodes().none { it.isShown && it.contentDescription?.startsWith("Открыть настройки:") == true })
         check(root.nodes().filterIsInstance<TextView>().none { it.isShown && it.text == "Приложение" })
@@ -397,6 +501,30 @@ internal object DesktopSettingsProbe {
                 check(DexPrefs(page).dpiCorrectionPackages == setOf("ru.yandex.yandexmaps", "com.android.settings"))
             }
         } finally { onUi(test) { page.finish() }; test.waitForIdleSync() }
+    }
+
+    /** Main-thread idle does not imply that WindowManager finished a cross-Activity transition. */
+    private fun awaitVisibleWindow(test: Instrumentation, root: View) {
+        val ready = CountDownLatch(1)
+        fun checkReady() {
+            if (root.isAttachedToWindow && root.isShown && root.hasWindowFocus()) ready.countDown()
+        }
+        val focus = ViewTreeObserver.OnWindowFocusChangeListener { checkReady() }
+        val layout = ViewTreeObserver.OnGlobalLayoutListener { checkReady() }
+        onUi(test) {
+            root.viewTreeObserver.addOnWindowFocusChangeListener(focus)
+            root.viewTreeObserver.addOnGlobalLayoutListener(layout)
+            checkReady()
+        }
+        try {
+            check(ready.await(5, TimeUnit.SECONDS)) { "Expected Activity window did not become visible and focused" }
+            test.waitForIdleSync()
+        } finally {
+            onUi(test) {
+                root.viewTreeObserver.removeOnWindowFocusChangeListener(focus)
+                root.viewTreeObserver.removeOnGlobalLayoutListener(layout)
+            }
+        }
     }
 
     private fun View.nodes(): Sequence<View> = sequence {

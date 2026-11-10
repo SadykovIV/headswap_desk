@@ -37,6 +37,8 @@ internal class DesktopAppPane(
         contentDescription = "Окно приложения"
         setOnTouchListener { _, event -> forwardTouch(event) }
     }
+    private val motionQueue = com.headswap.desk.shared.MotionDispatchBuffer(work)
+    private val inputTiming = com.headswap.desk.dex.DesktopInputDiagnostics("child-pane")
     private val uid = Process.myUid()
     @Volatile private var current: Output? = null
     private var wanted: DesktopAppCatalog.Entry? = null
@@ -371,6 +373,7 @@ internal class DesktopAppPane(
     }
 
     fun back() {
+        motionQueue.barrier()
         val entry = wanted ?: return home()
         val output = current ?: return home()
         val serial = request
@@ -402,14 +405,26 @@ internal class DesktopAppPane(
         val width = view.width
         val height = view.height
         if (width <= 0 || height <= 0) return false
-        work.execute {
-            if (!output.retired && output.handle > 0) runCatching {
-                val buffer = output.buffer ?: return@runCatching
+        val serial = request
+        val coordinates = output.buffer ?: return true
+        val arrivedNs = SystemClock.elapsedRealtimeNanos()
+        val key = if (action == MotionEvent.ACTION_MOVE) listOf(output.token, serial, coordinates, width, height, ids.toList()) else null
+        motionQueue.submit(key) {
+            if (!output.retired && output === current && request == serial && output.buffer == coordinates && output.handle > 0) runCatching {
+                val startedNs = SystemClock.elapsedRealtimeNanos()
+                val buffer = coordinates
                 for (i in xs.indices) {
                     xs[i] = (xs[i] * buffer.width / width).coerceIn(0f, (buffer.width - 1).toFloat())
                     ys[i] = (ys[i] * buffer.height / height).coerceIn(0f, (buffer.height - 1).toFloat())
                 }
-                EmbeddedSessionRegistry.touchPoints(uid, output.handle, action, index, ids, xs, ys)
+                var succeeded = false
+                try {
+                    EmbeddedSessionRegistry.touchPoints(uid, output.handle, action, index, ids, xs, ys)
+                    succeeded = true
+                } finally {
+                    inputTiming.completed(serial, arrivedNs, startedNs, SystemClock.elapsedRealtimeNanos(), 0, succeeded)
+                        ?.let { com.headswap.desk.AppLog.i(it + " coalescedMoves=${motionQueue.coalescedCount()}", false) }
+                }
             }.onFailure { Log.w(TAG, "Desktop touch rejected", it) }
         }
         return true

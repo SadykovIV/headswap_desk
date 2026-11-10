@@ -19,8 +19,8 @@ android {
         minSdk = 33
         targetSdk = 37
         testInstrumentationRunner = "com.headswap.desk.qa.CompatibilityProbe"
-        versionCode = 43
-        versionName = "0.6.0"
+        versionCode = 46
+        versionName = "0.6.3"
         // Wireless CarLife uses the same desktop source and channel protocol as USB.
         buildConfigField("boolean", "WIRELESS_BETA", "true")
     }

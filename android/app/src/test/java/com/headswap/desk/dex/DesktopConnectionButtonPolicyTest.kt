@@ -29,16 +29,21 @@ class DesktopConnectionButtonPolicyTest {
         assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING, state(pending = true))
         assertTrue(DesktopConnectionButtonPolicy.State.CONNECTING.stopsSession)
     }
-    @Test fun passiveAccessoryWaitIsIdleButStaleLiveVideoIsCancellable() {
+    @Test fun onlyUnarmedIdleOffersConnectAndBothWaitingStatesAreCancellable() {
         assertEquals(DesktopConnectionButtonPolicy.State.IDLE, state(pending = false))
+        assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING, state(pending = true))
         assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING,
             state(service = true, desktop = true, carLife = true, video = false, pending = true))
     }
-    @Test fun failureAllowsRetryWhileOldServiceIsStillRetiring() {
-        assertEquals(DesktopConnectionButtonPolicy.State.IDLE,
+    @Test fun failureKeepsStopAvailableUntilTransportAndWaitHaveActuallyStopped() {
+        assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING,
             state(service = true, desktop = true, carLife = true, video = true, failed = true))
         assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING,
             state(service = true, failed = true, working = true))
+        assertEquals(DesktopConnectionButtonPolicy.State.CONNECTING, state(failed = true, pending = true))
+        assertEquals(DesktopConnectionButtonPolicy.State.IDLE, state(failed = true))
+        assertEquals(DesktopConnectionButtonPolicy.State.IDLE,
+            state(stopped = true, service = true, failed = true, pending = true))
     }
     @Test fun successfulFrameSupersedesAnEarlierProgressMessage() {
         assertEquals(DesktopConnectionButtonPolicy.State.CONNECTED,
@@ -49,7 +54,7 @@ class DesktopConnectionButtonPolicyTest {
         assertFalse(DesktopConnectionButtonPolicy.State.IDLE.stopsSession)
         assertTrue(DesktopConnectionButtonPolicy.State.CONNECTED.stopsSession)
         assertEquals("Подключить", DesktopConnectionButtonPolicy.State.IDLE.label)
-        assertEquals("Подключение…", DesktopConnectionButtonPolicy.State.CONNECTING.label)
-        assertEquals("Остановить", DesktopConnectionButtonPolicy.State.CONNECTED.label)
+        assertEquals("Остановить ожидание", DesktopConnectionButtonPolicy.State.CONNECTING.label)
+        assertEquals("Отключить", DesktopConnectionButtonPolicy.State.CONNECTED.label)
     }
 }

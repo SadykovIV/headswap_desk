@@ -68,6 +68,7 @@ object WirelessCarLife {
         WirelessPrefs(context).mode == CarLifeConnectionMode.AUTO && !hasConfiguredCar(context) ->
             "Настройте беспроводную магнитолу для автоматического подключения без USB"
         missingPermissions(context).isNotEmpty() -> "Разрешите доступ к устройствам поблизости и локальной сети"
+        com.headswap.desk.dex.PhonePairingService.blocksProjectionForCommittedActivation(context) -> "Завершаю проверку активации рабочего стола…"
         !DesktopAccess.isReadyForProjection(context) -> "Сначала подготовьте выбранный способ доступа на главном экране HeadSwap"
         else -> null
     }

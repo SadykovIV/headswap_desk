@@ -93,4 +93,63 @@ class DexSetupFlowTest {
         assertFalse(flow.activating(oldToken))
         assertTrue(flow.activating(currentToken))
     }
+
+    @Test fun replacedConnectPortCanRecoverWithoutPairingAgain() {
+        val flow = DexSetupFlow()
+        flow.beginConnect(manual = oldConnect)
+        val token = flow.token
+        flow.discovered(token, pair, freshConnect)
+        val error = DexAccessException(DexAccessStage.PROBE_CONNECT, DexAccessReason.TLS_PROTOCOL)
+        assertEquals(DexSetupFlow.Command.Probe(token, freshConnect), flow.probeFailed(token, error))
+        assertEquals(DexSetupFlow.Command.Ready(freshConnect), flow.verified(token))
+        assertTrue(flow.activating(token))
+    }
+
+    @Test fun transientFailureWaitsForNewEndpointButNeverReplaysTheFailedOne() {
+        val flow = DexSetupFlow()
+        flow.beginConnect(manual = oldConnect)
+        val token = flow.token
+        val error = DexAccessException(DexAccessStage.PROBE_CONNECT, DexAccessReason.REFUSED)
+        assertEquals(DexSetupFlow.Command.Discover(token, DexService.CONNECT), flow.probeFailed(token, error))
+        assertEquals(DexSetupFlow.Command.None, flow.discovered(token, pair, oldConnect))
+        assertEquals(DexSetupFlow.Command.Probe(token, freshConnect), flow.discovered(token, pair, freshConnect))
+    }
+
+    @Test fun recoveryTimeoutPreservesTheLastTransportError() {
+        val flow = DexSetupFlow()
+        flow.beginConnect(saved = oldConnect, manual = freshConnect)
+        val token = flow.token
+        val error = DexAccessException(DexAccessStage.PROBE_CONNECT, DexAccessReason.TLS_PROTOCOL)
+        flow.probeFailed(token, error)
+        assertEquals(DexSetupFlow.Command.ProbeFailed(error), flow.expired(token, DexService.CONNECT))
+        assertEquals(DexSetupFlow.Phase.FAILED, flow.phase)
+        assertEquals(DexSetupFlow.Command.None, flow.discovered(token, pair, oldConnect))
+    }
+
+    @Test fun authorizationFailureDoesNotRetryOtherPortsOrStartPairing() {
+        val flow = DexSetupFlow()
+        flow.beginConnect(manual = oldConnect)
+        val token = flow.token
+        flow.discovered(token, pair, freshConnect)
+        val error = DexAccessException(DexAccessStage.PROBE_CONNECT, DexAccessReason.AUTHORIZATION_REJECTED)
+        assertEquals(DexSetupFlow.Command.ProbeFailed(error), flow.probeFailed(token, error))
+        assertEquals(DexSetupFlow.Phase.FAILED, flow.phase)
+        assertEquals(DexSetupFlow.Command.None, flow.discovered(token, pair, freshConnect))
+    }
+
+    @Test fun repeatedEndpointChangesAreBoundedAndCancellationRejectsOldFailure() {
+        val flow = DexSetupFlow()
+        flow.beginConnect(manual = oldConnect)
+        val token = flow.token
+        val error = DexAccessException(DexAccessStage.PROBE_CONNECT, DexAccessReason.REFUSED)
+        flow.probeFailed(token, error)
+        flow.discovered(token, pair, freshConnect)
+        flow.probeFailed(token, error)
+        flow.discovered(token, pair, DexEndpoint(freshConnect.host, 33999))
+        assertEquals(DexSetupFlow.Command.ProbeFailed(error), flow.probeFailed(token, error))
+        flow.cancel()
+        flow.beginConnect()
+        assertEquals(DexSetupFlow.Command.None, flow.probeFailed(token, error))
+        assertEquals(DexSetupFlow.Phase.FIND_CONNECT, flow.phase)
+    }
 }

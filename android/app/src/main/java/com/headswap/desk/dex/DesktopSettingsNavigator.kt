@@ -7,7 +7,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 
-/** Settings are a single scroll of blocks; only permission details use a nested page. */
+/** Settings are a single scroll of blocks; activation and permission details use nested pages. */
 internal class DesktopSettingsNavigator(
     private val ui: DesktopSetupViews,
     private val scroll: ScrollView,
@@ -22,6 +22,7 @@ internal class DesktopSettingsNavigator(
     private val index: LinearLayout
     private val content: LinearLayout
     private var current: String? = null
+    private var entry: String? = null
     private var revision = 0
 
     init {
@@ -57,13 +58,19 @@ internal class DesktopSettingsNavigator(
     fun open(id: String?) {
         require(id == null || id in pages)
         positions[current.orEmpty()] = scroll.scrollY
-        if (id == null) history.clear()
+        if (id == null) { history.clear(); entry = null }
         else if (id != current) history.add(current)
         current = id
         render()
     }
+    /** A permission screen opened by the setup wizard returns to its caller with one Back. */
+    fun openEntry(id: String) {
+        open(id)
+        history.clear()
+        entry = id
+    }
     fun back() {
-        if (current == null) exit() else {
+        if (current == null || current == entry && history.isEmpty()) exit() else {
             positions[current.orEmpty()] = scroll.scrollY
             current = history.removeLastOrNull()
             render()
@@ -80,11 +87,13 @@ internal class DesktopSettingsNavigator(
     fun save(state: Bundle) {
         positions[current.orEmpty()] = scroll.scrollY
         state.putString("settings_section", current)
+        state.putString("settings_entry", entry)
         state.putStringArrayList("settings_history", ArrayList(history.map { it.orEmpty() }))
         state.putBundle("settings_scroll", Bundle().apply { positions.forEach { (key, value) -> putInt(key, value) } })
     }
     fun restore(state: Bundle?) {
         current = state?.getString("settings_section")?.takeIf { it in pages }
+        entry = state?.getString("settings_entry")?.takeIf { it in pages }
         history.clear()
         state?.getStringArrayList("settings_history")?.filter { it.isEmpty() || it in pages }
             ?.forEach { history.add(it.takeIf(String::isNotEmpty)) }

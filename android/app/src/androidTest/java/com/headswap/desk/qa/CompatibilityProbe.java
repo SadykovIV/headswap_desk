@@ -16,10 +16,12 @@ import java.io.InputStream;
 public final class CompatibilityProbe extends Instrumentation {
     private String probe;
     private String panelToken;
+    private Bundle probeOptions;
     @Override public void onCreate(Bundle options) {
         super.onCreate(options);
         probe = options == null ? null : options.getString("probe");
         panelToken = options == null ? null : options.getString("panel_token");
+        probeOptions = options == null ? new Bundle() : new Bundle(options);
         start();
     }
     @Override public void onStart() {
@@ -28,6 +30,7 @@ public final class CompatibilityProbe extends Instrumentation {
         if ("vdm-ime".equals(probe)) { VdmFunctionalProbe.run(this, false); return; }
         if ("vdm-audio".equals(probe)) { VdmFunctionalProbe.run(this, true); return; }
         if ("vdm-recovery".equals(probe)) { VdmRecoveryProbe.run(this); return; }
+        if ("legacy-vdm-recovery".equals(probe)) { LegacyVdmRecoveryProbe.run(this, probeOptions); return; }
         if ("vdm-runtime".equals(probe)) { VdmRuntimeProbe.run(this); return; }
         if ("vdm-gates".equals(probe)) { VirtualDeviceGateProbe.run(this); return; }
         if ("surface-timing".equals(probe)) { SurfaceTimingProbe.run(this); return; }
@@ -39,6 +42,7 @@ public final class CompatibilityProbe extends Instrumentation {
         if ("desktop-knob-raw-back".equals(probe)) { DesktopKnobProbe.run(this, false, true); return; }
         if ("hardware-input".equals(probe)) { HardwareInputProbe.run(this); return; }
         if ("pairing-ui".equals(probe)) { PhonePairingUiProbe.run(this); return; }
+        if ("activation-flow".equals(probe)) { ActivationFlowProbe.run(this); return; }
         if ("notification-shade".equals(probe)) { NotificationShadeProbe.run(this); return; }
         if ("display-isolation".equals(probe)) { DisplayIsolationProbe.run(this); return; }
         if ("density".equals(probe)) { ProjectionDensityProbe.run(this); return; }
@@ -51,6 +55,7 @@ public final class CompatibilityProbe extends Instrumentation {
         if ("drivedeck".equals(probe)) { DriveDeckRuntimeProbe.run(this); return; }
         if ("components".equals(probe)) { ComponentProbe.run(this); return; }
         if ("settings".equals(probe)) { DesktopSettingsProbe.run(this); return; }
+        if ("first-run".equals(probe)) { FirstRunProbe.run(this); return; }
         if ("phone-curtain".equals(probe)) { PhoneCurtainProbe.run(this); return; }
         Bundle result = new Bundle(); int code = Activity.RESULT_CANCELED;
         if (!"audio".equals(probe) || !(Build.HARDWARE.equals("ranchu") || Build.HARDWARE.equals("goldfish"))) {

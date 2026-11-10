@@ -13,6 +13,22 @@ internal enum class PhoneIdleMode(val label: String) {
 /** Preferences are separate from upstream HeadSwap/Android Auto settings. */
 class DexPrefs(context: Context) {
     private val prefs = context.getSharedPreferences("headswap_dex", Context.MODE_PRIVATE)
+
+    init {
+        // Capture an empty installation before the first UI writes unrelated defaults. A simple
+        // getInt(..., DRIVEDECK) would silently migrate old users who kept Android Desktop.
+        synchronized(DexPrefs::class.java) {
+            if (!prefs.contains("initial_setup_auto_pending")) {
+                val previous = prefs.all
+                val fresh = previous.isEmpty()
+                prefs.edit().apply {
+                    if (!previous.containsKey("desktop_mode"))
+                        putInt("desktop_mode", DesktopOnboardingPolicy.initialProfile(null, !fresh))
+                    putBoolean("initial_setup_auto_pending", fresh)
+                }.apply()
+            }
+        }
+    }
     internal var phoneScreenMode: PhoneIdleMode
         get() = PhonePanelPolicy.screenMode(prefs.getString("phone_screen_mode", null),
             prefs.getString("phone_idle_mode", null), PhonePanelPolicy.prefersCurtain)
@@ -27,14 +43,18 @@ class DexPrefs(context: Context) {
     internal var phoneIdleTimeout: PhoneIdleTimeout
         get() = PhoneIdleTimeout.restore(prefs.getString("phone_idle_timeout", null))
         set(value) { prefs.edit().putString("phone_idle_timeout", value.name).apply() }
-    /** First activation offers panel control. An explicit choice is kept across updates. */
+    /** Panel control is opt-in. An explicit choice is kept across updates. */
     var desktopPanelControl: Boolean
-        get() = prefs.getBoolean("desktop_panel_control", true)
+        get() = prefs.getBoolean("desktop_panel_control", false)
         set(value) { prefs.edit().putBoolean("desktop_panel_control", value).apply() }
     /** First activation offers USB playback. Changing the selection takes effect on the next activation. */
     var usbPlaybackAudio: Boolean
         get() = prefs.getBoolean("desktop_usb_playback_audio", true)
         set(value) { prefs.edit().putBoolean("desktop_usb_playback_audio", value).apply() }
+    /** Explicit consent selection only. The next activation applies the network debugging mode. */
+    var independentRecoveryWithoutWifi: Boolean
+        get() = prefs.getBoolean("independent_recovery_without_wifi", false)
+        set(value) { prefs.edit().putBoolean("independent_recovery_without_wifi", value).apply() }
     private fun backendKey(profile: Int) =
         if (profile == DesktopModePolicy.SAMSUNG_DEX) "dex_access_backend" else "desktop_access_backend"
 
@@ -44,6 +64,19 @@ class DexPrefs(context: Context) {
             val profile = desktopMode
             require(value in DesktopAccessMode.optionsFor(profile)) { "Этот способ доступа недоступен для выбранного профиля" }
             prefs.edit().putString(backendKey(profile), value.name).apply()
+        }
+
+    private fun activationMethodKey(profile: Int) =
+        if (profile == DesktopModePolicy.SAMSUNG_DEX) "dex_activation_method" else "desktop_activation_method"
+
+    var activationMethod: ActivationMethod
+        get() = ActivationMethod.restore(desktopMode, prefs.getString(activationMethodKey(desktopMode), null), accessMode)
+        set(value) {
+            val profile = desktopMode
+            val backend = requireNotNull(value.backend(profile)) { "Этот способ активации недоступен для выбранного профиля" }
+            require(backend in DesktopAccessMode.optionsFor(profile))
+            prefs.edit().putString(activationMethodKey(profile), value.name)
+                .putString(backendKey(profile), backend.name).apply()
         }
 
     /** Read a profile's existing backend before changing the profile or component selection. */
@@ -74,7 +107,7 @@ class DexPrefs(context: Context) {
             .putBoolean("desktop_usb_playback_audio", audio)
             .putBoolean("desktop_panel_control", screen).commit()
     }
-    /** Existing choices survive updates; the independent Android launcher remains the default. */
+    /** Existing choices survive updates; the constructor selects DriveDeck only on a clean install. */
     var desktopMode: Int
         get() = prefs.getInt("desktop_mode", DesktopModePolicy.ANDROID_DESKTOP).let {
             when (it) {
@@ -136,6 +169,19 @@ class DexPrefs(context: Context) {
     var huNotificationsEnabled: Boolean
         get() = prefs.getBoolean("hu_notifications_enabled", false)
         set(value) { prefs.edit().putBoolean("hu_notifications_enabled", value).apply() }
+    var initialSetupAutoPending: Boolean
+        get() = prefs.getBoolean("initial_setup_auto_pending", false)
+        set(value) { prefs.edit().putBoolean("initial_setup_auto_pending", value).apply() }
+    var initialSetupReviewed: Boolean
+        get() = prefs.getBoolean("initial_setup_reviewed", initialSetupCompleted)
+        set(value) { prefs.edit().putBoolean("initial_setup_reviewed", value).apply() }
+    var initialSetupInProgress: Boolean
+        get() = prefs.getBoolean("initial_setup_in_progress", false)
+        set(value) { prefs.edit().putBoolean("initial_setup_in_progress", value).apply() }
+    var initialSetupStep: Int
+        get() = prefs.getInt("initial_setup_step", 0).coerceIn(0, 2)
+        set(value) { prefs.edit().putInt("initial_setup_step", value.coerceIn(0, 2)).apply() }
+
     var initialSetupCompleted: Boolean
         get() = prefs.getBoolean("initial_setup_completed", false)
         set(value) { prefs.edit().putBoolean("initial_setup_completed", value).apply() }

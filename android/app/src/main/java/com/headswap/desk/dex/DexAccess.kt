@@ -14,6 +14,8 @@ import com.flyfishxu.kadb.cert.KadbPrivateKeyStore
 import com.headswap.desk.AppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -50,20 +52,24 @@ object DexAccess {
     fun acceptsHost(host: String): Boolean = LocalAddressPolicy.accepts(host, LocalAddressPolicy.ownAddresses())
 
     /** Keep Android's pairing-code sheet open while entering the code in split-screen. */
-    suspend fun pair(context: Context, port: Int, code: String, host: String = "127.0.0.1") = withContext(Dispatchers.IO) {
+    internal suspend fun pair(context: Context, port: Int, code: String, host: String = "127.0.0.1",
+                              request: PairingRequest = PairingRequest()) = withContext(Dispatchers.IO) {
         readiness.begin() // Changing the paired identity invalidates all earlier probe results.
         val operation = Operation("pair", host, port)
+        val coroutine = currentCoroutineContext()
         operation.environment(context)
         try {
+            coroutine.ensureActive()
             val address = operation.validate(host, port)
             if (!code.matches(Regex("[0-9]{6}"))) throw DexAccessException(DexAccessStage.VALIDATE, DexAccessReason.INVALID_CODE)
             operation.stage(DexAccessStage.IDENTITY)
             configure(context)
             operation.stage(DexAccessStage.PAIR_CONNECT)
-            // Kadb 2.1.1 pairing has no socket timeout. This opaque, single-connection
+            // Kadb pairing has no caller-controlled socket timeout. This opaque, single-connection
             // tunnel provides a hard deadline, without consuming a one-shot pairing port
             // in a preliminary TCP probe or terminating the end-to-end TLS connection.
             PairingTunnel(address, port, onConnected = { operation.stage(DexAccessStage.PAIR_HANDSHAKE) }).use { tunnel ->
+                request.attach(tunnel)
                 try {
                     Kadb.pair("127.0.0.1", tunnel.port, code, AdbClientIdentity.NAME)
                 } catch (e: Exception) {
@@ -77,11 +83,15 @@ object DexAccess {
                     throw e
                 }
             }
-            DexPrefs(context).apply { pairingPort = port; this.host = address; hasPaired = true }
+            request.commit {
+                coroutine.ensureActive()
+                DexPrefs(context).apply { pairingPort = port; this.host = address; hasPaired = true }
+            }
             operation.success()
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException || e is InterruptedException) throw e
             throw operation.failure(e)
-        }
+        } finally { request.close() }
     }
 
     /** Blocking: call from a worker thread. Use the main debugging port, never a pairing port. */
@@ -114,14 +124,24 @@ object DexAccess {
 
     /** Explicit phone-only bootstrap. Dispatch acceptance is never treated as a grant. */
     internal suspend fun activatePhone(context: Context, endpoint: DexEndpoint, audio: Boolean,
-                                      screen: Boolean): PhoneActivationLaunch = withContext(Dispatchers.IO) {
+                                      screen: Boolean, onCommitting: () -> Unit = {},
+                                      onConnection: (Kadb?) -> Unit = {},
+                                      checkRequest: () -> Unit = {}): PhoneActivationLaunch = withContext(Dispatchers.IO) {
         val operation = Operation("phone-activation", endpoint.host, endpoint.port)
         val request = PhoneActivationStatus.begin(context, audio, screen)
         var submitted = false
+        val coroutine = currentCoroutineContext()
+        fun ensureActive() {
+            coroutine.ensureActive()
+            checkRequest()
+            check(PhoneActivationStatus.isCurrentPending(context, request)) { "Запрос активации изменился или истёк" }
+        }
         try {
+            ensureActive()
             val address = operation.validate(endpoint.host, endpoint.port)
             configure(context)
-            Kadb.create(address, endpoint.port, connectTimeout = 3_000, socketTimeout = 15_000).use { adb ->
+            fun verifyRequest(adb: Kadb) {
+                ensureActive()
                 verifyShell(adb, address, endpoint.port)
                 val uid = Process.myUid()
                 // The nonce exists only in this installation's private data. A service name,
@@ -137,11 +157,37 @@ object DexAccess {
                 }
                 val commands = adb.shell("test -x /system/bin/setsid && test -x /system/bin/nohup && test -x /system/bin/app_process")
                 check(commands.exitCode == 0) { "Прошивка не поддерживает безопасный запуск на телефоне" }
-                val command = PhoneActivationPolicy.dispatchCommand(path, uid, request.token)
+
+            }
+            fun dispatch(adb: Kadb) {
+                ensureActive()
+                val command = PhoneActivationPolicy.dispatchCommand(context.applicationInfo.sourceDir, Process.myUid(), request.token)
+                // The service can cancel all preflight work. Only this detached handoff
+                // intentionally ends its ability to cancel from the old application process.
+                onCommitting()
                 submitted = true
                 val result = adb.shell(command)
                 check(result.exitCode == 0 && result.output.lineSequence().any { it.trim() == "HEADSWAP_PHONE_DISPATCHED=${request.token}" }) {
                     "Запуск ещё не подтверждён"
+                }
+            }
+            var localEndpoint: DexEndpoint? = null
+            Kadb.create(address, endpoint.port, connectTimeout = 3_000, socketTimeout = 15_000).use { adb ->
+                try {
+                    onConnection(adb)
+                    verifyRequest(adb)
+                    if (IndependentRecoveryAccess.requested(context)) {
+                        localEndpoint = IndependentRecoveryAccess.prepare(context, adb, endpoint, ::ensureActive)
+                    } else dispatch(adb)
+                } finally { onConnection(null) }
+            }
+            localEndpoint?.let { local ->
+                connectEndpoint(context, local, 15_000).use { adb ->
+                    try {
+                        onConnection(adb)
+                        verifyRequest(adb)
+                        dispatch(adb)
+                    } finally { onConnection(null) }
                 }
             }
             operation.success()
@@ -153,8 +199,11 @@ object DexAccess {
                 AppLog.i("Phone activation dispatched; waiting for live access confirmation")
                 PhoneActivationLaunch.ACCEPTED
             } else {
+                IndependentRecoveryAccess.restoreOwnedAfterActivation(context)
                 val failure = operation.failure(error)
-                PhoneActivationStatus.failed(context, request, "Не удалось подключиться к беспроводной отладке. Проверьте Wi-Fi, отладку и сопряжение.")
+                PhoneActivationStatus.failed(context, request, if (failure.reason in setOf(DexAccessReason.LOCAL_ADB_CONFIGURATION,
+                    DexAccessReason.LOCAL_ADB_RESTORE_REQUIRED)) failure.message.orEmpty()
+                    else "Не удалось подключиться к беспроводной отладке. Проверьте Wi-Fi, отладку и сопряжение.")
                 throw failure
             }
         }
@@ -232,7 +281,7 @@ object DexAccess {
             // Never hand an unsanitized Throwable to AppLog: the pairing library may put
             // codes, private keys or peer material in messages or nested causes.
             val secondaryTrace = secondary?.let { " secondary=${DexAccessDiagnostics.safeTrace(it)}" }.orEmpty()
-            AppLog.e("${prefix()} result=failed reason=${failure.reason} trace=${DexAccessDiagnostics.safeTrace(error)}$secondaryTrace")
+            AppLog.e("${prefix()} result=failed reason=${failure.reason} tlsSignal=${DexAccessDiagnostics.tlsSignal(error)} trace=${DexAccessDiagnostics.safeTrace(error)}$secondaryTrace")
             loggedFailure = failure
             return failure
         }

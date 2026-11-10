@@ -107,9 +107,13 @@ object Actions {
             if (autoConnect.stopped) {
                 return publish(UsbScanState.WAITING_FOR_ACCESSORY, "Подключение остановлено", reason)
             }
+            if (com.headswap.desk.dex.PhonePairingService.blocksProjectionForCommittedActivation(ctx)) {
+                usbGate.reset()
+                return publish(UsbScanState.WAITING_FOR_ACCESSORY, "Завершаю проверку активации рабочего стола…", reason)
+            }
             if (DexPrefs(ctx).useDesktopService && !DesktopAccess.isReady(ctx)) {
                 usbGate.reset() // A late USB grant must not bypass the selected backend's permission.
-                return publish(UsbScanState.FAILED, if (DexPrefs(ctx).useDelegated) "Включите доступ HeadSwap с компьютера" else "Запустите Shizuku и разрешите доступ для HeadSwap Desktop", reason)
+                return publish(UsbScanState.FAILED, if (DexPrefs(ctx).useDelegated) "Откройте HeadSwap и выполните активацию" else "Запустите Shizuku и разрешите доступ для HeadSwap Desktop", reason)
             }
             val usb = ctx.getSystemService(UsbManager::class.java)
             val list = usb.accessoryList.orEmpty()

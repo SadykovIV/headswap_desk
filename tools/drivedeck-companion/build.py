@@ -37,11 +37,11 @@ generate_symbols(profile, decoded, generated/'ru/drivedeck/headswap/CompanionSym
 run(bt/'aidl','-I'+str(base/'aidl'),'-p'+str(android.parent/'framework.aidl'),'-o'+str(generated),base/'aidl/com/headswap/desk/embed/IEmbeddedDisplayGateway.aidl')
 profile_tests=work/'profile-tests'
 profile_tests.mkdir(exist_ok=True)
-shared_policy=base/'shared/com/headswap/desk/shared/DesktopRenderPolicy.java'
-run(javac,'--release','8','-d',profile_tests,shared_policy,base/'EmbeddedRenderProfile.java',base/'EmbeddedRetryGate.java',base/'EmbeddedSurfaceRelease.java',base/'EmbeddedTouchPacket.java',base/'EmbeddedResumeGate.java',base/'EmbeddedTextureHandoff.java',*sorted((base/'tests').glob('*.java')))
-for test in ('EmbeddedRenderProfileTest','EmbeddedRetryGateTest','EmbeddedSurfaceReleaseTest','EmbeddedTouchPacketTest','EmbeddedResumeGateTest','EmbeddedTextureHandoffTest'):
+shared_sources=sorted((base/'shared').rglob('*.java'))
+run(javac,'--release','8','-d',profile_tests,*shared_sources,base/'EmbeddedRenderProfile.java',base/'EmbeddedRetryGate.java',base/'EmbeddedSurfaceRelease.java',base/'EmbeddedTouchPacket.java',base/'EmbeddedResumeGate.java',base/'EmbeddedTextureHandoff.java',*sorted((base/'tests').glob('*.java')))
+for test in ('EmbeddedRenderProfileTest','EmbeddedRetryGateTest','EmbeddedSurfaceReleaseTest','EmbeddedTouchPacketTest','EmbeddedResumeGateTest','EmbeddedTextureHandoffTest','MotionDispatchBufferTest'):
     run(java,'-cp',profile_tests,'ru.drivedeck.headswap.'+test)
-run(javac,'--release','8','-classpath',android,'-d',classes,shared_policy,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
+run(javac,'--release','8','-classpath',android,'-d',classes,*shared_sources,*sorted(base.glob('*.java')),*sorted(generated.rglob('*.java')))
 run(java,'-cp',bt/'lib/d8.jar','com.android.tools.r8.D8','--lib',android,'--min-api','26','--output',dex,*sorted(classes.rglob('*.class')))
 unsigned=work/f'DriveDeck-HeadSwap-{profile.version}-unsigned.apk'
 run(java,'-jar',tool,'b',decoded,'-p',framework,'-o',unsigned)

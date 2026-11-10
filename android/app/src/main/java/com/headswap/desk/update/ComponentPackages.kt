@@ -28,6 +28,12 @@ internal object ComponentPackages {
         ctx.packageManager.getPackageInfo(spec.pkg, sigFlags)
     } catch (_: PackageManager.NameNotFoundException) { null }
 
+    /** A setup screen must not recommend sensitive access to an APK with an untrusted publisher. */
+    fun trustedInstalled(ctx: Context, spec: DesktopComponent): PackageInfo? = installed(ctx, spec)?.also {
+        checkPublisher(ctx, spec, it)
+        check(it.longVersionCode >= spec.minCode) { "Установлена несовместимая версия компонента." }
+    }
+
     private fun dir(ctx: Context) = File(ctx.cacheDir, "verified-components").apply { mkdirs() }
 
     fun download(ctx: Context, spec: DesktopComponent, asset: ComponentAsset): PreparedComponent {

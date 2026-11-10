@@ -1,6 +1,6 @@
 package com.headswap.desk.dex
 
-/** Single-attempt setup flow. Discovery updates never initiate a second pair or probe. */
+/** One user attempt. Pairing is never repeated; replacement connect endpoints are bounded. */
 internal class DexSetupFlow {
     enum class Phase { IDLE, FIND_PAIRING, PAIRING, FIND_CONNECT, PROBING, READY, ACTIVATING, FAILED, CANCELLED }
     sealed interface Command {
@@ -10,6 +10,7 @@ internal class DexSetupFlow {
         data class Probe(val token: Long, val endpoint: DexEndpoint) : Command
         data class Ready(val endpoint: DexEndpoint) : Command
         data class NotFound(val kind: DexService) : Command
+        data class ProbeFailed(val error: DexAccessException) : Command
     }
 
     var token = 0L
@@ -20,6 +21,8 @@ internal class DexSetupFlow {
     private var connect: DexEndpoint? = null
     private var fallback: DexEndpoint? = null
     private var probing: DexEndpoint? = null
+    private var retry = DexConnectRetryPolicy()
+    private var probeFailure: DexAccessException? = null
 
     fun beginConnect(saved: DexEndpoint? = null, manual: DexEndpoint? = null): Command {
         reset()
@@ -40,7 +43,7 @@ internal class DexSetupFlow {
         connect = connection // A lost service clears the candidate before pairing completes.
         return when {
             phase == Phase.FIND_PAIRING && pairing != null -> pair(pairing)
-            phase == Phase.FIND_CONNECT && connection != null -> probe(connection)
+            phase == Phase.FIND_CONNECT && connection != null && retry.accepts(connection) -> probe(connection)
             else -> Command.None
         }
     }
@@ -55,6 +58,20 @@ internal class DexSetupFlow {
         if (!isCurrent(attempt, Phase.PROBING)) return Command.None
         phase = Phase.READY
         return Command.Ready(checkNotNull(probing))
+    }
+
+    /** Wait for new discovery evidence after a transport failure, never replay the failed port. */
+    fun probeFailed(attempt: Long, error: DexAccessException): Command {
+        if (!isCurrent(attempt, Phase.PROBING)) return Command.None
+        probeFailure = error
+        fallback = null
+        if (!retry.failed(checkNotNull(probing), error.reason)) {
+            phase = Phase.FAILED
+            return Command.ProbeFailed(error)
+        }
+        phase = Phase.FIND_CONNECT
+        return connect?.takeIf(retry::accepts)?.let(::probe)
+            ?: Command.Discover(token, DexService.CONNECT)
     }
 
     /** Only an explicitly requested activation may consume the just-verified endpoint once. */
@@ -73,6 +90,7 @@ internal class DexSetupFlow {
         }
         phase = Phase.FAILED
         code = null
+        if (kind == DexService.CONNECT) probeFailure?.let { return Command.ProbeFailed(it) }
         return Command.NotFound(kind)
     }
 
@@ -103,5 +121,7 @@ internal class DexSetupFlow {
         connect = null
         fallback = null
         probing = null
+        retry = DexConnectRetryPolicy()
+        probeFailure = null
     }
 }

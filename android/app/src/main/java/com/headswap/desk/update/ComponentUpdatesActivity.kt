@@ -89,6 +89,7 @@ class ComponentUpdatesActivity : Activity() {
         private val remote: Button
         private val install: Button
         private val remove: Button
+        private val permissions: Button?
         private var available: ComponentAsset? = null
         private var pending: File? = ComponentPackages.restore(this@ComponentUpdatesActivity, state?.getString("pending"))
         private var working = false
@@ -115,6 +116,9 @@ class ComponentUpdatesActivity : Activity() {
                     ComponentPackages.builtinRemoval(this@ComponentUpdatesActivity, spec)
                 }) { launchSystem(it, REMOVE) }
             }
+            permissions = if (spec == DesktopComponent.DRIVEDECK)
+                button("Разрешения DriveDeck") { DriveDeckPermissions.open(this@ComponentUpdatesActivity) }
+            else null
             status = ui.text(card, state?.getString("status")
                 ?: "APK загружается из проверенного репозитория компонента. Проверяются подпись и контрольная сумма. Установку подтверждает Android.", 15f)
         }
@@ -132,6 +136,7 @@ class ComponentUpdatesActivity : Activity() {
             remote.visibility = if (next != null) View.VISIBLE else View.GONE
             install.visibility = if (pending != null) View.VISIBLE else View.GONE
             remove.visibility = if (current == null) View.GONE else View.VISIBLE
+            permissions?.apply { isEnabled = !busy && current != null }
             listOf(check, pick, install, remote, remove).forEach { it.isEnabled = !busy }
         }
 

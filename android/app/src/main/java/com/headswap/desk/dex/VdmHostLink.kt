@@ -6,6 +6,7 @@ import android.os.IBinder
 import android.os.Process
 import android.os.SystemClock
 import com.headswap.desk.BuildConfig
+import com.headswap.desk.AppLog
 
 /** Main-process broker; other app processes enter through the private input gateway. */
 object VdmHostLink {
@@ -31,6 +32,7 @@ object VdmHostLink {
         }
     }
     @JvmStatic fun endActivation() {
+        IndependentRecoveryAccess.invalidateLiveVerification()
         val previous = synchronized(lock) {
             activationToken = null; pending = null; acceptedNonce = null; generation++; session = null
             host.also { host = null; lock.notifyAll() }
@@ -52,6 +54,7 @@ object VdmHostLink {
     }
     private fun clearDeadHostLocked() {
         if (host != null && host?.asBinder()?.isBinderAlive != true) {
+            IndependentRecoveryAccess.invalidateLiveVerification()
             host = null; session = null; currentHostPid = -1
             // Old death recipients compare the captured Binder before modifying a later host.
             lock.notifyAll()
@@ -109,11 +112,17 @@ object VdmHostLink {
         val offered = IVdmDesktopHost.Stub.asInterface(binder)
         check(offered.protocol() == VdmHostPolicy.PROTOCOL && offered.hostPid() == hostPid) { "VDM protocol mismatch" }
         val death = IBinder.DeathRecipient {
-            synchronized(lock) {
+            val retained = synchronized(lock) {
                 if (host?.asBinder() === binder) {
+                    // Retire this host's proof before any successor can obtain a new ticket.
+                    IndependentRecoveryAccess.invalidateLiveVerification()
                     host = null; session = null; currentHostPid = -1
                     lastError = "Связь с независимым экраном прервалась"; lock.notifyAll()
-                }
+                    activationToken != null
+                } else null
+            }
+            if (retained != null) {
+                AppLog.i("VDM host lost: generation=${ticket.generation}; activation retained=$retained", false)
             }
         }
         binder.linkToDeath(death, 0)
@@ -125,6 +134,7 @@ object VdmHostLink {
             host = offered; pending = null; acceptedNonce = ticket.nonce; currentHostPid = hostPid
             lastError = ""; lock.notifyAll()
         }
+        AppLog.i("VDM host ready: generation=${ticket.generation}; startupMs=${SystemClock.elapsedRealtime() - ticket.createdMs}", false)
         return Bundle().apply { putBoolean(VdmHostPolicy.EXTRA_READY, true); putBinder(VdmHostPolicy.EXTRA_CLIENT, appLifetime) }
     }
     @JvmStatic fun openSession(producerLifetime: IBinder, producerPid: Int): IVdmDesktopSession {
